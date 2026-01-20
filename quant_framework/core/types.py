@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Set
 from enum import Enum
 
 Price = float
@@ -17,6 +17,12 @@ class OrderStatus(Enum):
     FILLED = "FILLED"
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
+    LIVE = "LIVE"  # Active in exchange queue
+
+class TimeInForce(Enum):
+    """Time-in-force for orders."""
+    GTC = "GTC"  # Good-til-canceled (default)
+    IOC = "IOC"  # Immediate-or-cancel
 
 class ReceiptType(Enum):
     """Order receipt types for new architecture.
@@ -45,7 +51,7 @@ class NormalizedSnapshot:
     asks: List[Level]
     last_vol_split: List[Tuple[Price, Qty]] = field(default_factory=list)
 
-    # 可选字段：仅在数据源提供时填充，用于更强的桥约束与统计
+    # Optional fields
     ts_recv: Optional[Timestamp] = None
     last: Optional[Price] = None
     volume: Optional[int] = None
@@ -59,21 +65,19 @@ class Order:
     price: Price
     qty: Qty
     type: str = "LIMIT"
+    tif: TimeInForce = TimeInForce.GTC  # Time-in-force
     filled_qty: Qty = 0
     status: OrderStatus = OrderStatus.NEW
-    # create_time: 策略“提交/生成”该订单的时间（本地时间轴，单位与 ts_exch 一致）
     create_time: Timestamp = 0
-    # arrival_time: 订单“到达交易所/进入撮合”的时间（受 order_latency 影响）
-    # 仅在订单实际进入撮合器时由 runner 填充。
     arrival_time: Optional[Timestamp] = None
 
     @property
     def remaining_qty(self) -> int:
         return max(0, self.qty - self.filled_qty)
-    
+
     @property
     def is_active(self) -> bool:
-        return self.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED]
+        return self.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED, OrderStatus.LIVE]
 
 @dataclass
 class Fill:
@@ -85,23 +89,65 @@ class Fill:
     ts: Timestamp
     liquidity: str
 
-@dataclass(frozen=True)
+@dataclass
 class TapeSegment:
-    """A time segment of market state for the unified tape model"""
+    """A time segment of market state for the unified tape model.
+    
+    Attributes:
+        index: Segment index (1-based)
+        t_start: Start time (exchtime)
+        t_end: End time (exchtime)
+        bid_price: Best bid price during this segment
+        ask_price: Best ask price during this segment
+        trades: Trade volume consumed at each (side, price) -> M_{s,i}(p)
+        cancels: Cancel volume at each (side, price) -> C_{s,i}(p)
+        net_flow: Net flow (adds - cancels) at each (side, price) -> N_{s,i}(p)
+        activation_bid: Set of activated bid prices (top5 from best)
+        activation_ask: Set of activated ask prices (top5 from best)
+    """
     index: int
     t_start: int
     t_end: int
     bid_price: Price
     ask_price: Price
-    trades: Dict[Tuple[Side, Price], Qty] = field(default_factory=dict)    # M_{s,i}(p)
-    cancels: Dict[Tuple[Side, Price], Qty] = field(default_factory=dict)   # C_{s,i}(p)
+    trades: Dict[Tuple[Side, Price], Qty] = field(default_factory=dict)
+    cancels: Dict[Tuple[Side, Price], Qty] = field(default_factory=dict)
+    net_flow: Dict[Tuple[Side, Price], Qty] = field(default_factory=dict)
+    activation_bid: Set[Price] = field(default_factory=set)
+    activation_ask: Set[Price] = field(default_factory=set)
 
 @dataclass
 class OrderReceipt:
     """Order receipt for the new EventLoop architecture"""
     order_id: str
     receipt_type: str   # 'FILL' | 'PARTIAL' | 'CANCELED' | 'REJECTED'
-    timestamp: int
+    timestamp: int      # exchtime of the event
     fill_qty: Qty = 0
     fill_price: Price = 0.0
     remaining_qty: Qty = 0
+    recv_time: Optional[int] = None  # recvtime when strategy receives this
+
+@dataclass
+class FillDetail:
+    """Detailed fill information for diagnostics."""
+    fill_qty: Qty
+    fill_price: Price
+    exchtime_fill: int
+    recvtime_recv: int
+
+@dataclass
+class OrderDiagnostics:
+    """Diagnostic information for an order."""
+    order_id: str
+    side: Side
+    price: Price
+    qty: Qty
+    exchtime_arr: int
+    recvtime_send: int
+    status: OrderStatus
+    filled_qty: Qty
+    fills: List[FillDetail] = field(default_factory=list)
+    activation_time_ratio: float = 0.0  # Time ratio in activation window
+    x_threshold: float = 0.0  # pos + qty (threshold for complete fill)
+    x_final: float = 0.0  # X(px, T_B) at interval end
+    q_truncation_count: int = 0  # Number of Q < 0 truncations
