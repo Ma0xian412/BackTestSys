@@ -19,7 +19,15 @@ class OrderStatus(Enum):
     REJECTED = "REJECTED"
 
 class ReceiptType(Enum):
-    """Order receipt types for new architecture"""
+    """Order receipt types for new architecture.
+    
+    Note: This enum is used for receipt messages in the EventLoop architecture.
+    It is separate from OrderStatus to distinguish between:
+    - OrderStatus: Internal order state tracking
+    - ReceiptType: Message types from exchange to strategy
+    
+    While some values overlap, they serve different purposes in the system.
+    """
     FILL = "FILL"
     PARTIAL = "PARTIAL"
     CANCELED = "CANCELED"

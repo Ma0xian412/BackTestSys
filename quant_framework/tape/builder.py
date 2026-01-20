@@ -313,19 +313,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
             )
             segments[i] = new_seg
         
-        # Ensure last segment ends at correct time
-        if segments:
-            last = segments[-1]
-            segments[-1] = TapeSegment(
-                index=last.index,
-                t_start=last.t_start,
-                t_end=segments[-1].t_end if i == len(segments)-1 else last.t_end,
-                bid_price=last.bid_price,
-                ask_price=last.ask_price,
-                trades=last.trades,
-                cancels=last.cancels,
-            )
-        
         return segments
     
     def _derive_cancellations(self, segments: List[TapeSegment], 

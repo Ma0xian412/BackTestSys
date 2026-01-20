@@ -122,7 +122,7 @@ def test_integration():
     builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
     exchange = FIFOExchangeSimulator()
     oms = OrderManager()
-    strategy = SimpleNewStrategy()
+    strategy = SimpleNewStrategy(name="TestStrategy")
     
     # Create snapshots
     prev = create_test_snapshot(1000, 100.0, 101.0)
