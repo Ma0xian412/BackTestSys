@@ -15,7 +15,7 @@ from quant_framework.core.types import (
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.trading.oms import OrderManager, Portfolio
-from quant_framework.trading.strategy import SimpleNewStrategy
+from quant_framework.trading.strategy import SimpleStrategy
 from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
 
 
@@ -326,18 +326,22 @@ def test_oms():
 
 
 def test_strategy():
-    """Test strategy."""
+    """测试策略（使用DTO）。"""
     print("\n--- Test 9: Strategy ---")
     
-    strategy = SimpleNewStrategy(name="TestStrategy")
+    from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
+    
+    strategy = SimpleStrategy(name="TestStrategy")
     oms = OrderManager()
+    oms_view = ReadOnlyOMSView(oms)
     
     snapshot = create_test_snapshot(1000, 100.0, 101.0)
+    snapshot_dto = to_snapshot_dto(snapshot)
     
     # Call on_snapshot multiple times (strategy places order every 10 snapshots)
     all_orders = []
     for i in range(15):
-        orders = strategy.on_snapshot(snapshot, oms)
+        orders = strategy.on_snapshot(snapshot_dto, oms_view)
         all_orders.extend(orders)
     
     print(f"Strategy generated {len(all_orders)} orders over 15 snapshots")
@@ -376,16 +380,20 @@ def test_integration_basic():
     """Test basic integration of components."""
     print("\n--- Test 11: Integration Basic ---")
     
+    from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
+    
     # Create components
     config = TapeConfig()
     builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
     exchange = FIFOExchangeSimulator()
     oms = OrderManager()
-    strategy = SimpleNewStrategy(name="TestStrategy")
+    oms_view = ReadOnlyOMSView(oms)
+    strategy = SimpleStrategy(name="TestStrategy")
     
     # Create snapshots
     prev = create_test_snapshot(1000, 100.0, 101.0)
     curr = create_test_snapshot(2000, 100.5, 101.5)
+    prev_dto = to_snapshot_dto(prev)
     
     # Build tape
     tape = builder.build(prev, curr)
@@ -394,8 +402,8 @@ def test_integration_basic():
     # Set tape on exchange
     exchange.set_tape(tape, 1000, 2000)
     
-    # Submit an order via strategy
-    orders = strategy.on_snapshot(prev, oms)
+    # Submit an order via strategy (使用DTO)
+    orders = strategy.on_snapshot(prev_dto, oms_view)
     for order in orders:
         oms.submit(order, 1000)
     
@@ -669,11 +677,11 @@ def test_dto_strategy():
     """测试使用DTO的策略。"""
     print("\n--- Test 16: DTO Strategy ---")
     
-    from quant_framework.trading.strategy import SimpleDTOStrategy
+    from quant_framework.trading.strategy import SimpleStrategy
     from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
     
     # 创建策略和OMS
-    strategy = SimpleDTOStrategy(name="TestDTOStrategy")
+    strategy = SimpleStrategy(name="TestDTOStrategy")
     oms = OrderManager()
     view = ReadOnlyOMSView(oms)
     

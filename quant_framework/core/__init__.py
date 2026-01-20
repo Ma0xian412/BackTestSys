@@ -12,10 +12,9 @@ from .types import (
 
 from .interfaces import (
     IQueueModel, IMarketDataFeed, ISimulationModel,
-    ITradeTapeReconstructor, IStrategy,
+    ITradeTapeReconstructor,
     ITapeBuilder, IExchangeSimulator,
-    IStrategyNew, IStrategyDTO,
-    IReadOnlyOrderManager, IOrderManager,
+    IStrategy, IOrderManager,
 )
 
 from .dto import (

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum, auto
 
-from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategyNew, IOrderManager
+from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
 from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment
 
 
@@ -114,7 +114,7 @@ class EventLoopRunner:
         feed: IMarketDataFeed,
         tape_builder: ITapeBuilder,
         exchange: IExchangeSimulator,
-        strategy: IStrategyNew,
+        strategy: IStrategy,
         oms: IOrderManager,
         config: RunnerConfig = None,
     ):

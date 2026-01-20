@@ -5,19 +5,19 @@
 - IMarketDataFeed: 行情数据源接口
 - ISimulationModel: 仿真模型接口
 - ITradeTapeReconstructor: 成交带重建接口
-- IStrategy: 旧版策略接口
 - ITapeBuilder: Tape构建器接口
 - IExchangeSimulator: 交易所模拟器接口
-- IStrategyNew: 新版策略接口（支持回执处理）
-- IStrategyDTO: 使用DTO的策略接口（完全解耦，只读视图）
+- IStrategy: 策略接口（使用DTO，支持回执处理）
 - IOrderManager: 订单管理器接口
-- IReadOnlyOrderManager: 只读订单管理器接口（供策略使用）
 """
 
 from abc import ABC, abstractmethod
-from typing import Iterator, List, Optional, Tuple, Any
+from typing import Iterator, List, Optional, Tuple, Any, TYPE_CHECKING
 from .types import Order, NormalizedSnapshot, Price, Qty, Side, TapeSegment, OrderReceipt
 from .events import SimulationEvent
+
+if TYPE_CHECKING:
+    from .dto import SnapshotDTO, ReadOnlyOMSView
 
 
 class IQueueModel(ABC):
@@ -73,19 +73,6 @@ class ITradeTapeReconstructor(ABC):
         """重建成交带。"""
         pass
 
-
-class IStrategy(ABC):
-    """旧版策略接口。"""
-
-    @abstractmethod
-    def on_market_tick(self, book: Any, oms: Any) -> List[Order]:
-        """行情tick回调。"""
-        pass
-
-
-# ============================================================================
-# 新版统一架构接口
-# ============================================================================
 
 class ITapeBuilder(ABC):
     """Tape构建器接口（纯函数，无状态）。"""
@@ -176,13 +163,51 @@ class IExchangeSimulator(ABC):
         pass
 
 
-class IReadOnlyOrderManager(ABC):
-    """只读订单管理器接口（供策略使用）。
-    
-    该接口只提供查询方法，不提供修改方法。
-    策略通过此接口查询订单状态，但不能直接操作OMS。
-    策略需要提交订单时，应通过返回Order列表的方式，
-    由EventLoop负责调用OMS的submit方法。
+class IStrategy(ABC):
+    """策略接口（使用DTO，必须处理回执）。
+
+    所有模块之间的通信都通过DTO进行：
+    - 使用SnapshotDTO代替NormalizedSnapshot，确保策略无法修改原始数据
+    - 使用ReadOnlyOMSView提供只读的订单查询
+
+    设计理念：
+    - 策略的输入是只读的（SnapshotDTO, ReadOnlyOMSView）
+    - 策略的输出是Order列表，由EventLoop负责提交到OMS
+    - 策略不能直接调用OMS的submit/on_receipt等修改方法
+    """
+
+    @abstractmethod
+    def on_snapshot(self, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
+        """快照到达时回调（使用DTO）。
+
+        Args:
+            snapshot: 行情快照DTO（不可变）
+            oms_view: OMS只读视图（只能查询，不能操作）
+
+        Returns:
+            要提交的新订单列表
+        """
+        pass
+
+    @abstractmethod
+    def on_receipt(self, receipt: OrderReceipt, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
+        """订单回执到达时回调（使用DTO）。
+
+        Args:
+            receipt: 订单回执（成交、撤单等）
+            snapshot: 当前行情快照DTO（不可变）
+            oms_view: OMS只读视图（只能查询，不能操作）
+
+        Returns:
+            要提交的新订单列表
+        """
+        pass
+
+
+class IOrderManager(ABC):
+    """订单管理器接口。
+
+    提供订单管理功能，EventLoop使用此接口来管理订单。
     """
 
     @abstractmethod
@@ -205,96 +230,6 @@ class IReadOnlyOrderManager(ABC):
             订单（如果存在），否则返回None
         """
         pass
-
-
-class IStrategyNew(ABC):
-    """新版策略接口（必须处理回执）。
-    
-    注意：虽然此接口传入oms参数，但策略应只使用其查询方法。
-    推荐使用IStrategyDTO接口，它通过只读视图强制这一约束。
-    """
-
-    @abstractmethod
-    def on_snapshot(self, snapshot: NormalizedSnapshot, oms: 'IOrderManager') -> List[Order]:
-        """快照到达时回调。
-
-        Args:
-            snapshot: 新的行情快照
-            oms: 订单管理器（用于查询订单状态）
-
-        Returns:
-            要提交的新订单列表
-        """
-        pass
-
-    @abstractmethod
-    def on_receipt(self, receipt: OrderReceipt, snapshot: NormalizedSnapshot, oms: 'IOrderManager') -> List[Order]:
-        """订单回执到达时回调。
-
-        Args:
-            receipt: 订单回执（成交、撤单等）
-            snapshot: 当前行情快照
-            oms: 订单管理器（用于查询订单状态）
-
-        Returns:
-            要提交的新订单列表
-        """
-        pass
-
-
-class IStrategyDTO(ABC):
-    """使用DTO的策略接口（完全解耦，只读视图）。
-
-    该接口使用只读视图和DTO，实现策略与系统其他组件的完全解耦：
-    - 使用SnapshotDTO代替NormalizedSnapshot，确保策略无法修改原始数据
-    - 使用ReadOnlyOMSView代替IOrderManager，策略只能查询不能直接操作OMS
-
-    设计理念：
-    - 策略的输入是只读的（SnapshotDTO, ReadOnlyOMSView）
-    - 策略的输出是Order列表，由EventLoop负责提交到OMS
-    - 策略不能直接调用OMS的submit/on_receipt等修改方法
-
-    这种设计的优点：
-    1. 类型安全：编译时即可发现策略尝试修改只读数据的错误
-    2. 清晰边界：明确了策略的输入（只读）和输出（Order列表）
-    3. 易于测试：可以轻松构造DTO进行单元测试
-    4. 避免副作用：策略无法直接操作OMS，减少了潜在的bug
-    """
-
-    @abstractmethod
-    def on_snapshot(self, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
-        """快照到达时回调（使用只读视图）。
-
-        Args:
-            snapshot: 行情快照DTO（不可变）
-            oms_view: OMS只读视图（只能查询，不能操作）
-
-        Returns:
-            要提交的新订单列表
-        """
-        pass
-
-    @abstractmethod
-    def on_receipt(self, receipt: OrderReceipt, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
-        """订单回执到达时回调（使用只读视图）。
-
-        Args:
-            receipt: 订单回执（成交、撤单等）
-            snapshot: 当前行情快照DTO（不可变）
-            oms_view: OMS只读视图（只能查询，不能操作）
-
-        Returns:
-            要提交的新订单列表
-        """
-        pass
-
-
-class IOrderManager(IReadOnlyOrderManager):
-    """订单管理器接口（新架构）。
-    
-    继承自IReadOnlyOrderManager，增加了修改方法。
-    EventLoop使用此接口来管理订单。
-    """
 
     @abstractmethod
     def submit(self, order: Order, submit_time: int) -> None:
