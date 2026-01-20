@@ -127,9 +127,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # Map lastvolsplit to per-side volumes: E_bid(p), E_ask(p)
         e_bid, e_ask = self._apply_ghost_rule(last_vol_split)
         
-        # Build optimal price paths for bid and ask
-        bid_path = self._build_price_path(bid_a, bid_b, p_min, p_max)
-        ask_path = self._build_price_path(ask_a, ask_b, p_min, p_max)
+        # Build optimal price paths for bid and ask (包含lastvolsplit中所有价位)
+        bid_path = self._build_price_path(bid_a, bid_b, p_min, p_max, price_set)
+        ask_path = self._build_price_path(ask_a, ask_b, p_min, p_max, price_set)
         
         # Merge paths into global segments
         segments = self._merge_paths_to_segments(bid_path, ask_path, t_a, t_b)
@@ -146,7 +146,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
             )]
         
         # Compute activation sets for each segment
-        segments = self._add_activation_sets(segments)
+        segments = self._add_activation_sets(segments, prev, curr)
         
         # Two-round iterative volume allocation
         segments = self._allocate_volumes_iterative(segments, e_bid, e_ask, t_a, t_b)
@@ -169,10 +169,14 @@ class UnifiedTapeBuilder(ITapeBuilder):
         return float(min(l.price for l in levels))
     
     def _compute_activation_set(self, best_price: float, side: Side) -> Set[Price]:
-        """Compute activation set (top-K prices from best)."""
+        """计算激活集（从最优价起的top-K档位）。
+
+        这是基本的激活集计算，不考虑AB快照的交集。
+        用于无快照信息时的回退情况。
+        """
         if best_price <= 0:
             return set()
-        
+
         result = set()
         for k in range(self.config.top_k):
             if side == Side.BUY:
@@ -183,6 +187,58 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 p = best_price + k * self.tick_size
             if p > 0:
                 result.add(round(p, 8))  # Round to avoid floating point issues
+        return result
+
+    def _compute_activation_set_with_snapshots(
+        self,
+        best_price: float,
+        side: Side,
+        prev_snapshot: NormalizedSnapshot,
+        curr_snapshot: NormalizedSnapshot
+    ) -> Set[Price]:
+        """计算激活集（考虑AB快照的交集）。
+
+        激活集包含满足以下条件的价位：
+        1. 在最优价之下（买方）或之上（卖方）的top-K档位
+        2. 同时在A快照和B快照中都存在的价位
+
+        这样可以避免某些激进档位突然从有效变为无效的情况。
+        """
+        if best_price <= 0:
+            return set()
+
+        # 获取A和B快照中的价位集合
+        prev_levels = prev_snapshot.bids if side == Side.BUY else prev_snapshot.asks
+        curr_levels = curr_snapshot.bids if side == Side.BUY else curr_snapshot.asks
+
+        prev_prices = {round(float(lvl.price), 8) for lvl in prev_levels}
+        curr_prices = {round(float(lvl.price), 8) for lvl in curr_levels}
+
+        # AB快照中都出现的价位
+        common_prices = prev_prices & curr_prices
+
+        result = set()
+
+        # 首先添加标准的top-K档位
+        for k in range(self.config.top_k):
+            if side == Side.BUY:
+                p = best_price - k * self.tick_size
+            else:
+                p = best_price + k * self.tick_size
+            if p > 0:
+                result.add(round(p, 8))
+
+        # 然后添加在最优价之下（买方）或之上（卖方）且在AB都出现的价位
+        for price in common_prices:
+            if side == Side.BUY:
+                # 买方：价位应该在最优价之下或等于最优价
+                if price <= best_price + EPSILON:
+                    result.add(round(price, 8))
+            else:
+                # 卖方：价位应该在最优价之上或等于最优价
+                if price >= best_price - EPSILON:
+                    result.add(round(price, 8))
+
         return result
     
     def _apply_ghost_rule(self, last_vol_split: List[Tuple[Price, Qty]]) -> Tuple[Dict[Price, Qty], Dict[Price, Qty]]:
@@ -218,32 +274,89 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         return e_bid, e_ask
     
-    def _build_price_path(self, p_start: Price, p_end: Price, p_min: Price, p_max: Price) -> List[Price]:
-        """Build optimal price path with minimal displacement (single reversal).
-        
-        Candidate paths:
-        - A: p_start -> p_min -> p_max -> p_end
-        - B: p_start -> p_max -> p_min -> p_end
-        
-        Choose the one with smaller total displacement.
+    def _build_price_path(self, p_start: Price, p_end: Price, p_min: Price, p_max: Price, 
+                          price_set: Set[Price] = None) -> List[Price]:
+        """构建完整的价格路径（包含lastvolsplit中所有价位）。
+
+        候选路径方向:
+        - A: p_start -> 向下到p_min -> 向上到p_max -> p_end
+        - B: p_start -> 向上到p_max -> 向下到p_min -> p_end
+
+        选择总位移较小的路径方向，并确保路径包含lastvolsplit中的所有价位。
         """
-        # Try both candidate paths
+        # 尝试两条候选路径方向
         path_a = [p_start, p_min, p_max, p_end]
         path_b = [p_start, p_max, p_min, p_end]
-        
-        # Calculate total displacement
+
+        # 计算总位移，选择较小的
         disp_a = sum(abs(path_a[i+1] - path_a[i]) for i in range(len(path_a)-1))
         disp_b = sum(abs(path_b[i+1] - path_b[i]) for i in range(len(path_b)-1))
-        
-        chosen = path_a if disp_a <= disp_b else path_b
-        
-        # Remove consecutive duplicates
-        result = []
-        for p in chosen:
-            if not result or abs(result[-1] - p) > EPSILON:
-                result.append(p)
-        
-        return result if result else [p_start]
+
+        # 选择路径方向
+        if disp_a <= disp_b:
+            # 路径A: start -> min -> max -> end
+            direction_down_first = True
+        else:
+            # 路径B: start -> max -> min -> end
+            direction_down_first = False
+
+        # 如果没有price_set，使用简单路径
+        if not price_set:
+            chosen = path_a if direction_down_first else path_b
+            result = []
+            for p in chosen:
+                if not result or abs(result[-1] - p) > EPSILON:
+                    result.append(p)
+            return result if result else [p_start]
+
+        # 将所有需要访问的价位收集起来
+        all_prices = set(price_set)
+        all_prices.add(p_start)
+        all_prices.add(p_end)
+
+        # 按价格排序
+        sorted_prices = sorted(all_prices)
+
+        # 根据选择的方向构建完整路径
+        result = [p_start]
+
+        if direction_down_first:
+            # 路径: start -> 向下到min -> 向上到max -> end
+            # 第一段: start -> min (向下)
+            prices_below_start = [p for p in sorted_prices if p < p_start - EPSILON]
+            for p in reversed(prices_below_start):  # 从高到低
+                if abs(result[-1] - p) > EPSILON:
+                    result.append(p)
+
+            # 第二段: min -> max (向上，包含所有中间价位)
+            for p in sorted_prices:
+                if p > result[-1] + EPSILON:
+                    result.append(p)
+
+        else:
+            # 路径: start -> 向上到max -> 向下到min -> end
+            # 第一段: start -> max (向上)
+            prices_above_start = [p for p in sorted_prices if p > p_start + EPSILON]
+            for p in prices_above_start:  # 从低到高
+                if abs(result[-1] - p) > EPSILON:
+                    result.append(p)
+
+            # 第二段: max -> min (向下，包含所有中间价位)
+            for p in reversed(sorted_prices):
+                if p < result[-1] - EPSILON:
+                    result.append(p)
+
+        # 确保终点在路径中
+        if abs(result[-1] - p_end) > EPSILON:
+            result.append(p_end)
+
+        # 移除连续重复点
+        final_result = []
+        for p in result:
+            if not final_result or abs(final_result[-1] - p) > EPSILON:
+                final_result.append(round(p, 8))
+
+        return final_result if final_result else [p_start]
     
     def _merge_paths_to_segments(self, bid_path: List[Price], ask_path: List[Price], 
                                   t_a: int, t_b: int) -> List[TapeSegment]:
@@ -307,14 +420,32 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         return segments
     
-    def _add_activation_sets(self, segments: List[TapeSegment]) -> List[TapeSegment]:
-        """Add activation sets to each segment."""
+    def _add_activation_sets(self, segments: List[TapeSegment], 
+                             prev: NormalizedSnapshot = None, 
+                             curr: NormalizedSnapshot = None) -> List[TapeSegment]:
+        """为每个段添加激活集。
+        
+        如果提供了prev和curr快照，则使用考虑AB交集的激活集计算方法。
+        """
         result = []
         for seg in segments:
+            if prev is not None and curr is not None:
+                # 使用考虑AB快照交集的方法
+                activation_bid = self._compute_activation_set_with_snapshots(
+                    seg.bid_price, Side.BUY, prev, curr
+                )
+                activation_ask = self._compute_activation_set_with_snapshots(
+                    seg.ask_price, Side.SELL, prev, curr
+                )
+            else:
+                # 回退到基本方法
+                activation_bid = self._compute_activation_set(seg.bid_price, Side.BUY)
+                activation_ask = self._compute_activation_set(seg.ask_price, Side.SELL)
+            
             new_seg = replace(
                 seg,
-                activation_bid=self._compute_activation_set(seg.bid_price, Side.BUY),
-                activation_ask=self._compute_activation_set(seg.ask_price, Side.SELL),
+                activation_bid=activation_bid,
+                activation_ask=activation_ask,
             )
             result.append(new_seg)
         return result
