@@ -1,197 +1,251 @@
+"""接口定义模块。
+
+本模块定义回测系统中的核心抽象接口：
+- IQueueModel: 队列模型接口
+- IMarketDataFeed: 行情数据源接口
+- ISimulationModel: 仿真模型接口
+- ITradeTapeReconstructor: 成交带重建接口
+- ITapeBuilder: Tape构建器接口
+- IExchangeSimulator: 交易所模拟器接口
+- IStrategy: 策略接口（使用DTO，支持回执处理）
+- IOrderManager: 订单管理器接口
+"""
+
 from abc import ABC, abstractmethod
-from typing import Iterator, List, Optional, Tuple, Any
+from typing import Iterator, List, Optional, Tuple, Any, TYPE_CHECKING
 from .types import Order, NormalizedSnapshot, Price, Qty, Side, TapeSegment, OrderReceipt
 from .events import SimulationEvent
 
-class IQueueModel(ABC):
-    @abstractmethod
-    def init_order(self, order: Order, level_qty: Qty) -> None: pass
-    @abstractmethod
-    def advance_on_trade(self, order: Order, trade_px: Price, trade_qty: Qty, before: Qty, after: Qty) -> Qty: pass
+if TYPE_CHECKING:
+    from .dto import SnapshotDTO, ReadOnlyOMSView
 
-    # 可选：用于处理“无成交的盘口变化”（主要承载撤单/新增导致的排队位置变化）
-    # 若实现未覆盖该方法，则默认不更新（保持与旧实现兼容）。
+
+class IQueueModel(ABC):
+    """队列模型接口。"""
+
+    @abstractmethod
+    def init_order(self, order: Order, level_qty: Qty) -> None:
+        """初始化订单在队列中的位置。"""
+        pass
+
+    @abstractmethod
+    def advance_on_trade(self, order: Order, trade_px: Price, trade_qty: Qty, before: Qty, after: Qty) -> Qty:
+        """成交时推进队列位置。"""
+        pass
+
     def advance_on_quote(self, order: Order, before: Qty, after: Qty) -> None:
+        """盘口变化时推进队列位置（可选实现）。
+
+        用于处理无成交的盘口变化（主要承载撤单/新增导致的排队位置变化）。
+        若实现未覆盖该方法，则默认不更新（保持与旧实现兼容）。
+        """
         return
 
+
 class IMarketDataFeed(ABC):
+    """行情数据源接口。"""
+
     @abstractmethod
-    def next(self) -> Optional[NormalizedSnapshot]: pass
+    def next(self) -> Optional[NormalizedSnapshot]:
+        """获取下一个快照。"""
+        pass
+
     @abstractmethod
-    def reset(self): pass # 支持多次回测重置
+    def reset(self):
+        """重置数据源（支持多次回测）。"""
+        pass
+
 
 class ISimulationModel(ABC):
-    """仿真模型接口：支持随机种子初始化"""
+    """仿真模型接口：支持随机种子初始化。"""
+
     @abstractmethod
-    def generate_events(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot, context: Any = None) -> Iterator[SimulationEvent]: pass
+    def generate_events(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot, context: Any = None) -> Iterator[SimulationEvent]:
+        """生成仿真事件。"""
+        pass
+
 
 class ITradeTapeReconstructor(ABC):
-    @abstractmethod
-    def reconstruct(self, prev: Optional[NormalizedSnapshot], curr: NormalizedSnapshot) -> List[Tuple[Price, Qty]]: pass
+    """成交带重建接口。"""
 
-class IStrategy(ABC):
     @abstractmethod
-    def on_market_tick(self, book: Any, oms: Any) -> List[Order]: pass
+    def reconstruct(self, prev: Optional[NormalizedSnapshot], curr: NormalizedSnapshot) -> List[Tuple[Price, Qty]]:
+        """重建成交带。"""
+        pass
 
-# ============================================================================
-# New unified architecture interfaces
-# ============================================================================
 
 class ITapeBuilder(ABC):
-    """Build event tape from snapshot pairs (pure function, stateless)"""
+    """Tape构建器接口（纯函数，无状态）。"""
+
     @abstractmethod
     def build(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> List[TapeSegment]:
-        """Build tape segments from A/B snapshots.
-        
+        """从A/B快照构建Tape段。
+
         Args:
-            prev: Previous snapshot (A)
-            curr: Current snapshot (B)
-            
+            prev: 前一个快照（A）
+            curr: 当前快照（B）
+
         Returns:
-            List of TapeSegments ordered by time
+            按时间排序的TapeSegment列表
         """
         pass
+
 
 class IExchangeSimulator(ABC):
-    """Exchange simulator with FIFO queue management"""
-    
+    """交易所模拟器接口（FIFO队列管理）。"""
+
     @abstractmethod
     def reset(self) -> None:
-        """Reset simulator state for new interval"""
+        """重置模拟器状态（用于新区间）。"""
         pass
-    
+
     @abstractmethod
     def on_order_arrival(self, order: Order, arrival_time: int, market_qty: Qty) -> Optional[OrderReceipt]:
-        """Handle order arrival at exchange.
-        
+        """处理订单到达交易所。
+
         Args:
-            order: The arriving order
-            arrival_time: Time of arrival at exchange
-            market_qty: Current market queue depth at order price
-            
+            order: 到达的订单
+            arrival_time: 到达时间
+            market_qty: 订单价位的当前市场队列深度
+
         Returns:
-            Optional receipt for immediate rejection (None if accepted)
+            立即拒绝的回执（None表示已接受）
         """
         pass
-    
+
     @abstractmethod
     def on_cancel_arrival(self, order_id: str, arrival_time: int) -> OrderReceipt:
-        """Handle cancel request arrival at exchange.
-        
+        """处理撤单请求到达。
+
         Args:
-            order_id: ID of order to cancel
-            arrival_time: Time of cancel arrival
-            
+            order_id: 要撤销的订单ID
+            arrival_time: 撤单到达时间
+
         Returns:
-            Receipt for the cancel operation
+            撤单操作的回执
         """
         pass
-    
+
     @abstractmethod
     def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
-        """Advance simulation from t_from to t_to using tape segment.
-        
+        """使用tape段推进仿真从t_from到t_to。
+
         Args:
-            t_from: Start time of slice
-            t_to: End time of slice
-            segment: Tape segment containing M and C for this interval
-            
+            t_from: 切片开始时间
+            t_to: 切片结束时间
+            segment: 包含该区间M和C的Tape段
+
         Returns:
-            List of receipts for fills during this period
+            该时段内的成交回执列表
         """
         pass
-    
+
     @abstractmethod
     def align_at_boundary(self, snapshot: NormalizedSnapshot) -> None:
-        """Align internal state at interval boundary.
-        
+        """在区间边界对齐内部状态。
+
         Args:
-            snapshot: The snapshot at the boundary to align to
+            snapshot: 边界处的快照，用于对齐
         """
         pass
-    
+
     @abstractmethod
     def get_queue_depth(self, side: Side, price: Price) -> Qty:
-        """Get current queue depth at a price level.
-        
+        """获取某价位的当前队列深度。
+
         Args:
-            side: BUY or SELL
-            price: Price level
-            
+            side: 买卖方向
+            price: 价格档位
+
         Returns:
-            Queue depth at this level
+            该档位的队列深度
         """
         pass
 
-class IStrategyNew(ABC):
-    """New strategy interface with mandatory receipt handling"""
-    
+
+class IStrategy(ABC):
+    """策略接口（使用DTO，必须处理回执）。
+
+    所有模块之间的通信都通过DTO进行：
+    - 使用SnapshotDTO代替NormalizedSnapshot，确保策略无法修改原始数据
+    - 使用ReadOnlyOMSView提供只读的订单查询
+
+    设计理念：
+    - 策略的输入是只读的（SnapshotDTO, ReadOnlyOMSView）
+    - 策略的输出是Order列表，由EventLoop负责提交到OMS
+    - 策略不能直接调用OMS的submit/on_receipt等修改方法
+    """
+
     @abstractmethod
-    def on_snapshot(self, snapshot: NormalizedSnapshot, oms: 'IOrderManager') -> List[Order]:
-        """Called when a new snapshot arrives.
-        
+    def on_snapshot(self, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
+        """快照到达时回调（使用DTO）。
+
         Args:
-            snapshot: The new market snapshot
-            oms: Order manager for querying order state
-            
+            snapshot: 行情快照DTO（不可变）
+            oms_view: OMS只读视图（只能查询，不能操作）
+
         Returns:
-            List of new orders to submit
+            要提交的新订单列表
         """
         pass
-    
+
     @abstractmethod
-    def on_receipt(self, receipt: OrderReceipt, snapshot: NormalizedSnapshot, oms: 'IOrderManager') -> List[Order]:
-        """Called when an order receipt is received.
-        
+    def on_receipt(self, receipt: OrderReceipt, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
+        """订单回执到达时回调（使用DTO）。
+
         Args:
-            receipt: The order receipt (fill, cancel, etc.)
-            snapshot: Current market snapshot
-            oms: Order manager for querying order state
-            
+            receipt: 订单回执（成交、撤单等）
+            snapshot: 当前行情快照DTO（不可变）
+            oms_view: OMS只读视图（只能查询，不能操作）
+
         Returns:
-            List of new orders to submit
+            要提交的新订单列表
         """
         pass
+
 
 class IOrderManager(ABC):
-    """Order manager interface for the new architecture"""
-    
-    @abstractmethod
-    def submit(self, order: Order, submit_time: int) -> None:
-        """Submit a new order.
-        
-        Args:
-            order: The order to submit
-            submit_time: Time of submission
-        """
-        pass
-    
-    @abstractmethod
-    def on_receipt(self, receipt: OrderReceipt) -> None:
-        """Process an order receipt.
-        
-        Args:
-            receipt: The order receipt to process
-        """
-        pass
-    
+    """订单管理器接口。
+
+    提供订单管理功能，EventLoop使用此接口来管理订单。
+    """
+
     @abstractmethod
     def get_active_orders(self) -> List[Order]:
-        """Get all currently active orders.
-        
+        """获取所有活跃订单。
+
         Returns:
-            List of active orders
+            活跃订单列表
         """
         pass
-    
+
     @abstractmethod
     def get_order(self, order_id: str) -> Optional[Order]:
-        """Get an order by ID.
-        
+        """根据ID获取订单。
+
         Args:
-            order_id: The order ID
-            
+            order_id: 订单ID
+
         Returns:
-            The order if found, None otherwise
+            订单（如果存在），否则返回None
+        """
+        pass
+
+    @abstractmethod
+    def submit(self, order: Order, submit_time: int) -> None:
+        """提交新订单。
+
+        Args:
+            order: 要提交的订单
+            submit_time: 提交时间
+        """
+        pass
+
+    @abstractmethod
+    def on_receipt(self, receipt: OrderReceipt) -> None:
+        """处理订单回执。
+
+        Args:
+            receipt: 要处理的订单回执
         """
         pass

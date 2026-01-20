@@ -1,10 +1,19 @@
-"""EventLoop-based runner for unified backtest architecture with two-timeline support.
+"""事件循环模块 - 统一回测架构的核心运行器。
 
-This module implements the main event loop that coordinates:
-- Tape building
-- Exchange simulation
-- Strategy callbacks
-- Order/receipt routing with two-timeline mapping (exchtime <-> recvtime)
+本模块实现主事件循环，协调以下组件：
+- Tape构建
+- 交易所仿真
+- 策略回调
+- 订单/回执路由（支持双时间线映射：exchtime <-> recvtime）
+
+双时间线支持：
+- exchtime: 交易所时间（事件实际发生的时间）
+- recvtime: 接收时间（策略感知到事件的时间）
+- 线性映射: recvtime = a * exchtime + b
+
+延迟处理：
+- delay_out: 策略 -> 交易所的延迟（订单发送延迟）
+- delay_in: 交易所 -> 策略的延迟（回执接收延迟）
 """
 
 import heapq
@@ -12,96 +21,112 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum, auto
 
-from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategyNew, IOrderManager
+from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
 from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment
 
 
 class EventType(Enum):
-    """Event types for the event loop."""
-    SEGMENT_END = auto()
-    ORDER_ARRIVAL = auto()
-    CANCEL_ARRIVAL = auto()
-    RECEIPT_TO_STRATEGY = auto()
-    INTERVAL_END = auto()
+    """事件类型枚举。"""
+    SEGMENT_END = auto()          # 段结束
+    ORDER_ARRIVAL = auto()        # 订单到达交易所
+    CANCEL_ARRIVAL = auto()       # 撤单到达交易所
+    RECEIPT_TO_STRATEGY = auto()  # 回执到达策略
+    INTERVAL_END = auto()         # 区间结束
 
 
 @dataclass
 class Event:
-    """An event in the event loop."""
-    time: int  # Time in the relevant timeline (exchtime for exchange, recvtime for strategy)
+    """事件循环中的事件。
+
+    Attributes:
+        time: 事件时间（交易所事件用exchtime，策略事件用recvtime）
+        event_type: 事件类型
+        data: 事件数据
+    """
+    time: int
     event_type: EventType
     data: Any
-    
+
     def __lt__(self, other):
-        """Compare events by time for heapq."""
+        """按时间比较事件（用于heapq）。"""
         return self.time < other.time
 
 
 @dataclass
 class TimelineConfig:
-    """Configuration for two-timeline mapping.
-    
-    recvtime = a * exchtime + b
-    exchtime = (recvtime - b) / a
-    
-    Requires: a > 0 (strictly monotonic)
+    """双时间线配置。
+
+    映射公式:
+    - recvtime = a * exchtime + b
+    - exchtime = (recvtime - b) / a
+
+    要求: a > 0（严格单调）
+
+    Attributes:
+        a: 缩放因子（默认1.0）
+        b: 偏移量（默认0.0）
     """
-    a: float = 1.0  # Scale factor
-    b: float = 0.0  # Offset
-    
+    a: float = 1.0
+    b: float = 0.0
+
     def exchtime_to_recvtime(self, exchtime: int) -> int:
-        """Convert exchange time to strategy receive time."""
+        """将交易所时间转换为接收时间。"""
         return int(self.a * exchtime + self.b)
-    
+
     def recvtime_to_exchtime(self, recvtime: int) -> int:
-        """Convert strategy receive time to exchange time."""
+        """将接收时间转换为交易所时间。"""
         if self.a <= 0:
-            raise ValueError("Timeline scale factor 'a' must be positive")
+            raise ValueError("时间线缩放因子'a'必须为正数")
         return int((recvtime - self.b) / self.a)
 
 
 @dataclass
 class RunnerConfig:
-    """Configuration for the event loop runner."""
-    delay_out: int = 0  # Strategy -> Exchange delay (in recvtime units)
-    delay_in: int = 0   # Exchange -> Strategy delay (in recvtime units)
-    timeline: TimelineConfig = None  # Two-timeline mapping
-    
+    """事件循环运行器配置。
+
+    Attributes:
+        delay_out: 策略 -> 交易所的延迟（recvtime单位）
+        delay_in: 交易所 -> 策略的延迟（recvtime单位）
+        timeline: 双时间线映射配置
+    """
+    delay_out: int = 0
+    delay_in: int = 0
+    timeline: TimelineConfig = None
+
     def __post_init__(self):
         if self.timeline is None:
             self.timeline = TimelineConfig()
 
 
 class EventLoopRunner:
-    """Event loop runner for unified backtest with two-timeline support.
-    
-    Coordinates tape building, exchange simulation, and strategy execution
-    in a single event-driven loop.
-    
-    Key features:
-    - Two-timeline support: exchtime (exchange) and recvtime (strategy)
-    - Delay handling: delay_out (strategy->exchange), delay_in (exchange->strategy)
-    - Linear time mapping: recvtime = a * exchtime + b
+    """事件循环运行器（支持双时间线）。
+
+    协调Tape构建、交易所仿真和策略执行的事件驱动循环。
+
+    主要功能：
+    - 双时间线支持：exchtime（交易所）和recvtime（策略）
+    - 延迟处理：delay_out（策略->交易所），delay_in（交易所->策略）
+    - 线性时间映射：recvtime = a * exchtime + b
     """
-    
+
     def __init__(
         self,
         feed: IMarketDataFeed,
         tape_builder: ITapeBuilder,
         exchange: IExchangeSimulator,
-        strategy: IStrategyNew,
+        strategy: IStrategy,
         oms: IOrderManager,
         config: RunnerConfig = None,
     ):
-        """Initialize the runner.
-        
+        """初始化运行器。
+
         Args:
-            feed: Market data feed
-            tape_builder: Tape builder
-            exchange: Exchange simulator
-            strategy: Strategy
-            oms: Order manager
-            config: Runner configuration
+            feed: 行情数据源
+            tape_builder: Tape构建器
+            exchange: 交易所模拟器
+            strategy: 策略
+            oms: 订单管理器
+            config: 运行器配置
         """
         self.feed = feed
         self.tape_builder = tape_builder
@@ -109,91 +134,91 @@ class EventLoopRunner:
         self.strategy = strategy
         self.oms = oms
         self.config = config or RunnerConfig()
-        
-        # Validate timeline config
+
+        # 验证时间线配置
         if self.config.timeline.a <= 0:
-            raise ValueError("Timeline scale factor 'a' must be positive")
-        
-        # Current state
+            raise ValueError("时间线缩放因子'a'必须为正数")
+
+        # 当前状态
         self.current_exchtime = 0
         self.current_recvtime = 0
         self.current_snapshot: Optional[NormalizedSnapshot] = None
-        
-        # Diagnostics
+
+        # 诊断信息
         self.diagnostics: Dict[str, Any] = {
             "intervals_processed": 0,
             "orders_submitted": 0,
             "orders_filled": 0,
             "receipts_generated": 0,
         }
-    
+
     def run(self) -> Dict[str, Any]:
-        """Run the backtest.
-        
+        """运行回测。
+
         Returns:
-            Dictionary with backtest results
+            包含回测结果的字典
         """
         self.feed.reset()
         prev = self.feed.next()
-        
+
         if prev is None:
             return {"error": "No data"}
-        
+
         self.current_snapshot = prev
         self.current_exchtime = int(prev.ts_exch)
         self.current_recvtime = self.config.timeline.exchtime_to_recvtime(self.current_exchtime)
-        
-        # Initial snapshot callback
+
+        # 初始快照回调
         orders = self.strategy.on_snapshot(prev, self.oms)
         for order in orders:
             self.oms.submit(order, self.current_recvtime)
             self.diagnostics["orders_submitted"] += 1
-        
+
         interval_count = 0
-        
+
         while True:
             curr = self.feed.next()
             if curr is None:
                 break
-            
-            # Run one interval
+
+            # 运行一个区间
             self._run_interval(prev, curr)
-            
+
             prev = curr
             self.current_snapshot = curr
             interval_count += 1
-        
+
         self.diagnostics["intervals_processed"] = interval_count
-        
+
         return {
             "intervals": interval_count,
             "final_exchtime": self.current_exchtime,
             "final_recvtime": self.current_recvtime,
             "diagnostics": self.diagnostics,
         }
-    
+
     def _run_interval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
-        """Run event loop for one interval [prev, curr].
-        
+        """运行一个区间[prev, curr]的事件循环。
+
         Args:
-            prev: Previous snapshot (at T_A)
-            curr: Current snapshot (at T_B)
+            prev: 前一个快照（在T_A时刻）
+            curr: 当前快照（在T_B时刻）
         """
         t_a = int(prev.ts_exch)
         t_b = int(curr.ts_exch)
-        
+
         if t_b <= t_a:
             return
-        
-        # Convert to recvtime
+
+        # 转换为接收时间
         recv_a = self.config.timeline.exchtime_to_recvtime(t_a)
         recv_b = self.config.timeline.exchtime_to_recvtime(t_b)
-        
-        # Build tape for this interval
+
+        # 构建该区间的Tape
         tape = self.tape_builder.build(prev, curr)
-        
+
         if not tape:
-            # No events, just advance to curr
+            # 无事件，直接推进到curr
             self.current_exchtime = t_b
             self.current_recvtime = recv_b
             self.current_snapshot = curr
@@ -202,164 +227,164 @@ class EventLoopRunner:
                 self.oms.submit(order, recv_b)
                 self.diagnostics["orders_submitted"] += 1
             return
-        
-        # Reset exchange for new interval and set tape
+
+        # 为新区间重置交易所并设置Tape
         self.exchange.reset()
-        
-        # Set tape on exchange if it supports it
+
+        # 如果交易所支持set_tape方法则调用
         if hasattr(self.exchange, 'set_tape'):
             self.exchange.set_tape(tape, t_a, t_b)
-        
-        # Initialize event queue (uses exchtime)
+
+        # 初始化事件队列（使用exchtime）
         event_queue: List[Event] = []
-        
-        # Add segment end events
+
+        # 添加段结束事件
         for seg in tape:
             heapq.heappush(event_queue, Event(
                 time=seg.t_end,
                 event_type=EventType.SEGMENT_END,
                 data=seg,
             ))
-        
-        # Add interval end event
+
+        # 添加区间结束事件
         heapq.heappush(event_queue, Event(
             time=t_b,
             event_type=EventType.INTERVAL_END,
             data=curr,
         ))
-        
-        # Get pending orders from OMS and schedule arrivals
+
+        # 获取OMS中的待处理订单并调度到达事件
         pending_orders = self.oms.get_active_orders()
-        
+
         for order in pending_orders:
             if order.create_time >= recv_a:
-                # Convert strategy submit time (recvtime) to exchange arrival time
+                # 将策略提交时间（recvtime）转换为交易所到达时间
                 recv_arr = order.create_time + self.config.delay_out
                 exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
-                
+
                 if exchtime_arr < t_b:
                     heapq.heappush(event_queue, Event(
                         time=exchtime_arr,
                         event_type=EventType.ORDER_ARRIVAL,
                         data=order,
                     ))
-        
-        # Event loop
+
+        # 事件循环
         current_seg_idx = 0
         last_exchtime = t_a
-        
+
         while event_queue:
             event = heapq.heappop(event_queue)
-            
-            # Advance exchange to event time
+
+            # 将交易所推进到事件时间
             if event.time > last_exchtime and current_seg_idx < len(tape):
-                # Process segments up to event time
+                # 处理到事件时间为止的所有段
                 while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= event.time:
                     seg = tape[current_seg_idx]
                     receipts = self.exchange.advance(last_exchtime, seg.t_end, seg)
-                    
-                    # Schedule receipt delivery to strategy
+
+                    # 调度回执发送到策略
                     for receipt in receipts:
                         recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
                         recv_recv = recv_fill + self.config.delay_in
-                        
-                        # Set recv_time on receipt
+
+                        # 设置回执的接收时间
                         receipt.recv_time = recv_recv
-                        
+
                         if recv_recv <= recv_b:
-                            # Convert back to exchtime for event queue
+                            # 转换回exchtime用于事件队列
                             exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_recv)
                             heapq.heappush(event_queue, Event(
                                 time=exchtime_recv,
                                 event_type=EventType.RECEIPT_TO_STRATEGY,
                                 data=receipt,
                             ))
-                        
+
                         self.diagnostics["receipts_generated"] += 1
-                    
+
                     last_exchtime = seg.t_end
                     current_seg_idx += 1
-            
-            # Process event
+
+            # 处理事件
             self.current_exchtime = event.time
             self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
-            
+
             if event.event_type == EventType.ORDER_ARRIVAL:
                 order = event.data
                 order.arrival_time = event.time
-                
-                # Get market qty at order price from current snapshot
+
+                # 从当前快照获取订单价位的市场队列深度
                 market_qty = self._get_market_qty_from_snapshot(order, self.current_snapshot)
                 receipt = self.exchange.on_order_arrival(order, event.time, market_qty)
-                
+
                 if receipt:
-                    # Immediate rejection or IOC result
+                    # 立即拒绝或IOC结果
                     recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
                     recv_recv = recv_fill + self.config.delay_in
                     receipt.recv_time = recv_recv
-                    
+
                     self.oms.on_receipt(receipt)
                     self.diagnostics["receipts_generated"] += 1
-                    
+
                     if receipt.receipt_type in ["FILL", "PARTIAL"]:
                         self.diagnostics["orders_filled"] += 1
-                    
+
             elif event.event_type == EventType.RECEIPT_TO_STRATEGY:
                 receipt = event.data
                 self.oms.on_receipt(receipt)
-                
+
                 if receipt.receipt_type in ["FILL", "PARTIAL"]:
                     self.diagnostics["orders_filled"] += 1
-                
-                # Strategy callback
+
+                # 策略回调
                 orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
                 for order in orders:
                     self.oms.submit(order, self.current_recvtime)
                     self.diagnostics["orders_submitted"] += 1
-                    
-                    # Schedule arrival
+
+                    # 调度订单到达
                     recv_arr = self.current_recvtime + self.config.delay_out
                     exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
-                    
+
                     if exchtime_arr < t_b:
                         heapq.heappush(event_queue, Event(
                             time=exchtime_arr,
                             event_type=EventType.ORDER_ARRIVAL,
                             data=order,
                         ))
-                        
+
             elif event.event_type == EventType.INTERVAL_END:
                 snapshot = event.data
-                
-                # Align exchange at boundary
+
+                # 在边界对齐交易所状态
                 self.exchange.align_at_boundary(snapshot)
-                
-                # Strategy callback
+
+                # 策略回调
                 self.current_snapshot = snapshot
                 self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
-                
+
                 orders = self.strategy.on_snapshot(snapshot, self.oms)
                 for order in orders:
                     self.oms.submit(order, self.current_recvtime)
                     self.diagnostics["orders_submitted"] += 1
-    
+
     def _get_market_qty_from_snapshot(self, order: Order, snapshot: NormalizedSnapshot) -> int:
-        """Get market queue depth at order price from snapshot.
-        
+        """从快照获取订单价位的市场队列深度。
+
         Args:
-            order: The order
-            snapshot: Current market snapshot
-            
+            order: 订单
+            snapshot: 当前市场快照
+
         Returns:
-            Market queue depth at order price
+            订单价位的市场队列深度
         """
         if snapshot is None:
             return 0
-        
+
         levels = snapshot.bids if order.side.value == "BUY" else snapshot.asks
-        
+
         for level in levels:
             if abs(float(level.price) - float(order.price)) < 1e-12:
                 return int(level.qty)
-        
+
         return 0

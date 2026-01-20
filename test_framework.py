@@ -1,11 +1,12 @@
-"""Comprehensive test suite for the unified EventLoop framework.
+"""统一EventLoop框架的综合测试套件。
 
-Tests validate:
-- Tape builder: segment generation, volume allocation, conservation equations
-- Exchange simulator: coordinate-axis model, fill time calculation
-- Order manager: order lifecycle, receipt processing
-- Event loop: two-timeline support, delay handling
-- Integration: full backtest flow
+测试验证内容：
+- Tape构建器：段生成、成交量分配、守恒方程
+- 交易所模拟器：坐标轴模型、成交时间计算
+- 订单管理器：订单生命周期、回执处理
+- 事件循环：双时间线支持、延迟处理
+- 集成测试：完整回测流程
+- DTO测试：数据传输对象和只读视图
 """
 
 from quant_framework.core.types import (
@@ -14,14 +15,14 @@ from quant_framework.core.types import (
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.trading.oms import OrderManager, Portfolio
-from quant_framework.trading.strategy import SimpleNewStrategy
+from quant_framework.trading.strategy import SimpleStrategy
 from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
 
 
-def create_test_snapshot(ts: int, bid: float, ask: float, 
+def create_test_snapshot(ts: int, bid: float, ask: float,
                          bid_qty: int = 100, ask_qty: int = 100,
                          last_vol_split=None) -> NormalizedSnapshot:
-    """Create a test snapshot."""
+    """创建测试快照。"""
     if last_vol_split is None:
         last_vol_split = [(bid, 10), (ask, 10)]
     return NormalizedSnapshot(
@@ -34,7 +35,7 @@ def create_test_snapshot(ts: int, bid: float, ask: float,
 
 def create_multi_level_snapshot(ts: int, bids: list, asks: list,
                                  last_vol_split=None) -> NormalizedSnapshot:
-    """Create a snapshot with multiple price levels."""
+    """创建多档位快照。"""
     bid_levels = [Level(p, q) for p, q in bids]
     ask_levels = [Level(p, q) for p, q in asks]
     return NormalizedSnapshot(
@@ -46,7 +47,7 @@ def create_multi_level_snapshot(ts: int, bids: list, asks: list,
 
 
 def test_tape_builder_basic():
-    """Test basic tape builder functionality."""
+    """测试Tape构建器基本功能。"""
     print("\n--- Test 1: Tape Builder Basic ---")
     
     config = TapeConfig()
@@ -325,18 +326,22 @@ def test_oms():
 
 
 def test_strategy():
-    """Test strategy."""
+    """测试策略（使用DTO）。"""
     print("\n--- Test 9: Strategy ---")
     
-    strategy = SimpleNewStrategy(name="TestStrategy")
+    from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
+    
+    strategy = SimpleStrategy(name="TestStrategy")
     oms = OrderManager()
+    oms_view = ReadOnlyOMSView(oms)
     
     snapshot = create_test_snapshot(1000, 100.0, 101.0)
+    snapshot_dto = to_snapshot_dto(snapshot)
     
     # Call on_snapshot multiple times (strategy places order every 10 snapshots)
     all_orders = []
     for i in range(15):
-        orders = strategy.on_snapshot(snapshot, oms)
+        orders = strategy.on_snapshot(snapshot_dto, oms_view)
         all_orders.extend(orders)
     
     print(f"Strategy generated {len(all_orders)} orders over 15 snapshots")
@@ -375,16 +380,20 @@ def test_integration_basic():
     """Test basic integration of components."""
     print("\n--- Test 11: Integration Basic ---")
     
+    from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
+    
     # Create components
     config = TapeConfig()
     builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
     exchange = FIFOExchangeSimulator()
     oms = OrderManager()
-    strategy = SimpleNewStrategy(name="TestStrategy")
+    oms_view = ReadOnlyOMSView(oms)
+    strategy = SimpleStrategy(name="TestStrategy")
     
     # Create snapshots
     prev = create_test_snapshot(1000, 100.0, 101.0)
     curr = create_test_snapshot(2000, 100.5, 101.5)
+    prev_dto = to_snapshot_dto(prev)
     
     # Build tape
     tape = builder.build(prev, curr)
@@ -393,8 +402,8 @@ def test_integration_basic():
     # Set tape on exchange
     exchange.set_tape(tape, 1000, 2000)
     
-    # Submit an order via strategy
-    orders = strategy.on_snapshot(prev, oms)
+    # Submit an order via strategy (使用DTO)
+    orders = strategy.on_snapshot(prev_dto, oms_view)
     for order in orders:
         oms.submit(order, 1000)
     
@@ -567,6 +576,136 @@ def test_fill_priority():
     print("✓ Fill priority test passed")
 
 
+def test_dto_snapshot():
+    """测试DTO快照转换功能。"""
+    print("\n--- Test 14: DTO Snapshot ---")
+    
+    from quant_framework.core.dto import to_snapshot_dto, SnapshotDTO, LevelDTO
+    
+    # 创建测试快照
+    snapshot = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60)
+    
+    # 转换为DTO
+    dto = to_snapshot_dto(snapshot)
+    
+    print(f"DTO类型: {type(dto).__name__}")
+    print(f"DTO是否为frozen: {dto.__class__.__dataclass_fields__['ts_exch'].default is None}")
+    
+    # 验证数据正确转换
+    assert dto.ts_exch == 1000, f"时间戳应为1000，实际为{dto.ts_exch}"
+    assert len(dto.bids) == 1, f"买盘档位应为1，实际为{len(dto.bids)}"
+    assert len(dto.asks) == 1, f"卖盘档位应为1，实际为{len(dto.asks)}"
+    
+    # 验证便捷属性
+    assert dto.best_bid == 100.0, f"最优买价应为100.0，实际为{dto.best_bid}"
+    assert dto.best_ask == 101.0, f"最优卖价应为101.0，实际为{dto.best_ask}"
+    assert dto.mid_price == 100.5, f"中间价应为100.5，实际为{dto.mid_price}"
+    assert dto.spread == 1.0, f"价差应为1.0，实际为{dto.spread}"
+    
+    # 验证DTO不可变（尝试修改应抛出异常）
+    try:
+        dto.ts_exch = 2000
+        assert False, "DTO应该是不可变的"
+    except Exception:
+        pass  # 预期的行为
+    
+    print("✓ DTO snapshot test passed")
+
+
+def test_readonly_oms_view():
+    """测试只读OMS视图功能。"""
+    print("\n--- Test 15: ReadOnly OMS View ---")
+    
+    from quant_framework.core.dto import ReadOnlyOMSView, OrderInfoDTO, PortfolioDTO
+    
+    # 创建OMS和订单
+    portfolio = Portfolio(cash=10000.0)
+    oms = OrderManager(portfolio=portfolio)
+    
+    order = Order(
+        order_id="test-readonly-1",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+    )
+    oms.submit(order, 1000)
+    
+    # 创建只读视图
+    view = ReadOnlyOMSView(oms)
+    
+    # 测试查询活跃订单
+    active_orders = view.get_active_orders()
+    print(f"活跃订单数量: {len(active_orders)}")
+    assert len(active_orders) == 1, f"应有1个活跃订单，实际为{len(active_orders)}"
+    
+    # 验证返回的是OrderInfoDTO而不是Order
+    assert isinstance(active_orders[0], OrderInfoDTO), "应返回OrderInfoDTO类型"
+    
+    # 测试查询单个订单
+    order_dto = view.get_order("test-readonly-1")
+    assert order_dto is not None, "订单应存在"
+    assert order_dto.order_id == "test-readonly-1", f"订单ID应为test-readonly-1"
+    assert order_dto.price == 100.0, f"价格应为100.0"
+    
+    # 验证OrderInfoDTO是不可变的
+    try:
+        order_dto.price = 200.0
+        assert False, "OrderInfoDTO应该是不可变的"
+    except Exception:
+        pass  # 预期的行为
+    
+    # 测试查询投资组合
+    portfolio_dto = view.get_portfolio()
+    assert isinstance(portfolio_dto, PortfolioDTO), "应返回PortfolioDTO类型"
+    assert portfolio_dto.cash == 10000.0, f"现金应为10000.0，实际为{portfolio_dto.cash}"
+    
+    # 验证PortfolioDTO是不可变的
+    try:
+        portfolio_dto.cash = 20000.0
+        assert False, "PortfolioDTO应该是不可变的"
+    except Exception:
+        pass  # 预期的行为
+    
+    # 验证只读视图没有修改方法
+    assert not hasattr(view, 'submit'), "只读视图不应有submit方法"
+    assert not hasattr(view, 'on_receipt'), "只读视图不应有on_receipt方法"
+    
+    print("✓ ReadOnly OMS view test passed")
+
+
+def test_dto_strategy():
+    """测试使用DTO的策略。"""
+    print("\n--- Test 16: DTO Strategy ---")
+    
+    from quant_framework.trading.strategy import SimpleStrategy
+    from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
+    
+    # 创建策略和OMS
+    strategy = SimpleStrategy(name="TestDTOStrategy")
+    oms = OrderManager()
+    view = ReadOnlyOMSView(oms)
+    
+    # 创建快照并转换为DTO
+    snapshot = create_test_snapshot(1000, 100.0, 101.0)
+    snapshot_dto = to_snapshot_dto(snapshot)
+    
+    # 调用策略（每10个快照下一单）
+    all_orders = []
+    for i in range(15):
+        orders = strategy.on_snapshot(snapshot_dto, view)
+        all_orders.extend(orders)
+    
+    print(f"策略在15个快照中生成了{len(all_orders)}个订单")
+    assert len(all_orders) == 1, f"策略应生成1个订单，实际为{len(all_orders)}"
+    
+    # 验证订单正确
+    order = all_orders[0]
+    assert order.side == Side.BUY, f"订单方向应为BUY"
+    assert order.price == 100.0, f"订单价格应为100.0（最优买价）"
+    
+    print("✓ DTO strategy test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -587,6 +726,9 @@ def run_all_tests():
         test_integration_basic,
         test_integration_with_delays,
         test_fill_priority,
+        test_dto_snapshot,
+        test_readonly_oms_view,
+        test_dto_strategy,
     ]
     
     passed = 0
