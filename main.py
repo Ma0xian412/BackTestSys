@@ -1,98 +1,120 @@
-from quant_framework.runner.system import UnifiedRunner
+"""Main entry point for the unified EventLoop-based backtest framework.
+
+This demonstrates the new architecture with:
+- EventLoopRunner for coordinating all components
+- UnifiedTapeBuilder for constructing event tapes
+- FIFOExchangeSimulator for exchange matching
+- SimpleNewStrategy for strategy logic
+"""
+
 from quant_framework.core.data_loader import PickleMarketDataFeed
-from quant_framework.market.tape import PreCalculatedTapeReconstructor
-from quant_framework.simulation.models.simple import SimpleSnapshotModel
-from quant_framework.simulation.models.unified_bridge import UnifiedBridgeModel
-from quant_framework.simulation.models.unified_tape_model import (
-    UnifiedTapeModel,
-    UnifiedTapeConfig,
-)
-from quant_framework.execution.queue_models import ProbabilisticQueueModel
-from quant_framework.trading.strategy import LadderTestStrategy
+from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+from quant_framework.exchange.simulator import FIFOExchangeSimulator
+from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig
+from quant_framework.trading.strategy import SimpleNewStrategy
+from quant_framework.trading.oms import OrderManager, Portfolio
 
-# --- 1. 定义工厂函数 (配置层) ---
 
+# Configuration
 DATA_PATH = "data/sample.pkl"
 
+
 def create_feed():
+    """Create market data feed."""
     return PickleMarketDataFeed(DATA_PATH)
 
-def create_simple_sim(seed: int):
-    # 简单模型，seed 其实没用，但接口统一
-    tape = PreCalculatedTapeReconstructor()
-    return SimpleSnapshotModel(tape, seed)
 
-def create_unified_sim(seed: int):
-    # 复杂模型，seed 影响随机路径
-    # tick_size: 可选的最小变动单位（建议在单合约/单tick配置的回测里显式传入，避免模型用端点推断误判）
-    # 例如：return UnifiedBridgeModel(seed=seed, tick_size=0.01)
-    return UnifiedBridgeModel(seed=seed)
-
-def create_unified_tape_sim(seed: int):
-    """使用统一 Tape 框架的仿真模型。
-    
-    该模型基于 Prev/Next 快照 + lastvolsplit 构建事件带 (event tape),
-    实现市场一致性 (总量守恒) 与无冲击假设 (订单不影响真实行情)。
-    
-    配置参数：
-    - ghost_rule: lastvolsplit 到单侧映射规则 ("symmetric", "proportion", "single_bid", "single_ask")
-    - epsilon: 段时长最小权重
-    - cancel_front_ratio: 撤单推进前方队列的比例 (0=悲观, 1=乐观, 默认0.5)
-    - crossing_order_policy: 穿价单处理策略 ("reject", "adjust", "passive")
-    """
-    config = UnifiedTapeConfig(
-        ghost_rule="symmetric",      # 两侧对称分配 lastvolsplit
-        epsilon=1.0,                 # 段时长保底权重
-        segment_iterations=2,        # 两轮迭代
-        cancel_front_ratio=0.5,      # 撤单中性假设
-        crossing_order_policy="passive",  # 穿价单按被动处理
+def create_tape_builder():
+    """Create tape builder with configuration."""
+    config = TapeConfig(
+        ghost_rule="symmetric",      # Two-sided allocation of lastvolsplit
+        epsilon=1.0,                 # Baseline weight for segment duration
+        segment_iterations=2,        # Two-round iteration
+        cancel_front_ratio=0.5,      # Neutral cancellation assumption
+        crossing_order_policy="passive",  # Treat crossing orders as passive
     )
-    return UnifiedTapeModel(seed=seed, config=config)
+    return UnifiedTapeBuilder(config=config, tick_size=1.0)
 
-def create_queue():
-    return ProbabilisticQueueModel(k=-0.5)
+
+def create_exchange():
+    """Create exchange simulator."""
+    return FIFOExchangeSimulator(cancel_front_ratio=0.5)
+
 
 def create_strategy():
-    return LadderTestStrategy()
+    """Create strategy."""
+    return SimpleNewStrategy(name="SimpleStrategy")
 
-# --- 2. 运行 ---
+
+def create_oms():
+    """Create order manager."""
+    portfolio = Portfolio(cash=100000.0)
+    return OrderManager(portfolio=portfolio)
+
+
+def create_runner_config():
+    """Create runner configuration."""
+    return RunnerConfig(
+        delay_out=0,  # Strategy -> Exchange delay
+        delay_in=0,   # Exchange -> Strategy delay
+    )
+
+
+def run_backtest():
+    """Run the backtest using the new EventLoop architecture."""
+    print("\n" + "="*60)
+    print("EventLoop-Based Unified Backtest Framework")
+    print("="*60 + "\n")
+    
+    # Create components
+    feed = create_feed()
+    tape_builder = create_tape_builder()
+    exchange = create_exchange()
+    strategy = create_strategy()
+    oms = create_oms()
+    config = create_runner_config()
+    
+    # Create runner
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=config,
+    )
+    
+    # Run backtest
+    print("Starting backtest...")
+    try:
+        results = runner.run()
+        print("\nBacktest completed successfully!")
+        print(f"Results: {results}")
+        
+        # Print portfolio summary
+        print(f"\nPortfolio Summary:")
+        print(f"  Cash: {oms.portfolio.cash:.2f}")
+        print(f"  Position: {oms.portfolio.position}")
+        print(f"  Realized PnL: {oms.portfolio.realized_pnl:.2f}")
+        
+        # Print order summary
+        active_orders = oms.get_active_orders()
+        all_orders = list(oms.orders.values())
+        print(f"\nOrder Summary:")
+        print(f"  Total orders: {len(all_orders)}")
+        print(f"  Active orders: {len(active_orders)}")
+        print(f"  Filled orders: {sum(1 for o in all_orders if o.status.value == 'FILLED')}")
+        
+    except FileNotFoundError:
+        print(f"\nError: Data file not found at {DATA_PATH}")
+        print("Please ensure the data file exists before running the backtest.")
+        print("\nNote: This is expected if you don't have sample data yet.")
+        print("The framework is ready to use once you provide data.")
+    except Exception as e:
+        print(f"\nError during backtest: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
-    
-    # 场景 A: 传统回测 (N=1, Simple Model)
-    print("\n--- Scenario A: Classic Backtest ---")
-    runner_a = UnifiedRunner(
-        feed_factory=create_feed,
-        sim_factory=create_simple_sim, # 注入简单模型
-        queue_factory=create_queue,
-        strategy_factory=create_strategy,
-        num_runs=1
-    )
-    res_a = runner_a.run()
-    print(res_a)
-
-    # 场景 B: 蒙特卡洛回测 (N=5, Unified Bridge Model)
-    print("\n--- Scenario B: Monte Carlo Backtest ---")
-    runner_b = UnifiedRunner(
-        feed_factory=create_feed,
-        sim_factory=create_unified_sim, # 注入复杂模型
-        queue_factory=create_queue,
-        strategy_factory=create_strategy,
-        num_runs=5 # 自动切换到多路运行
-    )
-    res_b = runner_b.run()
-    
-    # 输出每一轮结果（不做 describe/std 汇总）
-    print(res_b)
-
-    # 场景 C: 统一 Tape 框架回测 (N=1, Unified Tape Model)
-    print("\n--- Scenario C: Unified Tape Model Backtest ---")
-    runner_c = UnifiedRunner(
-        feed_factory=create_feed,
-        sim_factory=create_unified_tape_sim,  # 注入统一 Tape 模型
-        queue_factory=create_queue,
-        strategy_factory=create_strategy,
-        num_runs=1
-    )
-    res_c = runner_c.run()
-    print(res_c)
+    run_backtest()
