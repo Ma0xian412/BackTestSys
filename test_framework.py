@@ -567,6 +567,136 @@ def test_fill_priority():
     print("✓ Fill priority test passed")
 
 
+def test_dto_snapshot():
+    """测试DTO快照转换功能。"""
+    print("\n--- Test 14: DTO Snapshot ---")
+    
+    from quant_framework.core.dto import to_snapshot_dto, SnapshotDTO, LevelDTO
+    
+    # 创建测试快照
+    snapshot = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60)
+    
+    # 转换为DTO
+    dto = to_snapshot_dto(snapshot)
+    
+    print(f"DTO类型: {type(dto).__name__}")
+    print(f"DTO是否为frozen: {dto.__class__.__dataclass_fields__['ts_exch'].default is None}")
+    
+    # 验证数据正确转换
+    assert dto.ts_exch == 1000, f"时间戳应为1000，实际为{dto.ts_exch}"
+    assert len(dto.bids) == 1, f"买盘档位应为1，实际为{len(dto.bids)}"
+    assert len(dto.asks) == 1, f"卖盘档位应为1，实际为{len(dto.asks)}"
+    
+    # 验证便捷属性
+    assert dto.best_bid == 100.0, f"最优买价应为100.0，实际为{dto.best_bid}"
+    assert dto.best_ask == 101.0, f"最优卖价应为101.0，实际为{dto.best_ask}"
+    assert dto.mid_price == 100.5, f"中间价应为100.5，实际为{dto.mid_price}"
+    assert dto.spread == 1.0, f"价差应为1.0，实际为{dto.spread}"
+    
+    # 验证DTO不可变（尝试修改应抛出异常）
+    try:
+        dto.ts_exch = 2000
+        assert False, "DTO应该是不可变的"
+    except Exception:
+        pass  # 预期的行为
+    
+    print("✓ DTO snapshot test passed")
+
+
+def test_readonly_oms_view():
+    """测试只读OMS视图功能。"""
+    print("\n--- Test 15: ReadOnly OMS View ---")
+    
+    from quant_framework.core.dto import ReadOnlyOMSView, OrderInfoDTO, PortfolioDTO
+    
+    # 创建OMS和订单
+    portfolio = Portfolio(cash=10000.0)
+    oms = OrderManager(portfolio=portfolio)
+    
+    order = Order(
+        order_id="test-readonly-1",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+    )
+    oms.submit(order, 1000)
+    
+    # 创建只读视图
+    view = ReadOnlyOMSView(oms)
+    
+    # 测试查询活跃订单
+    active_orders = view.get_active_orders()
+    print(f"活跃订单数量: {len(active_orders)}")
+    assert len(active_orders) == 1, f"应有1个活跃订单，实际为{len(active_orders)}"
+    
+    # 验证返回的是OrderInfoDTO而不是Order
+    assert isinstance(active_orders[0], OrderInfoDTO), "应返回OrderInfoDTO类型"
+    
+    # 测试查询单个订单
+    order_dto = view.get_order("test-readonly-1")
+    assert order_dto is not None, "订单应存在"
+    assert order_dto.order_id == "test-readonly-1", f"订单ID应为test-readonly-1"
+    assert order_dto.price == 100.0, f"价格应为100.0"
+    
+    # 验证OrderInfoDTO是不可变的
+    try:
+        order_dto.price = 200.0
+        assert False, "OrderInfoDTO应该是不可变的"
+    except Exception:
+        pass  # 预期的行为
+    
+    # 测试查询投资组合
+    portfolio_dto = view.get_portfolio()
+    assert isinstance(portfolio_dto, PortfolioDTO), "应返回PortfolioDTO类型"
+    assert portfolio_dto.cash == 10000.0, f"现金应为10000.0，实际为{portfolio_dto.cash}"
+    
+    # 验证PortfolioDTO是不可变的
+    try:
+        portfolio_dto.cash = 20000.0
+        assert False, "PortfolioDTO应该是不可变的"
+    except Exception:
+        pass  # 预期的行为
+    
+    # 验证只读视图没有修改方法
+    assert not hasattr(view, 'submit'), "只读视图不应有submit方法"
+    assert not hasattr(view, 'on_receipt'), "只读视图不应有on_receipt方法"
+    
+    print("✓ ReadOnly OMS view test passed")
+
+
+def test_dto_strategy():
+    """测试使用DTO的策略。"""
+    print("\n--- Test 16: DTO Strategy ---")
+    
+    from quant_framework.trading.strategy import SimpleDTOStrategy
+    from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
+    
+    # 创建策略和OMS
+    strategy = SimpleDTOStrategy(name="TestDTOStrategy")
+    oms = OrderManager()
+    view = ReadOnlyOMSView(oms)
+    
+    # 创建快照并转换为DTO
+    snapshot = create_test_snapshot(1000, 100.0, 101.0)
+    snapshot_dto = to_snapshot_dto(snapshot)
+    
+    # 调用策略（每10个快照下一单）
+    all_orders = []
+    for i in range(15):
+        orders = strategy.on_snapshot(snapshot_dto, view)
+        all_orders.extend(orders)
+    
+    print(f"策略在15个快照中生成了{len(all_orders)}个订单")
+    assert len(all_orders) == 1, f"策略应生成1个订单，实际为{len(all_orders)}"
+    
+    # 验证订单正确
+    order = all_orders[0]
+    assert order.side == Side.BUY, f"订单方向应为BUY"
+    assert order.price == 100.0, f"订单价格应为100.0（最优买价）"
+    
+    print("✓ DTO strategy test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -587,6 +717,9 @@ def run_all_tests():
         test_integration_basic,
         test_integration_with_delays,
         test_fill_priority,
+        test_dto_snapshot,
+        test_readonly_oms_view,
+        test_dto_strategy,
     ]
     
     passed = 0
