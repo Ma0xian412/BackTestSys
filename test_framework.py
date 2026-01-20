@@ -1,11 +1,12 @@
-"""Comprehensive test suite for the unified EventLoop framework.
+"""统一EventLoop框架的综合测试套件。
 
-Tests validate:
-- Tape builder: segment generation, volume allocation, conservation equations
-- Exchange simulator: coordinate-axis model, fill time calculation
-- Order manager: order lifecycle, receipt processing
-- Event loop: two-timeline support, delay handling
-- Integration: full backtest flow
+测试验证内容：
+- Tape构建器：段生成、成交量分配、守恒方程
+- 交易所模拟器：坐标轴模型、成交时间计算
+- 订单管理器：订单生命周期、回执处理
+- 事件循环：双时间线支持、延迟处理
+- 集成测试：完整回测流程
+- DTO测试：数据传输对象和只读视图
 """
 
 from quant_framework.core.types import (
@@ -18,10 +19,10 @@ from quant_framework.trading.strategy import SimpleNewStrategy
 from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
 
 
-def create_test_snapshot(ts: int, bid: float, ask: float, 
+def create_test_snapshot(ts: int, bid: float, ask: float,
                          bid_qty: int = 100, ask_qty: int = 100,
                          last_vol_split=None) -> NormalizedSnapshot:
-    """Create a test snapshot."""
+    """创建测试快照。"""
     if last_vol_split is None:
         last_vol_split = [(bid, 10), (ask, 10)]
     return NormalizedSnapshot(
@@ -34,7 +35,7 @@ def create_test_snapshot(ts: int, bid: float, ask: float,
 
 def create_multi_level_snapshot(ts: int, bids: list, asks: list,
                                  last_vol_split=None) -> NormalizedSnapshot:
-    """Create a snapshot with multiple price levels."""
+    """创建多档位快照。"""
     bid_levels = [Level(p, q) for p, q in bids]
     ask_levels = [Level(p, q) for p, q in asks]
     return NormalizedSnapshot(
@@ -46,7 +47,7 @@ def create_multi_level_snapshot(ts: int, bids: list, asks: list,
 
 
 def test_tape_builder_basic():
-    """Test basic tape builder functionality."""
+    """测试Tape构建器基本功能。"""
     print("\n--- Test 1: Tape Builder Basic ---")
     
     config = TapeConfig()
