@@ -38,6 +38,17 @@ from ...core.types import Level, NormalizedSnapshot, Order, Price, Qty, Side
 
 
 # =============================================================================
+# Constants
+# =============================================================================
+
+# Numerical tolerance for floating point comparisons
+EPSILON = 1e-12
+
+# Minimum argument value for log function to avoid domain errors
+MIN_LOG_ARG = 1e-12
+
+
+# =============================================================================
 # Configuration Parameters (Section 1.3)
 # =============================================================================
 
@@ -204,10 +215,12 @@ class EventTapeBuilder:
         
         if t_b <= t_a:
             # Invalid interval - return single segment with no activity
+            bid_price = self._best_price(prev, "bid")
+            ask_price = self._best_price(prev, "ask")
             return [TapeSegment(
                 index=1,
-                bid_price=self._best_price(prev, "bid"),
-                ask_price=self._best_price(prev, "ask"),
+                bid_price=bid_price if bid_price is not None else 0.0,
+                ask_price=ask_price if ask_price is not None else 0.0,
                 u_prime_start=0.0,
                 u_prime_end=1.0,
                 t_start=t_a,
@@ -219,6 +232,17 @@ class EventTapeBuilder:
         ask_a = self._best_price(prev, "ask")
         bid_b = self._best_price(curr, "bid")
         ask_b = self._best_price(curr, "ask")
+        
+        # Handle missing price levels with fallbacks
+        # If no levels, use 0.0 as placeholder (edge case)
+        if bid_a is None:
+            bid_a = bid_b if bid_b is not None else 0.0
+        if ask_a is None:
+            ask_a = ask_b if ask_b is not None else 0.0
+        if bid_b is None:
+            bid_b = bid_a
+        if ask_b is None:
+            ask_b = ask_a
         
         # 4.2 Get lastvolsplit prices and volumes
         last_vol_split = curr.last_vol_split or []
@@ -271,11 +295,20 @@ class EventTapeBuilder:
         
         return segments
     
-    def _best_price(self, snap: NormalizedSnapshot, side: str) -> Price:
-        """Extract best price from snapshot."""
+    def _best_price(self, snap: NormalizedSnapshot, side: str) -> Optional[Price]:
+        """Extract best price from snapshot.
+        
+        Args:
+            snap: The snapshot to extract from
+            side: "bid" or "ask"
+            
+        Returns:
+            Best price for the side, or None if no levels exist.
+            Note: Caller must handle None case appropriately.
+        """
         levels = snap.bids if side == "bid" else snap.asks
         if not levels:
-            return 0.0
+            return None
         if side == "bid":
             return float(max(l.price for l in levels))
         return float(min(l.price for l in levels))
@@ -345,15 +378,15 @@ class EventTapeBuilder:
             for i in range(len(waypoints) - 1):
                 start = waypoints[i]
                 end = waypoints[i + 1]
-                if abs(start - end) < 1e-12:
-                    if not path or abs(path[-1] - start) > 1e-12:
+                if abs(start - end) < EPSILON:
+                    if not path or abs(path[-1] - start) > EPSILON:
                         path.append(start)
                     continue
                 direction = 1 if end > start else -1
                 steps = int(round(abs(end - start) / tick)) + 1
                 for j in range(steps):
                     p = start + j * direction * tick
-                    if not path or abs(path[-1] - p) > 1e-12:
+                    if not path or abs(path[-1] - p) > EPSILON:
                         path.append(p)
             return path
         
@@ -382,7 +415,7 @@ class EventTapeBuilder:
         # Remove consecutive duplicates
         result = []
         for p in discrete:
-            if not result or abs(result[-1] - p) > 1e-12:
+            if not result or abs(result[-1] - p) > EPSILON:
                 result.append(p)
         
         return result if result else [p_start]
@@ -427,7 +460,7 @@ class EventTapeBuilder:
         seg_idx = 1
         
         for u, side, price in events:
-            if u > last_u + 1e-12:
+            if u > last_u + EPSILON:
                 # Create segment from last_u to u
                 segments.append(TapeSegment(
                     index=seg_idx,
@@ -448,7 +481,7 @@ class EventTapeBuilder:
                 current_ask = price
         
         # Final segment to u=1
-        if last_u < 1.0 - 1e-12:
+        if last_u < 1.0 - EPSILON:
             segments.append(TapeSegment(
                 index=seg_idx,
                 bid_price=current_bid,
@@ -492,16 +525,19 @@ class EventTapeBuilder:
                     continue
                 # Find segments that visit this price
                 visiting = [i for i, seg in enumerate(segments) 
-                           if abs(seg.bid_price - price) < 1e-12]
-                if not visiting:
+                           if abs(seg.bid_price - price) < EPSILON]
+                if not visiting and segments:
                     # Fallback: assign to nearest price segment
                     dists = [abs(seg.bid_price - price) for seg in segments]
                     visiting = [int(np.argmin(dists))]
                 
+                if not visiting:
+                    continue
+                
                 # Weight by segment length
                 weights = np.array([delta_u[i] for i in visiting])
                 weights_sum = weights.sum()
-                if weights_sum > 1e-12:
+                if weights_sum > EPSILON:
                     weights = weights / weights_sum
                 else:
                     weights = np.ones(len(visiting)) / len(visiting)
@@ -514,14 +550,17 @@ class EventTapeBuilder:
                 if total_vol <= 0:
                     continue
                 visiting = [i for i, seg in enumerate(segments)
-                           if abs(seg.ask_price - price) < 1e-12]
-                if not visiting:
+                           if abs(seg.ask_price - price) < EPSILON]
+                if not visiting and segments:
                     dists = [abs(seg.ask_price - price) for seg in segments]
                     visiting = [int(np.argmin(dists))]
                 
+                if not visiting:
+                    continue
+                
                 weights = np.array([delta_u[i] for i in visiting])
                 weights_sum = weights.sum()
-                if weights_sum > 1e-12:
+                if weights_sum > EPSILON:
                     weights = weights / weights_sum
                 else:
                     weights = np.ones(len(visiting)) / len(visiting)
@@ -603,7 +642,7 @@ class EventTapeBuilder:
                     else:
                         active_range = [best_p + j * tick for j in range(k)]
                     
-                    if any(abs(price - ap) < 1e-12 for ap in active_range):
+                    if any(abs(price - ap) < EPSILON for ap in active_range):
                         active_segs.append(i)
                 
                 if not active_segs:
@@ -618,7 +657,7 @@ class EventTapeBuilder:
                     segments[i].u_prime_end - segments[i].u_prime_start
                     for i in active_segs
                 )
-                if total_length < 1e-12:
+                if total_length < EPSILON:
                     total_length = 1.0
                 
                 for i in active_segs:
@@ -655,15 +694,18 @@ class EventTapeBuilder:
         lam = self.config.time_scale_lambda
         dt = t_b - t_a
         
+        # Threshold for considering lambda as effectively zero
+        lambda_threshold = 1e-6
+        
         def u_prime_to_u(u_prime: float) -> float:
             """Inverse function: u' -> u"""
-            if abs(lam) < 1e-6:
+            if abs(lam) < lambda_threshold:
                 return u_prime
             a = 1 - math.exp(-lam)
             # u = -1/lambda * ln(1 - a * u')
             arg = 1 - a * u_prime
             if arg <= 0:
-                arg = 1e-12  # Numerical protection
+                arg = MIN_LOG_ARG  # Numerical protection
             return -math.log(arg) / lam
         
         for seg in segments:
@@ -779,9 +821,27 @@ class ExchangeSimulator:
     def _is_crossing_order(self, order: Order) -> bool:
         """Check if order would cross the spread (market order).
         
-        Note: Requires market data access to check best prices.
-        For now, return False (assume all orders are passive).
+        This is a placeholder implementation. In a full implementation, this would:
+        - For BUY orders: Check if order.price >= best_ask
+        - For SELL orders: Check if order.price <= best_bid
+        
+        Currently returns False (assumes all orders are passive) because:
+        1. Market data access would require additional state tracking
+        2. The crossing_order_policy config handles the behavior when True
+        3. Most L2 backtests assume passive limit orders
+        
+        To enable crossing order detection, extend this class to track
+        current best bid/ask prices and implement the comparison logic.
+        
+        Returns:
+            False (placeholder - always assumes passive orders)
         """
+        # TODO: Implement crossing order detection when market state is available
+        # Implementation would look like:
+        # if order.side == Side.BUY and self._best_ask is not None:
+        #     return order.price >= self._best_ask
+        # if order.side == Side.SELL and self._best_bid is not None:
+        #     return order.price <= self._best_bid
         return False
     
     # -------------------------------------------------------------------------
@@ -992,7 +1052,7 @@ class ExchangeSimulator:
             levels = snapshot.bids if side == Side.BUY else snapshot.asks
             observed_qty = 0
             for lvl in levels:
-                if abs(float(lvl.price) - price) < 1e-12:
+                if abs(float(lvl.price) - price) < EPSILON:
                     observed_qty = int(lvl.qty)
                     break
             
@@ -1072,7 +1132,7 @@ class UnifiedTapeModel(ISimulationModel):
         
         prices = sorted(set(prices))
         diffs = [prices[i+1] - prices[i] for i in range(len(prices)-1)
-                if prices[i+1] - prices[i] > 1e-12]
+                if prices[i+1] - prices[i] > EPSILON]
         
         if diffs:
             return float(min(diffs))
@@ -1205,17 +1265,20 @@ class UnifiedTapeModel(ISimulationModel):
                 qty_prev = 0
                 qty_curr = 0
                 for lvl in prev_levels:
-                    if abs(float(lvl.price) - price) < 1e-12:
+                    if abs(float(lvl.price) - price) < EPSILON:
                         qty_prev = int(lvl.qty)
                         break
                 for lvl in curr_levels:
-                    if abs(float(lvl.price) - price) < 1e-12:
+                    if abs(float(lvl.price) - price) < EPSILON:
                         qty_curr = int(lvl.qty)
                         break
                 
                 # Linear interpolation
                 qty = int(round(qty_prev * (1 - u) + qty_curr * u))
-                qty = max(1, qty)  # Ensure non-zero
+                # Note: We use max(1, qty) to ensure non-zero depth for display.
+                # In a real order book, zero-depth levels would not be shown,
+                # but for interpolated snapshots we maintain 5 levels for consistency.
+                qty = max(1, qty)
                 
                 result.append(Level(price, qty))
             
