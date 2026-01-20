@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from enum import Enum
 
 Price = float
@@ -15,6 +15,13 @@ class OrderStatus(Enum):
     NEW = "NEW"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
+
+class ReceiptType(Enum):
+    """Order receipt types for new architecture"""
+    FILL = "FILL"
+    PARTIAL = "PARTIAL"
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
 
@@ -69,3 +76,24 @@ class Fill:
     qty: Qty
     ts: Timestamp
     liquidity: str
+
+@dataclass(frozen=True)
+class TapeSegment:
+    """A time segment of market state for the unified tape model"""
+    index: int
+    t_start: int
+    t_end: int
+    bid_price: Price
+    ask_price: Price
+    trades: Dict[Tuple[Side, Price], Qty] = field(default_factory=dict)    # M_{s,i}(p)
+    cancels: Dict[Tuple[Side, Price], Qty] = field(default_factory=dict)   # C_{s,i}(p)
+
+@dataclass
+class OrderReceipt:
+    """Order receipt for the new EventLoop architecture"""
+    order_id: str
+    receipt_type: str   # 'FILL' | 'PARTIAL' | 'CANCELED' | 'REJECTED'
+    timestamp: int
+    fill_qty: Qty = 0
+    fill_price: Price = 0.0
+    remaining_qty: Qty = 0
