@@ -359,7 +359,7 @@ class EventLoopRunner:
         levels = snapshot.bids if order.side.value == "BUY" else snapshot.asks
         
         for level in levels:
-            if abs(float(level.price) - float(order.price)) < 1e-9:
+            if abs(float(level.price) - float(order.price)) < 1e-12:
                 return int(level.qty)
         
         return 0

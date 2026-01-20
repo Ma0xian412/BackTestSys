@@ -57,6 +57,7 @@ class PriceLevelState:
     q_mkt: float = 0.0  # Public market queue depth
     x_coord: float = 0.0  # Cumulative front consumption
     queue: List[ShadowOrder] = field(default_factory=list)
+    _active_shadow_qty: int = 0  # Cached total of active shadow order qty
     
     @property
     def tail_coord(self) -> float:
@@ -65,12 +66,16 @@ class PriceLevelState:
     
     def total_shadow_qty(self) -> int:
         """Total quantity in active shadow orders."""
-        return sum(o.remaining_qty for o in self.queue if o.status == "ACTIVE")
+        return self._active_shadow_qty
+    
+    def _recompute_active_qty(self) -> None:
+        """Recompute cached active shadow qty (call after status changes)."""
+        self._active_shadow_qty = sum(o.remaining_qty for o in self.queue if o.status == "ACTIVE")
     
     def shadow_qty_at_time(self, t: int) -> int:
         """Shadow order qty at coordinate for orders arriving before t."""
         return sum(o.remaining_qty for o in self.queue 
-                  if o.status == "ACTIVE" and o.arrival_time <= t)
+                  if o.status == "ACTIVE" and o.arrival_time < t)
 
 
 class FIFOExchangeSimulator(IExchangeSimulator):
@@ -290,8 +295,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         q_mkt_t = self._get_q_mkt(side, price, arrival_time)
         
         # S^shadow: sum of remaining qty from earlier shadow orders
-        s_shadow = sum(o.remaining_qty for o in level.queue 
-                      if o.status == "ACTIVE" and o.arrival_time < arrival_time)
+        s_shadow = level.shadow_qty_at_time(arrival_time)
         
         pos = x_t + q_mkt_t + s_shadow
         
@@ -307,8 +311,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             tif=order.tif,
         )
         
-        # Append to queue
+        # Append to queue and update cache
         level.queue.append(shadow)
+        level._active_shadow_qty += order.remaining_qty
         
         # Handle IOC orders
         if order.tif == TimeInForce.IOC:
@@ -316,6 +321,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if x_t >= pos + order.remaining_qty:
                 # Full immediate fill
                 shadow.filled_qty = order.remaining_qty
+                level._active_shadow_qty -= order.remaining_qty
                 shadow.remaining_qty = 0
                 shadow.status = "FILLED"
                 return OrderReceipt(
@@ -330,6 +336,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # Partial fill, cancel rest
                 fill_qty = int(x_t - pos)
                 shadow.filled_qty = fill_qty
+                level._active_shadow_qty -= order.remaining_qty
                 shadow.remaining_qty = 0
                 shadow.status = "CANCELED"
                 return OrderReceipt(
@@ -342,6 +349,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 )
             else:
                 # No fill, cancel
+                level._active_shadow_qty -= order.remaining_qty
+                shadow.remaining_qty = 0
                 shadow.status = "CANCELED"
                 return OrderReceipt(
                     order_id=order.order_id,
@@ -385,6 +394,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     # Calculate fill up to cancel time
                     x_t = self._get_x_coord(shadow.side, shadow.price, arrival_time)
                     fill_at_cancel = max(0, min(shadow.original_qty, int(x_t - shadow.pos)))
+                    
+                    # Update cache before changing status
+                    level._active_shadow_qty -= shadow.remaining_qty
                     
                     shadow.filled_qty = fill_at_cancel
                     shadow.remaining_qty = 0
@@ -528,6 +540,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     fill_time = self._compute_fill_time(shadow, shadow.original_qty)
                     
                     if fill_time is not None and t_from < fill_time <= t_to:
+                        # Update cache before changing
+                        level._active_shadow_qty -= shadow.remaining_qty
+                        
                         shadow.filled_qty = shadow.original_qty
                         shadow.remaining_qty = 0
                         shadow.status = "FILLED"
@@ -545,6 +560,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     current_fill = int(x_t_to - shadow.pos)
                     if current_fill > shadow.filled_qty:
                         new_fill = current_fill - shadow.filled_qty
+                        
+                        # Update cache for the qty change
+                        level._active_shadow_qty -= new_fill
+                        
                         shadow.filled_qty = current_fill
                         shadow.remaining_qty = shadow.original_qty - current_fill
                         
