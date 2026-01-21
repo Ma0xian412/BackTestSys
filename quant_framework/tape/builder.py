@@ -151,11 +151,8 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # Two-round iterative volume allocation
         segments = self._allocate_volumes_iterative(segments, e_bid, e_ask, t_a, t_b)
         
-        # Derive cancellations from conservation equations
-        segments = self._derive_cancellations(segments, prev, curr, e_bid, e_ask)
-        
-        # Derive net flow for each segment
-        segments = self._derive_net_flow(segments, prev, curr, e_bid, e_ask)
+        # Derive cancellations and net flow from conservation equations
+        segments = self._derive_cancellations_and_net_flow(segments, prev, curr)
         
         return segments
     
@@ -584,159 +581,79 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         return result
     
-    def _derive_cancellations(self, segments: List[TapeSegment], 
-                               prev: NormalizedSnapshot, curr: NormalizedSnapshot,
-                               e_bid: Dict[Price, Qty], e_ask: Dict[Price, Qty]) -> List[TapeSegment]:
-        """Derive cancellations from snapshot conservation.
-        
-        For each price p in the price universe:
+    def _derive_cancellations_and_net_flow(
+        self,
+        segments: List[TapeSegment],
+        prev: NormalizedSnapshot,
+        curr: NormalizedSnapshot,
+    ) -> List[TapeSegment]:
+        """Derive cancellations and net flow from snapshot conservation.
+
+        For each price p in the activated universe:
         - delta_Q = Q^B(p) - Q^A(p)
         - M(p) = sum of trades at p across all segments
         - N(p) = delta_Q + M(p)  (conservation: Q_B = Q_A + N - M)
         - If N < 0: there are net cancels at this price
-        - Distribute cancels across segments where price is in activation window
+        - Distribute N and cancels across segments where price is activated
         """
         n = len(segments)
         if n == 0:
             return segments
-        
-        # Build price universe (only activated prices)
+
         price_universe_bid: Set[Price] = set()
         price_universe_ask: Set[Price] = set()
         for seg in segments:
             price_universe_bid.update(seg.activation_bid)
             price_universe_ask.update(seg.activation_ask)
-        
-        # Get queue depths from snapshots
+
         def get_qty_at_price(snap: NormalizedSnapshot, side: Side, price: Price) -> int:
             levels = snap.bids if side == Side.BUY else snap.asks
             for lvl in levels:
                 if abs(float(lvl.price) - price) < EPSILON:
                     return int(lvl.qty)
             return 0
-        
-        # Initialize cancels dict for each segment
+
         cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
-        
-        # Process bid side
-        for price in price_universe_bid:
-            q_a = get_qty_at_price(prev, Side.BUY, price)
-            q_b = get_qty_at_price(curr, Side.BUY, price)
-            
-            # Total trades at this price
-            m_total = sum(
-                seg.trades.get((Side.BUY, price), 0) 
-                for seg in segments
-            )
-            
-            # Conservation: N = delta_Q + M
-            delta_q = q_b - q_a
-            n_total = delta_q + m_total
-            
-            # If N < 0, we have net cancels
-            if n_total < 0:
-                total_cancels = abs(n_total)
-                # Distribute across segments where price is activated
-                active_segs = [i for i, seg in enumerate(segments) 
-                              if price in seg.activation_bid]
-                if active_segs:
-                    # Weight by segment duration
-                    durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
-                    total_dur = sum(durations) or 1
-                    for j, i in enumerate(active_segs):
-                        alloc = int(round(total_cancels * durations[j] / total_dur))
-                        if alloc > 0:
-                            cancels_per_seg[i][(Side.BUY, price)] = alloc
-        
-        # Process ask side
-        for price in price_universe_ask:
-            q_a = get_qty_at_price(prev, Side.SELL, price)
-            q_b = get_qty_at_price(curr, Side.SELL, price)
-            
-            m_total = sum(
-                seg.trades.get((Side.SELL, price), 0) 
-                for seg in segments
-            )
-            
-            delta_q = q_b - q_a
-            n_total = delta_q + m_total
-            
-            if n_total < 0:
-                total_cancels = abs(n_total)
-                active_segs = [i for i, seg in enumerate(segments) 
-                              if price in seg.activation_ask]
-                if active_segs:
-                    durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
-                    total_dur = sum(durations) or 1
-                    for j, i in enumerate(active_segs):
-                        alloc = int(round(total_cancels * durations[j] / total_dur))
-                        if alloc > 0:
-                            cancels_per_seg[i][(Side.SELL, price)] = alloc
-        
-        # Update segments with cancels
-        result = []
-        for i, seg in enumerate(segments):
-            new_seg = replace(seg, cancels=cancels_per_seg[i])
-            result.append(new_seg)
-        
-        return result
-    
-    def _derive_net_flow(self, segments: List[TapeSegment], 
-                          prev: NormalizedSnapshot, curr: NormalizedSnapshot,
-                          e_bid: Dict[Price, Qty], e_ask: Dict[Price, Qty]) -> List[TapeSegment]:
-        """Derive net flow (N = Adds - Cancels) for each segment.
-        
-        This enables Q_mkt(t) computation during simulation.
-        """
-        n = len(segments)
-        if n == 0:
-            return segments
-        
-        # Build price universe
-        price_universe_bid: Set[Price] = set()
-        price_universe_ask: Set[Price] = set()
-        for seg in segments:
-            price_universe_bid.update(seg.activation_bid)
-            price_universe_ask.update(seg.activation_ask)
-        
-        def get_qty_at_price(snap: NormalizedSnapshot, side: Side, price: Price) -> int:
-            levels = snap.bids if side == Side.BUY else snap.asks
-            for lvl in levels:
-                if abs(float(lvl.price) - price) < EPSILON:
-                    return int(lvl.qty)
-            return 0
-        
-        # Initialize net_flow for each segment
         net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
-        
+
         for side, price_universe in [(Side.BUY, price_universe_bid), (Side.SELL, price_universe_ask)]:
             for price in price_universe:
                 q_a = get_qty_at_price(prev, side, price)
                 q_b = get_qty_at_price(curr, side, price)
-                
-                m_total = sum(
-                    seg.trades.get((side, price), 0) 
-                    for seg in segments
-                )
-                
+
+                m_total = sum(seg.trades.get((side, price), 0) for seg in segments)
                 delta_q = q_b - q_a
-                n_total = delta_q + m_total  # Total net flow
-                
-                # Distribute N across activated segments
-                active_segs = [i for i, seg in enumerate(segments) 
-                              if price in (seg.activation_bid if side == Side.BUY else seg.activation_ask)]
-                
-                if active_segs:
-                    durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
-                    total_dur = sum(durations) or 1
+                n_total = delta_q + m_total
+
+                active_segs = [
+                    i
+                    for i, seg in enumerate(segments)
+                    if price in (seg.activation_bid if side == Side.BUY else seg.activation_ask)
+                ]
+                if not active_segs:
+                    continue
+
+                durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
+                total_dur = sum(durations) or 1
+
+                for j, i in enumerate(active_segs):
+                    alloc_net = n_total * durations[j] / total_dur
+                    net_flow_per_seg[i][(side, price)] = int(round(alloc_net))
+
+                if n_total < 0:
+                    total_cancels = abs(n_total)
                     for j, i in enumerate(active_segs):
-                        alloc = n_total * durations[j] / total_dur
-                        net_flow_per_seg[i][(side, price)] = int(round(alloc))
-        
-        # Update segments
+                        alloc_cancel = int(round(total_cancels * durations[j] / total_dur))
+                        if alloc_cancel > 0:
+                            cancels_per_seg[i][(side, price)] = alloc_cancel
+
         result = []
         for i, seg in enumerate(segments):
-            new_seg = replace(seg, net_flow=net_flow_per_seg[i])
+            new_seg = replace(
+                seg,
+                cancels=cancels_per_seg[i],
+                net_flow=net_flow_per_seg[i],
+            )
             result.append(new_seg)
-        
+
         return result
