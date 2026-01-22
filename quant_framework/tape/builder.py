@@ -75,29 +75,28 @@ class UnifiedTapeBuilder(ITapeBuilder):
     def build(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> List[TapeSegment]:
         """Build tape segments from A/B snapshots.
         
+        从A/B快照构建tape段。
+        
         Args:
-            prev: Previous snapshot (A) at time T_A
-            curr: Current snapshot (B) at time T_B
+            prev: Previous snapshot (A) at time T_A / 前一个快照（A），在T_A时刻
+            curr: Current snapshot (B) at time T_B / 当前快照（B），在T_B时刻
             
         Returns:
-            List of TapeSegments ordered by time
+            List of TapeSegments ordered by time / 按时间排序的TapeSegment列表
+            
+        Raises:
+            ValueError: 当 t_b <= t_a 时抛出，因为快照时间必须严格递增
         """
         t_a = int(prev.ts_exch)
         t_b = int(curr.ts_exch)
         
+        # 快照时间必须严格递增，否则抛出ValueError
+        # Snapshot timestamps must be strictly increasing
         if t_b <= t_a:
-            # Invalid interval - return single segment
-            bid_price = self._best_price(prev, Side.BUY) or 0.0
-            ask_price = self._best_price(prev, Side.SELL) or 0.0
-            return [TapeSegment(
-                index=1,
-                t_start=t_a,
-                t_end=t_b,
-                bid_price=bid_price,
-                ask_price=ask_price,
-                activation_bid=self._compute_activation_set(bid_price, Side.BUY),
-                activation_ask=self._compute_activation_set(ask_price, Side.SELL),
-            )]
+            raise ValueError(
+                f"Snapshot timestamps must be strictly increasing: t_b ({t_b}) <= t_a ({t_a}). "
+                f"快照时间必须严格递增。"
+            )
         
         # Extract endpoint best prices
         bid_a = self._best_price(prev, Side.BUY) or 0.0
@@ -125,13 +124,20 @@ class UnifiedTapeBuilder(ITapeBuilder):
         p_max = max(price_set)
         
         # Map lastvolsplit to per-side volumes: E_bid(p), E_ask(p)
+        # 将lastvolsplit映射到每个方向的成交量
         e_bid, e_ask = self._apply_ghost_rule(last_vol_split)
         
-        # Build optimal price paths for bid and ask (包含lastvolsplit中所有价位)
-        bid_path = self._build_price_path(bid_a, bid_b, p_min, p_max, price_set)
-        ask_path = self._build_price_path(ask_a, ask_b, p_min, p_max, price_set)
+        # 使用区间扩张DP算法构建公共的"meeting sequence"
+        # 确保bid和ask的中间路径完全一致（bid=ask同步的相遇价位）
+        meeting_seq = self._build_meeting_sequence(price_set, p_min, p_max)
         
-        # Merge paths into global segments
+        # 用公共meeting序列构建bid和ask路径
+        # bid_path = [bidA] + meeting_seq + [bidB]
+        # ask_path = [askA] + meeting_seq + [askB]
+        bid_path = self._build_path_with_meeting_sequence(bid_a, bid_b, meeting_seq)
+        ask_path = self._build_path_with_meeting_sequence(ask_a, ask_b, meeting_seq)
+        
+        # 合并路径为全局段
         segments = self._merge_paths_to_segments(bid_path, ask_path, t_a, t_b)
         
         if not segments:
@@ -270,6 +276,131 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 e_ask[p] = q
         
         return e_bid, e_ask
+    
+    def _build_meeting_sequence(self, price_set: Set[Price], p_min: Price, p_max: Price) -> List[Price]:
+        """使用区间扩张DP算法构建公共的"meeting sequence"（相遇价位序列）。
+        
+        这是bid和ask共享的中间路径，确保两条路径的中间点完全一致。
+        meeting sequence是成交分解给出的可达/必经相遇价位。
+        
+        算法思路：区间扩张DP
+        - 从[p_min, p_max]这个区间出发
+        - 找出所有需要访问的价位（lastvolsplit中的价位）
+        - 通过最小位移的方式遍历所有价位
+        
+        Args:
+            price_set: lastvolsplit中所有有成交的价位集合
+            p_min: 最小成交价
+            p_max: 最大成交价
+            
+        Returns:
+            公共相遇价位序列，按访问顺序排列。
+            如果price_set为空，返回空列表（表示没有中间相遇点，路径只包含起点和终点）。
+        """
+        # 如果没有成交价位，返回空列表
+        # 调用方会生成只包含起点和终点的路径，这是正确的行为
+        if not price_set:
+            return []
+        
+        # 收集所有需要访问的价位
+        prices_to_visit = sorted(price_set)
+        
+        if len(prices_to_visit) <= 1:
+            return list(prices_to_visit)
+        
+        # 区间扩张DP：从某个起点开始，通过扩张区间来访问所有价位
+        # 核心思想：维护当前已访问的区间[lo, hi]，每次选择扩张到下一个未访问的价位
+        # 最终路径包含所有价位
+        
+        # 策略：从中间开始向两边扩张，或从一端开始单调遍历
+        # 简单实现：找到最小总位移的遍历顺序
+        
+        # 方案1：从p_min开始单调递增到p_max
+        path_ascending = prices_to_visit[:]
+        
+        # 方案2：从p_max开始单调递减到p_min
+        path_descending = list(reversed(prices_to_visit))
+        
+        # 方案3：区间扩张 - 从中位数开始，交替向两边扩张
+        n = len(prices_to_visit)
+        mid_idx = n // 2
+        
+        path_expand = [prices_to_visit[mid_idx]]
+        lo_idx, hi_idx = mid_idx, mid_idx
+        
+        while lo_idx > 0 or hi_idx < n - 1:
+            # 计算向下扩张和向上扩张的代价
+            cost_lo = abs(prices_to_visit[lo_idx - 1] - path_expand[-1]) if lo_idx > 0 else float('inf')
+            cost_hi = abs(prices_to_visit[hi_idx + 1] - path_expand[-1]) if hi_idx < n - 1 else float('inf')
+            
+            if cost_lo <= cost_hi and lo_idx > 0:
+                lo_idx -= 1
+                path_expand.append(prices_to_visit[lo_idx])
+            elif hi_idx < n - 1:
+                hi_idx += 1
+                path_expand.append(prices_to_visit[hi_idx])
+            else:
+                break
+        
+        # 计算各路径的总位移
+        def total_displacement(path: List[Price]) -> float:
+            if len(path) <= 1:
+                return 0.0
+            return sum(abs(path[i+1] - path[i]) for i in range(len(path) - 1))
+        
+        disp_asc = total_displacement(path_ascending)
+        disp_desc = total_displacement(path_descending)
+        disp_expand = total_displacement(path_expand)
+        
+        # 选择总位移最小的路径
+        min_disp = min(disp_asc, disp_desc, disp_expand)
+        
+        if min_disp == disp_asc:
+            meeting_seq = path_ascending
+        elif min_disp == disp_desc:
+            meeting_seq = path_descending
+        else:
+            meeting_seq = path_expand
+        
+        # 移除连续重复点
+        result = []
+        for p in meeting_seq:
+            if not result or abs(result[-1] - p) > EPSILON:
+                result.append(round(p, 8))
+        
+        return result
+    
+    def _build_path_with_meeting_sequence(self, p_start: Price, p_end: Price, 
+                                           meeting_seq: List[Price]) -> List[Price]:
+        """使用公共meeting序列构建完整的价格路径。
+        
+        构建规则：
+        - bid_path = [bidA] + meeting_seq + [bidB]
+        - ask_path = [askA] + meeting_seq + [askB]
+        
+        这样可以确保bid和ask路径的中间部分完全一致，只有起点和终点不同。
+        
+        Args:
+            p_start: 起始价格（bidA或askA）
+            p_end: 结束价格（bidB或askB）
+            meeting_seq: 公共相遇价位序列
+            
+        Returns:
+            完整的价格路径
+        """
+        result = [p_start]
+        
+        # 添加meeting序列
+        for p in meeting_seq:
+            # 只添加与上一个价位不同的点
+            if abs(result[-1] - p) > EPSILON:
+                result.append(round(p, 8))
+        
+        # 添加终点
+        if abs(result[-1] - p_end) > EPSILON:
+            result.append(round(p_end, 8))
+        
+        return result
     
     def _build_price_path(self, p_start: Price, p_end: Price, p_min: Price, p_max: Price, 
                           price_set: Set[Price] = None) -> List[Price]:
