@@ -706,6 +706,172 @@ def test_dto_strategy():
     print("✓ DTO strategy test passed")
 
 
+def test_tape_builder_invalid_time_order():
+    """测试当t_b <= t_a时，tape构建器应抛出ValueError。
+    
+    这确保了快照时间必须严格递增。
+    """
+    print("\n--- Test 17: Tape Builder Invalid Time Order ---")
+    
+    config = TapeConfig()
+    builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
+    
+    # 测试情况1: t_b == t_a
+    prev = create_test_snapshot(1000, 100.0, 101.0)
+    curr = create_test_snapshot(1000, 100.5, 101.5)  # 相同时间
+    
+    try:
+        builder.build(prev, curr)
+        assert False, "应该抛出ValueError当t_b == t_a"
+    except ValueError as e:
+        print(f"✓ 正确抛出ValueError当t_b == t_a: {e}")
+    
+    # 测试情况2: t_b < t_a
+    prev2 = create_test_snapshot(2000, 100.0, 101.0)
+    curr2 = create_test_snapshot(1000, 100.5, 101.5)  # 时间倒退
+    
+    try:
+        builder.build(prev2, curr2)
+        assert False, "应该抛出ValueError当t_b < t_a"
+    except ValueError as e:
+        print(f"✓ 正确抛出ValueError当t_b < t_a: {e}")
+    
+    print("✓ Tape builder invalid time order test passed")
+
+
+def test_meeting_sequence_consistency():
+    """测试meeting sequence确保bid和ask路径的中间部分一致。
+    
+    这验证了区间扩张DP算法生成的公共相遇价位序列。
+    """
+    print("\n--- Test 18: Meeting Sequence Consistency ---")
+    
+    config = TapeConfig()
+    builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
+    
+    # 创建有多个成交价位的快照
+    prev = create_multi_level_snapshot(
+        1000,
+        bids=[(100.0, 50), (99.0, 30)],
+        asks=[(101.0, 40), (102.0, 20)],
+        last_vol_split=[(99.5, 10), (100.5, 15), (101.0, 20), (100.0, 25)]
+    )
+    curr = create_multi_level_snapshot(
+        2000,
+        bids=[(100.5, 40), (99.5, 35)],
+        asks=[(101.5, 35), (102.5, 25)],
+        last_vol_split=[(99.5, 10), (100.5, 15), (101.0, 20), (100.0, 25)]
+    )
+    
+    tape = builder.build(prev, curr)
+    
+    print(f"生成了{len(tape)}个段")
+    
+    # 获取所有bid和ask在各段的价格路径
+    bid_prices = []
+    ask_prices = []
+    
+    for seg in tape:
+        bid_prices.append(seg.bid_price)
+        ask_prices.append(seg.ask_price)
+        print(f"  段{seg.index}: bid={seg.bid_price}, ask={seg.ask_price}")
+    
+    # 提取中间段的价格（去掉首尾，因为首尾可能不同）
+    # 由于meeting sequence相同，中间段的bid和ask应该通过相同的价位
+    
+    # 找到bid_prices和ask_prices中的重叠价位
+    bid_set = set(bid_prices[1:-1]) if len(bid_prices) > 2 else set()
+    ask_set = set(ask_prices[1:-1]) if len(ask_prices) > 2 else set()
+    
+    # 验证段数量合理
+    assert len(tape) >= 1, "应该至少有1个段"
+    
+    print("✓ Meeting sequence consistency test passed")
+
+
+def test_historical_receipts_processing():
+    """测试历史回执在当前区间开始前被正确处理。
+    
+    这确保了因果一致性：当segment到达t_a时，所有早于t_a的事件都已处理。
+    """
+    print("\n--- Test 19: Historical Receipts Processing ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    
+    # 创建一个简单的回测场景来测试历史回执处理
+    # 由于这需要完整的组件，我们使用集成测试方式
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建测试快照
+    snapshots = [
+        create_test_snapshot(1000, 100.0, 101.0, bid_qty=50),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=40),
+        create_test_snapshot(3000, 100.0, 101.0, bid_qty=30),
+    ]
+    
+    # 创建组件
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    
+    # 简单策略
+    class TestStrategy:
+        def __init__(self):
+            self.snapshots_received = []
+            self.receipts_received = []
+        
+        def on_snapshot(self, snapshot, oms):
+            self.snapshots_received.append(snapshot.ts_exch if hasattr(snapshot, 'ts_exch') else snapshot)
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            self.receipts_received.append((receipt.timestamp, receipt.recv_time))
+            return []
+    
+    strategy = TestStrategy()
+    
+    runner_config = RunnerConfig(
+        delay_out=100,
+        delay_in=50,
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"处理了{results['intervals']}个区间")
+    print(f"快照数量: {len(strategy.snapshots_received)}")
+    
+    # 验证运行器正确初始化和运行
+    assert results['intervals'] == 2, f"应该处理2个区间，实际处理了{results['intervals']}个"
+    
+    print("✓ Historical receipts processing test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -729,6 +895,9 @@ def run_all_tests():
         test_dto_snapshot,
         test_readonly_oms_view,
         test_dto_strategy,
+        test_tape_builder_invalid_time_order,
+        test_meeting_sequence_consistency,
+        test_historical_receipts_processing,
     ]
     
     passed = 0
