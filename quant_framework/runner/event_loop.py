@@ -557,6 +557,9 @@ class EventLoopRunner:
             receipt: 订单回执
             event_queue: 事件队列
             recv_b: 当前区间的接收时间上界
+            
+        Raises:
+            ValueError: 如果因int截断导致生成的事件时间早于当前时间（因果反转）
         """
         recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
         recv_recv = recv_fill + self.config.delay_in
@@ -567,6 +570,19 @@ class EventLoopRunner:
         if recv_recv <= recv_b:
             # 转换回exchtime用于事件队列
             exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_recv)
+            
+            # 因果一致性检查：确保新事件时间 >= 当前时间
+            # 由于int截断可能导致 exchtime_recv < self.current_exchtime
+            # 如果发生这种情况，说明时间映射参数配置不当，抛出错误
+            if exchtime_recv < self.current_exchtime:
+                raise ValueError(
+                    f"因果反转检测：调度的事件时间({exchtime_recv})早于当前时间({self.current_exchtime})。"
+                    f"这可能是由于recvtime/exchtime映射的int截断导致的。"
+                    f"receipt.timestamp={receipt.timestamp}, recv_fill={recv_fill}, "
+                    f"recv_recv={recv_recv}, delay_in={self.config.delay_in}, "
+                    f"timeline.a={self.config.timeline.a}, timeline.b={self.config.timeline.b}"
+                )
+            
             heapq.heappush(event_queue, Event(
                 time=exchtime_recv,
                 event_type=EventType.RECEIPT_TO_STRATEGY,
