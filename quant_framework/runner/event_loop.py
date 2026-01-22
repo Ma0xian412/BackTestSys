@@ -553,13 +553,14 @@ class EventLoopRunner:
         所有回执都通过此方法调度，确保delay_in延迟因果一致性。
         回执会在recv_time时刻通过RECEIPT_TO_STRATEGY事件传递给策略。
         
+        因果一致性保证：
+        - 如果由于int截断导致计算出的事件时间早于当前时间，
+          会自动将事件时间调整为当前时间，避免因果反转。
+        
         Args:
             receipt: 订单回执
             event_queue: 事件队列
             recv_b: 当前区间的接收时间上界
-            
-        Raises:
-            ValueError: 如果因int截断导致生成的事件时间早于当前时间（因果反转）
         """
         recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
         recv_recv = recv_fill + self.config.delay_in
@@ -571,17 +572,14 @@ class EventLoopRunner:
             # 转换回exchtime用于事件队列
             exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_recv)
             
-            # 因果一致性检查：确保新事件时间 >= 当前时间
+            # 因果一致性保证：确保新事件时间 >= 当前时间
             # 由于int截断可能导致 exchtime_recv < self.current_exchtime
-            # 如果发生这种情况，说明时间映射参数配置不当，抛出错误
+            # 为避免因果反转，将事件时间调整为当前时间
             if exchtime_recv < self.current_exchtime:
-                raise ValueError(
-                    f"因果反转检测：调度的事件时间({exchtime_recv})早于当前时间({self.current_exchtime})。"
-                    f"这可能是由于recvtime/exchtime映射的int截断导致的。"
-                    f"receipt.timestamp={receipt.timestamp}, recv_fill={recv_fill}, "
-                    f"recv_recv={recv_recv}, delay_in={self.config.delay_in}, "
-                    f"timeline.a={self.config.timeline.a}, timeline.b={self.config.timeline.b}"
-                )
+                exchtime_recv = self.current_exchtime
+                # 同时更新recv_time以保持一致性
+                recv_recv = self.config.timeline.exchtime_to_recvtime(exchtime_recv)
+                receipt.recv_time = recv_recv
             
             heapq.heappush(event_queue, Event(
                 time=exchtime_recv,

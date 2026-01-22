@@ -1366,14 +1366,14 @@ def test_receipt_recv_time_authority():
 
 
 def test_no_causal_reversal_with_int_truncation():
-    """测试问题1：检查int截断是否导致因果反转。
+    """测试问题1：验证因果反转被自动避免（通过时间钳制）。
     
     验证场景：
-    1. 使用非1:1的时间线映射（如a=0.9）
-    2. 正常运行回测
-    3. 验证不会因为int截断而生成时间早于当前时间的事件
+    1. 使用非1:1的时间线映射（如a=0.9）可能因int截断导致事件时间早于当前时间
+    2. 系统应自动将事件时间钳制到当前时间，避免因果反转
+    3. 回测应正常完成，不抛出异常
     
-    如果发生因果反转，_schedule_receipt会抛出ValueError。
+    关键点：现在系统通过时间钳制来避免因果反转，而不是抛出错误。
     """
     print("\n--- Test 25: No Causal Reversal with Int Truncation ---")
     
@@ -1404,8 +1404,6 @@ def test_no_causal_reversal_with_int_truncation():
     feed = MockFeed(snapshots)
     tape_config = TapeConfig()
     tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    oms = OrderManager()
     
     # 测试策略：每个快照都下单
     class FrequentOrderStrategy:
@@ -1414,7 +1412,6 @@ def test_no_causal_reversal_with_int_truncation():
         
         def on_snapshot(self, snapshot, oms):
             self.count += 1
-            ts = snapshot.ts_exch if hasattr(snapshot, 'ts_exch') else 0
             return [Order(
                 order_id=f"test-{self.count}",
                 side=Side.BUY,
@@ -1424,8 +1421,6 @@ def test_no_causal_reversal_with_int_truncation():
         
         def on_receipt(self, receipt, snapshot, oms):
             return []
-    
-    strategy = FrequentOrderStrategy()
     
     # 测试用例1：正常时间线（1:1映射），应该成功
     print("测试1：正常时间线(a=1.0, b=0)...")
@@ -1445,15 +1440,11 @@ def test_no_causal_reversal_with_int_truncation():
         config=runner_config,
     )
     
-    try:
-        results = runner.run()
-        print(f"  结果: intervals={results['intervals']}, receipts={results['diagnostics']['receipts_generated']}")
-        print("  ✓ 正常时间线测试通过")
-    except ValueError as e:
-        print(f"  ✗ 意外的因果反转: {e}")
-        assert False, "正常时间线不应该出现因果反转"
+    results = runner.run()
+    print(f"  结果: intervals={results['intervals']}, receipts={results['diagnostics']['receipts_generated']}")
+    print("  ✓ 正常时间线测试通过")
     
-    # 测试用例2：缩放时间线（a=0.9），验证int截断不会导致因果反转
+    # 测试用例2：缩放时间线（a=0.9），int截断可能导致问题，但系统应自动钳制
     print("测试2：缩放时间线(a=0.9, b=100)...")
     runner_config2 = RunnerConfig(
         delay_out=50,
@@ -1471,16 +1462,11 @@ def test_no_causal_reversal_with_int_truncation():
         config=runner_config2,
     )
     
-    try:
-        results2 = runner2.run()
-        print(f"  结果: intervals={results2['intervals']}, receipts={results2['diagnostics']['receipts_generated']}")
-        print("  ✓ 缩放时间线测试通过，无因果反转")
-    except ValueError as e:
-        # 如果捕获到因果反转，这是预期的行为（检测有效）
-        print(f"  ✓ 正确检测到因果反转: {str(e)[:100]}...")
-        print("  注意：这表明检测机制工作正常，但此时间线配置会导致问题")
+    results2 = runner2.run()
+    print(f"  结果: intervals={results2['intervals']}, receipts={results2['diagnostics']['receipts_generated']}")
+    print("  ✓ 缩放时间线测试通过，因果反转被自动避免")
     
-    # 测试用例3：更极端的缩放
+    # 测试用例3：更极端的缩放，验证系统仍能正常运行
     print("测试3：极端缩放时间线(a=2.0, b=-500)...")
     runner_config3 = RunnerConfig(
         delay_out=50,
@@ -1498,12 +1484,9 @@ def test_no_causal_reversal_with_int_truncation():
         config=runner_config3,
     )
     
-    try:
-        results3 = runner3.run()
-        print(f"  结果: intervals={results3['intervals']}, receipts={results3['diagnostics']['receipts_generated']}")
-        print("  ✓ 极端缩放测试通过，无因果反转")
-    except ValueError as e:
-        print(f"  ✓ 正确检测到因果反转")
+    results3 = runner3.run()
+    print(f"  结果: intervals={results3['intervals']}, receipts={results3['diagnostics']['receipts_generated']}")
+    print("  ✓ 极端缩放测试通过，因果反转被自动避免")
     
     print("✓ No causal reversal with int truncation test passed")
 
@@ -1518,7 +1501,8 @@ def test_segment_queue_zero_constraint():
     
     这是一个强约束：当段结束时best price变化，意味着该价位的队列已经清空。
     
-    注意：此测试验证TapeBuilder在构建段时遵循这个约束。
+    关键验证：净流入量应该基于此约束进行分配，使得转换时队列深度=0。
+    即：Q_A + N - M = 0 => N = M - Q_A
     """
     print("\n--- Test 26: Segment Queue Zero Constraint ---")
     
@@ -1560,8 +1544,7 @@ def test_segment_queue_zero_constraint():
         print(f"    cancels: {dict(seg.cancels)}")
         print(f"    net_flow: {dict(seg.net_flow)}")
     
-    # 验证：当价格从高价转换到低价时，段的设计应该遵循队列清空逻辑
-    # 检查是否存在从3318到3317的转换
+    # 验证：当价格从高价转换到低价时，计算队列是否归零
     price_transitions = []
     for i in range(len(tape) - 1):
         curr_seg = tape[i]
@@ -1570,26 +1553,48 @@ def test_segment_queue_zero_constraint():
             price_transitions.append({
                 'from_seg': i + 1,
                 'to_seg': i + 2,
+                'seg_idx': i,
                 'from_price': curr_seg.bid_price,
                 'to_price': next_seg.bid_price,
                 'transition_time': curr_seg.t_end,
             })
     
     print(f"\n价格转换点: {len(price_transitions)}个")
+    
+    # 验证队列归零约束：对于bid价格下降的转换，检查净流入是否满足约束
+    def get_initial_qty(price):
+        for p, q in [(3318, 50), (3317, 40), (3316, 30)]:
+            if abs(p - price) < 0.01:
+                return q
+        return 0
+    
     for trans in price_transitions:
         print(f"  段{trans['from_seg']}->段{trans['to_seg']}: "
               f"价格 {trans['from_price']} -> {trans['to_price']} "
               f"(时刻 {trans['transition_time']})")
-    
-    # 验证转换逻辑
-    # 当bid从高价转到低价时，说明高价档的队列被清空
-    # 这是TapeBuilder设计的隐含约束
-    for trans in price_transitions:
+        
         if trans['from_price'] > trans['to_price']:
-            # bid价格下降，说明原价位被清空
-            print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，符合队列清空逻辑")
-        elif trans['from_price'] < trans['to_price']:
-            # bid价格上升，这是有新单进入
+            # bid价格下降，验证队列归零约束
+            price = trans['from_price']
+            q_a = get_initial_qty(price)
+            
+            # 计算在该价位作为best bid期间的总成交量和净流入
+            total_trades = 0
+            total_net_flow = 0
+            for j in range(trans['seg_idx'] + 1):
+                seg = tape[j]
+                if abs(seg.bid_price - price) < 0.01:
+                    total_trades += seg.trades.get((Side.BUY, price), 0)
+                    total_net_flow += seg.net_flow.get((Side.BUY, price), 0)
+            
+            # 队列结束深度 = Q_A + N - M
+            ending_queue = q_a + total_net_flow - total_trades
+            print(f"    价格{price}: Q_A={q_a}, N={total_net_flow}, M={total_trades}, 结束队列={ending_queue}")
+            
+            # 验证队列归零（允许小误差）
+            assert abs(ending_queue) <= 1, f"队列未归零: {ending_queue}"
+            print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，队列正确归零")
+        else:
             print(f"  ✓ bid从{trans['from_price']}升到{trans['to_price']}，新单进入")
     
     print("✓ Segment queue zero constraint test passed")
