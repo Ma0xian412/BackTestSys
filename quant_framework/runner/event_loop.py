@@ -143,6 +143,7 @@ class EventLoopRunner:
         self.current_exchtime = 0
         self.current_recvtime = 0
         self.current_snapshot: Optional[NormalizedSnapshot] = None
+        self._pending_receipts: List[Tuple[int, OrderReceipt]] = []
 
         # 诊断信息
         self.diagnostics: Dict[str, Any] = {
@@ -214,18 +215,18 @@ class EventLoopRunner:
         recv_a = self.config.timeline.exchtime_to_recvtime(t_a)
         recv_b = self.config.timeline.exchtime_to_recvtime(t_b)
 
+        if not self._has_order_events_between(recv_a, recv_b, t_a, t_b):
+            needs_tape = self._process_receipts_without_tape(recv_a, recv_b, t_b)
+            if not needs_tape:
+                self._advance_without_tape(curr, t_b, recv_b)
+                return
+
         # 构建该区间的Tape
         tape = self.tape_builder.build(prev, curr)
 
         if not tape:
             # 无事件，直接推进到curr
-            self.current_exchtime = t_b
-            self.current_recvtime = recv_b
-            self.current_snapshot = curr
-            orders = self.strategy.on_snapshot(curr, self.oms)
-            for order in orders:
-                self.oms.submit(order, recv_b)
-                self.diagnostics["orders_submitted"] += 1
+            self._advance_without_tape(curr, t_b, recv_b)
             return
 
         # 为新区间重置交易所并设置Tape
@@ -252,6 +253,8 @@ class EventLoopRunner:
             event_type=EventType.INTERVAL_END,
             data=curr,
         ))
+
+        self._schedule_pending_receipts(event_queue, recv_a, recv_b)
 
         # 获取OMS中的待处理订单并调度到达事件
         pending_orders = self.oms.get_active_orders()
@@ -299,6 +302,8 @@ class EventLoopRunner:
                                 event_type=EventType.RECEIPT_TO_STRATEGY,
                                 data=receipt,
                             ))
+                        else:
+                            self._queue_receipt_for_future(recv_recv, receipt)
 
                         self.diagnostics["receipts_generated"] += 1
 
@@ -367,6 +372,96 @@ class EventLoopRunner:
                 for order in orders:
                     self.oms.submit(order, self.current_recvtime)
                     self.diagnostics["orders_submitted"] += 1
+
+    def _advance_without_tape(self, snapshot: NormalizedSnapshot, exchtime: int, recvtime: int) -> None:
+        """无订单区间快速推进并触发快照回调。"""
+        self.current_exchtime = exchtime
+        self.current_recvtime = recvtime
+        self.current_snapshot = snapshot
+        orders = self.strategy.on_snapshot(snapshot, self.oms)
+        for order in orders:
+            self.oms.submit(order, recvtime)
+            self.diagnostics["orders_submitted"] += 1
+    
+    def _has_order_events_between(self, recv_a: int, recv_b: int, t_a: int, t_b: int) -> bool:
+        """判断区间内是否存在需要处理的订单事件。"""
+        active_orders = self.oms.get_active_orders()
+        if not active_orders:
+            return False
+
+        for order in active_orders:
+            if order.arrival_time is not None:
+                if order.arrival_time < t_b:
+                    return True
+                continue
+
+            recv_arr = int(order.create_time) + int(self.config.delay_out)
+            if recv_arr < recv_a:
+                continue
+
+            exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+            if exchtime_arr < t_b:
+                return True
+
+        return False
+
+    def _schedule_pending_receipts(self, event_queue: List[Event], recv_a: int, recv_b: int) -> None:
+        """将到达时间落在区间内的回执加入事件队列。"""
+        remaining: List[Tuple[int, OrderReceipt]] = []
+        for recv_time, receipt in self._pending_receipts:
+            if recv_a <= recv_time <= recv_b:
+                exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_time)
+                heapq.heappush(event_queue, Event(
+                    time=exchtime_recv,
+                    event_type=EventType.RECEIPT_TO_STRATEGY,
+                    data=receipt,
+                ))
+            else:
+                remaining.append((recv_time, receipt))
+        self._pending_receipts = remaining
+
+    def _queue_receipt_for_future(self, recv_time: int, receipt: OrderReceipt) -> None:
+        """缓存将在后续区间到达的回执。"""
+        receipt.recv_time = recv_time
+        self._pending_receipts.append((recv_time, receipt))
+
+    def _process_receipts_without_tape(self, recv_a: int, recv_b: int, t_b: int) -> bool:
+        """仅处理区间内回执，判断是否需要继续构建tape。"""
+        if not self._pending_receipts:
+            return False
+
+        in_window: List[Tuple[int, OrderReceipt]] = []
+        remaining: List[Tuple[int, OrderReceipt]] = []
+        for recv_time, receipt in self._pending_receipts:
+            if recv_a <= recv_time <= recv_b:
+                in_window.append((recv_time, receipt))
+            else:
+                remaining.append((recv_time, receipt))
+
+        self._pending_receipts = remaining
+        if not in_window:
+            return False
+
+        in_window.sort(key=lambda item: item[0])
+        needs_tape = False
+        for recv_time, receipt in in_window:
+            self.current_recvtime = recv_time
+            self.oms.on_receipt(receipt)
+
+            if receipt.receipt_type in ["FILL", "PARTIAL"]:
+                self.diagnostics["orders_filled"] += 1
+
+            orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
+            for order in orders:
+                self.oms.submit(order, recv_time)
+                self.diagnostics["orders_submitted"] += 1
+
+                recv_arr = recv_time + self.config.delay_out
+                exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+                if exchtime_arr < t_b:
+                    needs_tape = True
+
+        return needs_tape
 
     def _get_market_qty_from_snapshot(self, order: Order, snapshot: NormalizedSnapshot) -> int:
         """从快照获取订单价位的市场队列深度。
