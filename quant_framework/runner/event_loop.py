@@ -291,34 +291,28 @@ class EventLoopRunner:
 
             # 将交易所推进到事件时间
             if event.time > last_exchtime and current_seg_idx < len(tape):
-                # 处理到事件时间为止的所有段
+                # 处理到事件时间为止的所有完整段
                 while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= event.time:
                     seg = tape[current_seg_idx]
                     receipts = self.exchange.advance(last_exchtime, seg.t_end, seg)
 
                     # 调度回执发送到策略
                     for receipt in receipts:
-                        recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
-                        recv_recv = recv_fill + self.config.delay_in
-
-                        # 设置回执的接收时间
-                        receipt.recv_time = recv_recv
-
-                        if recv_recv <= recv_b:
-                            # 转换回exchtime用于事件队列
-                            exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_recv)
-                            heapq.heappush(event_queue, Event(
-                                time=exchtime_recv,
-                                event_type=EventType.RECEIPT_TO_STRATEGY,
-                                data=receipt,
-                            ))
-                        else:
-                            self._queue_receipt_for_future(recv_recv, receipt)
-
-                        self.diagnostics["receipts_generated"] += 1
+                        self._schedule_receipt(receipt, event_queue, recv_b)
 
                     last_exchtime = seg.t_end
                     current_seg_idx += 1
+
+                # 修复问题1：如果事件落在当前段内部，需要先将交易所推进到事件时间
+                # 确保事件发生之前的成交已被正确处理，维护因果一致性
+                if current_seg_idx < len(tape):
+                    seg = tape[current_seg_idx]
+                    if seg.t_start <= event.time < seg.t_end and event.time > last_exchtime:
+                        # 推进到事件时间（段内推进）
+                        receipts = self.exchange.advance(last_exchtime, event.time, seg)
+                        for receipt in receipts:
+                            self._schedule_receipt(receipt, event_queue, recv_b)
+                        last_exchtime = event.time
 
             # 处理事件
             self.current_exchtime = event.time
@@ -333,16 +327,9 @@ class EventLoopRunner:
                 receipt = self.exchange.on_order_arrival(order, event.time, market_qty)
 
                 if receipt:
-                    # 立即拒绝或IOC结果
-                    recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
-                    recv_recv = recv_fill + self.config.delay_in
-                    receipt.recv_time = recv_recv
-
-                    self.oms.on_receipt(receipt)
-                    self.diagnostics["receipts_generated"] += 1
-
-                    if receipt.receipt_type in ["FILL", "PARTIAL"]:
-                        self.diagnostics["orders_filled"] += 1
+                    # 修复问题2：所有回执都走统一RECEIPT_TO_STRATEGY调度
+                    # 在recv_time时刻再oms.on_receipt，确保延迟因果一致性
+                    self._schedule_receipt(receipt, event_queue, recv_b)
 
             elif event.event_type == EventType.RECEIPT_TO_STRATEGY:
                 receipt = event.data
@@ -448,6 +435,36 @@ class EventLoopRunner:
         """缓存将在后续区间到达的回执。"""
         receipt.recv_time = recv_time
         self._pending_receipts.append((recv_time, receipt))
+
+    def _schedule_receipt(self, receipt: OrderReceipt, event_queue: List[Event], recv_b: int) -> None:
+        """统一调度回执到策略的事件。
+        
+        所有回执都通过此方法调度，确保delay_in延迟因果一致性。
+        回执会在recv_time时刻通过RECEIPT_TO_STRATEGY事件传递给策略。
+        
+        Args:
+            receipt: 订单回执
+            event_queue: 事件队列
+            recv_b: 当前区间的接收时间上界
+        """
+        recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
+        recv_recv = recv_fill + self.config.delay_in
+        
+        # 设置回执的接收时间
+        receipt.recv_time = recv_recv
+        
+        if recv_recv <= recv_b:
+            # 转换回exchtime用于事件队列
+            exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_recv)
+            heapq.heappush(event_queue, Event(
+                time=exchtime_recv,
+                event_type=EventType.RECEIPT_TO_STRATEGY,
+                data=receipt,
+            ))
+        else:
+            self._queue_receipt_for_future(recv_recv, receipt)
+        
+        self.diagnostics["receipts_generated"] += 1
 
     def _process_receipt_batch(self, receipts: List[Tuple[int, OrderReceipt]], t_b: int = None) -> bool:
         """处理一批回执，按时间顺序处理并调用策略回调。
