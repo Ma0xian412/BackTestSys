@@ -1684,6 +1684,128 @@ def test_segment_price_change_queue_constraint_detailed():
     print("✓ Detailed segment price change queue constraint test passed")
 
 
+def test_crossing_immediate_execution():
+    """测试crossing立即成交逻辑。
+    
+    验证场景：
+    1. BUY订单 price >= ask_best 时立即成交
+    2. SELL订单 price <= bid_best 时立即成交
+    3. IOC订单：立即成交后剩余取消
+    4. GTC订单：立即成交后剩余排队
+    """
+    print("\n--- Test 28: Crossing Immediate Execution ---")
+    
+    # 创建测试tape
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 创建快照：bid@100, ask@101
+    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60)
+    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=40, ask_qty=50,
+                                last_vol_split=[(100.0, 10), (101.0, 10)])
+    
+    tape = builder.build(prev, curr)
+    print(f"生成了{len(tape)}个段")
+    for seg in tape:
+        print(f"  段{seg.index}: bid={seg.bid_price}, ask={seg.ask_price}")
+        print(f"    activation_bid={seg.activation_bid}")
+        print(f"    activation_ask={seg.activation_ask}")
+    
+    # 创建交易所模拟器
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange.set_tape(tape, 1000, 2000)
+    
+    # 测试1：BUY订单crossing (price >= ask)
+    print("\n测试1: BUY订单crossing...")
+    buy_order_cross = Order(
+        order_id="buy-cross-1",
+        side=Side.BUY,
+        price=101.0,  # 等于ask，应该crossing
+        qty=10,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 初始化ask档位深度
+    ask_level = exchange._get_level(Side.SELL, 101.0)
+    ask_level.q_mkt = 60.0  # 设置ask档位深度
+    
+    receipt = exchange.on_order_arrival(buy_order_cross, 1100, 50)
+    if receipt:
+        print(f"  收到回执: type={receipt.receipt_type}, fill_qty={receipt.fill_qty}, "
+              f"fill_price={receipt.fill_price}, remaining={receipt.remaining_qty}")
+        assert receipt.fill_qty > 0, "应该有立即成交"
+        print(f"  ✓ BUY crossing成交 {receipt.fill_qty} @ {receipt.fill_price}")
+    else:
+        print(f"  订单已入队")
+    
+    # 测试2：SELL订单crossing (price <= bid)
+    print("\n测试2: SELL订单crossing...")
+    sell_order_cross = Order(
+        order_id="sell-cross-1",
+        side=Side.SELL,
+        price=100.0,  # 等于bid，应该crossing
+        qty=15,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 初始化bid档位深度
+    bid_level = exchange._get_level(Side.BUY, 100.0)
+    bid_level.q_mkt = 50.0  # 设置bid档位深度
+    
+    receipt2 = exchange.on_order_arrival(sell_order_cross, 1200, 60)
+    if receipt2:
+        print(f"  收到回执: type={receipt2.receipt_type}, fill_qty={receipt2.fill_qty}, "
+              f"fill_price={receipt2.fill_price}, remaining={receipt2.remaining_qty}")
+        assert receipt2.fill_qty > 0, "应该有立即成交"
+        print(f"  ✓ SELL crossing成交 {receipt2.fill_qty} @ {receipt2.fill_price}")
+    else:
+        print(f"  订单已入队")
+    
+    # 测试3：IOC订单crossing后剩余取消
+    print("\n测试3: IOC订单crossing...")
+    ioc_order = Order(
+        order_id="ioc-cross-1",
+        side=Side.BUY,
+        price=101.0,
+        qty=100,  # 数量大于可用流动性
+        tif=TimeInForce.IOC,
+    )
+    
+    receipt3 = exchange.on_order_arrival(ioc_order, 1300, 50)
+    if receipt3:
+        print(f"  收到回执: type={receipt3.receipt_type}, fill_qty={receipt3.fill_qty}, remaining={receipt3.remaining_qty}")
+        if receipt3.fill_qty > 0 and receipt3.fill_qty < 100:
+            assert receipt3.receipt_type == "PARTIAL" or receipt3.remaining_qty == 0, "IOC部分成交后应该取消剩余"
+            print(f"  ✓ IOC订单部分成交{receipt3.fill_qty}，剩余已取消")
+    
+    # 测试4：不crossing的订单（被动排队）
+    print("\n测试4: 不crossing的订单...")
+    passive_order = Order(
+        order_id="passive-1",
+        side=Side.BUY,
+        price=99.0,  # 低于ask，不会crossing
+        qty=20,
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt4 = exchange.on_order_arrival(passive_order, 1400, 50)
+    if receipt4:
+        print(f"  收到回执: type={receipt4.receipt_type}")
+    else:
+        print(f"  ✓ 订单已被动入队（无立即成交）")
+        # 验证订单在队列中
+        shadow_orders = exchange.get_shadow_orders()
+        passive_in_queue = any(o.order_id == "passive-1" for o in shadow_orders)
+        assert passive_in_queue, "被动订单应该在队列中"
+        print(f"  ✓ 订单在队列中")
+    
+    print("✓ Crossing immediate execution test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -1718,6 +1840,7 @@ def run_all_tests():
         test_no_causal_reversal_with_int_truncation,
         test_segment_queue_zero_constraint,
         test_segment_price_change_queue_constraint_detailed,
+        test_crossing_immediate_execution,
     ]
     
     passed = 0

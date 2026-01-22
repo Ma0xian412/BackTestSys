@@ -262,96 +262,72 @@ class FIFOExchangeSimulator(IExchangeSimulator):
     def on_order_arrival(self, order: Order, arrival_time: int, market_qty: Qty) -> Optional[OrderReceipt]:
         """Handle order arrival at exchange.
         
+        处理流程：
+        1. 首先检查订单是否会立即成交（crossing check）
+           - BUY订单: 如果 price >= ask_best，可立即成交
+           - SELL订单: 如果 price <= bid_best，可立即成交
+        2. 如果会crossing，按对手方从最优档开始逐档吃掉流动性
+        3. 对于IOC订单：吃完能吃的就结束，剩余直接取消
+        4. 对于非IOC订单：如果还有剩余，按FIFO坐标轴模型挂到本方队列
+        5. 如果不crossing，直接走现有的队列逻辑
+        
         Args:
             order: The arriving order
             arrival_time: Time of arrival (exchtime)
             market_qty: Current market queue depth at price (from snapshot)
             
         Returns:
-            Optional receipt for immediate rejection (None if accepted)
+            Optional receipt for immediate action (None if order accepted to queue without immediate fill)
         """
         side = order.side
         price = float(order.price)
+        remaining_qty = order.remaining_qty
         
         # Find current segment
         seg_idx = self._find_segment(arrival_time)
         
-        # Check if in activation window
-        if seg_idx >= 0 and not self._is_in_activation_window(side, price, seg_idx):
-            # Price not in top-5 activation window
-            # According to spec: "outside top5 - don't track"
-            # Order still gets queued but won't have progress until activated
-            pass
+        # Get opposite side best price from current segment
+        opposite_best = self._get_opposite_best_price(side, seg_idx)
         
-        level = self._get_level(side, price)
+        # Check for crossing (immediate execution condition)
+        is_crossing = self._check_crossing(side, price, opposite_best)
         
-        # Initialize Q_mkt if first order at this level
-        if not level.queue and level.q_mkt == 0:
-            level.q_mkt = float(market_qty)
+        immediate_fill_qty = 0
+        immediate_fill_price = 0.0
         
-        # Calculate position using coordinate-axis model
-        # pos = Tail + S^shadow (prior shadow orders' remaining qty)
-        x_t = self._get_x_coord(side, price, arrival_time)
-        q_mkt_t = self._get_q_mkt(side, price, arrival_time)
+        if is_crossing and remaining_qty > 0:
+            # Execute immediately against opposite side liquidity
+            immediate_fill_qty, immediate_fill_price = self._execute_crossing(
+                side, price, remaining_qty, arrival_time, seg_idx
+            )
+            remaining_qty -= immediate_fill_qty
         
-        # S^shadow: sum of remaining qty from earlier shadow orders
-        s_shadow = level.shadow_qty_at_time(arrival_time)
-        
-        pos = x_t + q_mkt_t + s_shadow
-        
-        # Create shadow order
-        shadow = ShadowOrder(
-            order_id=order.order_id,
-            side=side,
-            price=price,
-            original_qty=order.qty,
-            remaining_qty=order.remaining_qty,
-            arrival_time=arrival_time,
-            pos=pos,
-            tif=order.tif,
-        )
-        
-        # Append to queue and update cache
-        level.queue.append(shadow)
-        level._active_shadow_qty += order.remaining_qty
-        
-        # Handle IOC orders
+        # Handle based on TIF and remaining quantity
         if order.tif == TimeInForce.IOC:
-            # Check for immediate fill
-            if x_t >= pos + order.remaining_qty:
-                # Full immediate fill
-                shadow.filled_qty = order.remaining_qty
-                level._active_shadow_qty -= order.remaining_qty
-                shadow.remaining_qty = 0
-                shadow.status = "FILLED"
-                return OrderReceipt(
-                    order_id=order.order_id,
-                    receipt_type="FILL",
-                    timestamp=arrival_time,
-                    fill_qty=order.remaining_qty,
-                    fill_price=price,
-                    remaining_qty=0,
-                )
-            elif x_t > pos:
-                # Partial fill, cancel rest
-                fill_qty = int(x_t - pos)
-                shadow.filled_qty = fill_qty
-                level._active_shadow_qty -= order.remaining_qty
-                shadow.remaining_qty = 0
-                shadow.status = "CANCELED"
-                return OrderReceipt(
-                    order_id=order.order_id,
-                    receipt_type="PARTIAL",
-                    timestamp=arrival_time,
-                    fill_qty=fill_qty,
-                    fill_price=price,
-                    remaining_qty=0,
-                )
+            # IOC: Any remaining after immediate fill is canceled
+            if immediate_fill_qty > 0:
+                if remaining_qty == 0:
+                    # Full immediate fill
+                    return OrderReceipt(
+                        order_id=order.order_id,
+                        receipt_type="FILL",
+                        timestamp=arrival_time,
+                        fill_qty=immediate_fill_qty,
+                        fill_price=immediate_fill_price,
+                        remaining_qty=0,
+                    )
+                else:
+                    # Partial fill, cancel rest
+                    return OrderReceipt(
+                        order_id=order.order_id,
+                        receipt_type="PARTIAL",
+                        timestamp=arrival_time,
+                        fill_qty=immediate_fill_qty,
+                        fill_price=immediate_fill_price,
+                        remaining_qty=0,  # Canceled, so remaining is 0
+                    )
             else:
-                # No fill, cancel
-                level._active_shadow_qty -= order.remaining_qty
-                shadow.remaining_qty = 0
-                shadow.status = "CANCELED"
+                # No immediate fill, cancel
                 return OrderReceipt(
                     order_id=order.order_id,
                     receipt_type="CANCELED",
@@ -360,6 +336,212 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     fill_price=0.0,
                     remaining_qty=0,
                 )
+        
+        # Non-IOC (GTC): Queue remaining if any
+        if remaining_qty > 0:
+            # Queue the remaining order using coordinate-axis model
+            receipt = self._queue_order(order, arrival_time, market_qty, remaining_qty, immediate_fill_qty)
+            
+            # If there was an immediate fill, return that receipt
+            if immediate_fill_qty > 0:
+                return OrderReceipt(
+                    order_id=order.order_id,
+                    receipt_type="PARTIAL",
+                    timestamp=arrival_time,
+                    fill_qty=immediate_fill_qty,
+                    fill_price=immediate_fill_price,
+                    remaining_qty=remaining_qty,
+                )
+            return receipt
+        else:
+            # Fully filled immediately
+            if immediate_fill_qty > 0:
+                return OrderReceipt(
+                    order_id=order.order_id,
+                    receipt_type="FILL",
+                    timestamp=arrival_time,
+                    fill_qty=immediate_fill_qty,
+                    fill_price=immediate_fill_price,
+                    remaining_qty=0,
+                )
+        
+        return None
+    
+    def _get_opposite_best_price(self, side: Side, seg_idx: int) -> Optional[Price]:
+        """获取对手方最优价格。
+        
+        BUY订单的对手方是ask，SELL订单的对手方是bid。
+        
+        Args:
+            side: 订单方向
+            seg_idx: 当前段索引
+            
+        Returns:
+            对手方最优价格，如果没有则返回None
+        """
+        if seg_idx < 0 or seg_idx >= len(self._current_tape):
+            return None
+        
+        seg = self._current_tape[seg_idx]
+        if side == Side.BUY:
+            return seg.ask_price  # BUY看ask
+        else:
+            return seg.bid_price  # SELL看bid
+    
+    def _check_crossing(self, side: Side, order_price: Price, opposite_best: Optional[Price]) -> bool:
+        """检查订单是否会crossing（可立即成交）。
+        
+        BUY订单：price >= ask_best 时crossing
+        SELL订单：price <= bid_best 时crossing
+        
+        Args:
+            side: 订单方向
+            order_price: 订单限价
+            opposite_best: 对手方最优价
+            
+        Returns:
+            是否crossing
+        """
+        if opposite_best is None:
+            return False
+        
+        if side == Side.BUY:
+            return order_price >= opposite_best - EPSILON
+        else:
+            return order_price <= opposite_best + EPSILON
+    
+    def _execute_crossing(
+        self, 
+        side: Side, 
+        order_price: Price, 
+        order_qty: Qty, 
+        arrival_time: int,
+        seg_idx: int
+    ) -> Tuple[Qty, Price]:
+        """执行crossing（立即成交）。
+        
+        按对手方从最优档开始逐档吃掉流动性，直到：
+        - 订单数量耗尽
+        - 对手方档位耗尽
+        - 触及订单限价边界
+        
+        Args:
+            side: 订单方向
+            order_price: 订单限价
+            order_qty: 订单数量
+            arrival_time: 到达时间
+            seg_idx: 当前段索引
+            
+        Returns:
+            (成交数量, 加权平均成交价)
+        """
+        if seg_idx < 0 or seg_idx >= len(self._current_tape):
+            return 0, 0.0
+        
+        seg = self._current_tape[seg_idx]
+        remaining = order_qty
+        total_fill_qty = 0
+        total_fill_value = 0.0
+        
+        # 确定对手方档位（从activation set中按价格排序）
+        if side == Side.BUY:
+            # BUY吃ask，从最低ask开始
+            opposite_activation = seg.activation_ask
+            # 筛选出价格 <= order_price 的档位，按价格升序排列
+            crossable_prices = sorted([p for p in opposite_activation if p <= order_price + EPSILON])
+        else:
+            # SELL吃bid，从最高bid开始
+            opposite_activation = seg.activation_bid
+            # 筛选出价格 >= order_price 的档位，按价格降序排列
+            crossable_prices = sorted([p for p in opposite_activation if p >= order_price - EPSILON], reverse=True)
+        
+        # 逐档吃掉对手方流动性
+        for cross_price in crossable_prices:
+            if remaining <= 0:
+                break
+            
+            # 获取该档位可用的流动性（使用Q_mkt）
+            opposite_side = Side.SELL if side == Side.BUY else Side.BUY
+            available_qty = self._get_q_mkt(opposite_side, cross_price, arrival_time)
+            
+            if available_qty <= 0:
+                continue
+            
+            # 成交数量
+            fill_qty = min(remaining, int(available_qty))
+            if fill_qty > 0:
+                total_fill_qty += fill_qty
+                total_fill_value += fill_qty * cross_price
+                remaining -= fill_qty
+                
+                # 更新对手方档位的X坐标（消耗了流动性）
+                # 注：这里简化处理，实际可能需要更复杂的状态更新
+                opposite_level = self._get_level(opposite_side, cross_price)
+                opposite_level.x_coord += fill_qty
+        
+        # 计算加权平均价格
+        avg_price = total_fill_value / total_fill_qty if total_fill_qty > 0 else 0.0
+        
+        return total_fill_qty, avg_price
+    
+    def _queue_order(
+        self, 
+        order: Order, 
+        arrival_time: int, 
+        market_qty: Qty,
+        remaining_qty: Qty,
+        already_filled: Qty
+    ) -> Optional[OrderReceipt]:
+        """将订单（剩余部分）排队到本方队列。
+        
+        使用坐标轴FIFO模型初始化队列位置。
+        
+        Args:
+            order: 原始订单
+            arrival_time: 到达时间
+            market_qty: 市场队列深度
+            remaining_qty: 需要排队的剩余数量
+            already_filled: 已经立即成交的数量
+            
+        Returns:
+            可选的回执（通常为None，表示已入队）
+        """
+        side = order.side
+        price = float(order.price)
+        seg_idx = self._find_segment(arrival_time)
+        
+        # Check if in activation window
+        if seg_idx >= 0 and not self._is_in_activation_window(side, price, seg_idx):
+            pass  # Still queue but won't have progress until activated
+        
+        level = self._get_level(side, price)
+        
+        # Initialize Q_mkt if first order at this level
+        if not level.queue and level.q_mkt == 0:
+            level.q_mkt = float(market_qty)
+        
+        # Calculate position using coordinate-axis model
+        x_t = self._get_x_coord(side, price, arrival_time)
+        q_mkt_t = self._get_q_mkt(side, price, arrival_time)
+        s_shadow = level.shadow_qty_at_time(arrival_time)
+        
+        pos = x_t + q_mkt_t + s_shadow
+        
+        # Create shadow order with remaining qty
+        shadow = ShadowOrder(
+            order_id=order.order_id,
+            side=side,
+            price=price,
+            original_qty=remaining_qty,  # Only the remaining part
+            remaining_qty=remaining_qty,
+            arrival_time=arrival_time,
+            pos=pos,
+            tif=order.tif,
+            filled_qty=0,  # Already filled part is tracked separately
+        )
+        
+        level.queue.append(shadow)
+        level._active_shadow_qty += remaining_qty
         
         return None
     
