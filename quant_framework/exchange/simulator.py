@@ -405,10 +405,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         if opposite_best is None:
             return False
         
+        # 使用精确比较，不需要EPSILON容差
+        # BUY: price >= ask_best 时crossing
+        # SELL: price <= bid_best 时crossing
         if side == Side.BUY:
-            return order_price >= opposite_best - EPSILON
+            return order_price >= opposite_best
         else:
-            return order_price <= opposite_best + EPSILON
+            return order_price <= opposite_best
     
     def _execute_crossing(
         self, 
