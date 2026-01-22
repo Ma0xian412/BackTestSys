@@ -91,10 +91,11 @@ class UnifiedTapeBuilder(ITapeBuilder):
         t_b = int(curr.ts_exch)
         
         # 快照时间必须严格递增，否则抛出ValueError
+        # Snapshot timestamps must be strictly increasing
         if t_b <= t_a:
             raise ValueError(
-                f"快照时间必须严格递增: t_b ({t_b}) <= t_a ({t_a})。"
-                f"每一张快照在时间上都应该是递进有序的。"
+                f"Snapshot timestamps must be strictly increasing: t_b ({t_b}) <= t_a ({t_a}). "
+                f"快照时间必须严格递增。"
             )
         
         # Extract endpoint best prices
@@ -293,8 +294,11 @@ class UnifiedTapeBuilder(ITapeBuilder):
             p_max: 最大成交价
             
         Returns:
-            公共相遇价位序列，按访问顺序排列
+            公共相遇价位序列，按访问顺序排列。
+            如果price_set为空，返回空列表（表示没有中间相遇点，路径只包含起点和终点）。
         """
+        # 如果没有成交价位，返回空列表
+        # 调用方会生成只包含起点和终点的路径，这是正确的行为
         if not price_set:
             return []
         

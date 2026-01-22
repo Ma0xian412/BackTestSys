@@ -268,6 +268,8 @@ class EventLoopRunner:
 
         for order in pending_orders:
             # 计算订单到达交易所的时间
+            # 注意：时间戳假设为整数（毫秒或微秒精度的时间戳）
+            # Note: timestamps are assumed to be integers (ms or μs precision)
             recv_arr = int(order.create_time) + int(self.config.delay_out)
             exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
             
