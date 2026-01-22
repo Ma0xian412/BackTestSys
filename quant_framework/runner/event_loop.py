@@ -201,7 +201,7 @@ class EventLoopRunner:
     def _run_interval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
         """运行一个区间[prev, curr]的事件循环。
         
-        确保所有时间上早于t_a的事件都已被正确处理后，再处理当前区间。
+        通过_schedule_pending_receipts确保所有时间上早于t_a的事件在区间开始时被处理。
 
         Args:
             prev: 前一个快照（在T_A时刻）
@@ -216,10 +216,6 @@ class EventLoopRunner:
         # 转换为接收时间
         recv_a = self.config.timeline.exchtime_to_recvtime(t_a)
         recv_b = self.config.timeline.exchtime_to_recvtime(t_b)
-
-        # 首先处理所有时间上早于t_a的历史回执
-        # 这确保了当segment到达t_a时，所有早于t_a的事件都已被处理
-        self._process_historical_receipts(recv_a)
 
         if not self._has_order_events_between(recv_a, recv_b, t_a, t_b):
             needs_tape = self._process_receipts_without_tape(recv_a, recv_b, t_b)
@@ -420,10 +416,19 @@ class EventLoopRunner:
         return False
 
     def _schedule_pending_receipts(self, event_queue: List[Event], recv_a: int, recv_b: int) -> None:
-        """将到达时间落在区间内的回执加入事件队列。"""
+        """将到达时间落在区间内的回执加入事件队列，并处理所有早于recv_a的历史回执。
+        
+        确保所有时间上早于当前区间的回执都被正确处理，维护因果一致性。
+        """
         remaining: List[Tuple[int, OrderReceipt]] = []
+        historical: List[Tuple[int, OrderReceipt]] = []
+        
         for recv_time, receipt in self._pending_receipts:
-            if recv_a <= recv_time <= recv_b:
+            if recv_time < recv_a:
+                # 历史回执：早于当前区间，需要立即处理
+                historical.append((recv_time, receipt))
+            elif recv_a <= recv_time <= recv_b:
+                # 当前区间内的回执：加入事件队列
                 exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_time)
                 heapq.heappush(event_queue, Event(
                     time=exchtime_recv,
@@ -431,8 +436,26 @@ class EventLoopRunner:
                     data=receipt,
                 ))
             else:
+                # 未来回执：保留到后续区间处理
                 remaining.append((recv_time, receipt))
+        
         self._pending_receipts = remaining
+        
+        # 按时间顺序处理所有历史回执，确保因果一致性
+        if historical:
+            historical.sort(key=lambda item: item[0])
+            for recv_time, receipt in historical:
+                self.current_recvtime = recv_time
+                self.oms.on_receipt(receipt)
+                
+                if receipt.receipt_type in ["FILL", "PARTIAL"]:
+                    self.diagnostics["orders_filled"] += 1
+                
+                # 策略回调
+                orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
+                for order in orders:
+                    self.oms.submit(order, recv_time)
+                    self.diagnostics["orders_submitted"] += 1
 
     def _queue_receipt_for_future(self, recv_time: int, receipt: OrderReceipt) -> None:
         """缓存将在后续区间到达的回执。"""
@@ -476,49 +499,6 @@ class EventLoopRunner:
                     needs_tape = True
 
         return needs_tape
-
-    def _process_historical_receipts(self, recv_a: int) -> None:
-        """处理所有时间上早于recv_a的历史回执。
-        
-        确保当segment到达t_a时，所有早于t_a的事件都已被正确处理。
-        这对于维护系统的因果一致性至关重要。
-        
-        Args:
-            recv_a: 当前区间的起始接收时间
-        """
-        if not self._pending_receipts:
-            return
-        
-        # 分离历史回执（recv_time < recv_a）和待处理回执
-        historical: List[Tuple[int, OrderReceipt]] = []
-        remaining: List[Tuple[int, OrderReceipt]] = []
-        
-        for recv_time, receipt in self._pending_receipts:
-            if recv_time < recv_a:
-                historical.append((recv_time, receipt))
-            else:
-                remaining.append((recv_time, receipt))
-        
-        self._pending_receipts = remaining
-        
-        if not historical:
-            return
-        
-        # 按时间顺序处理历史回执
-        historical.sort(key=lambda item: item[0])
-        
-        for recv_time, receipt in historical:
-            self.current_recvtime = recv_time
-            self.oms.on_receipt(receipt)
-            
-            if receipt.receipt_type in ["FILL", "PARTIAL"]:
-                self.diagnostics["orders_filled"] += 1
-            
-            # 策略回调（使用历史快照）
-            orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
-            for order in orders:
-                self.oms.submit(order, recv_time)
-                self.diagnostics["orders_submitted"] += 1
 
     def _get_market_qty_from_snapshot(self, order: Order, snapshot: NormalizedSnapshot) -> int:
         """从快照获取订单价位的市场队列深度。
