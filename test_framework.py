@@ -1079,6 +1079,292 @@ def test_receipt_delay_consistency():
     print("✓ Receipt delay consistency test passed")
 
 
+def test_event_deterministic_ordering():
+    """测试修复问题2：Event比较使用(time, priority, seq)确保确定性排序。
+    
+    验证同一时刻的多个事件有确定性的处理顺序，避免"同样输入偶发不同输出"。
+    
+    优先级顺序应为：
+    1. SEGMENT_END（先完成内部撮合）
+    2. ORDER_ARRIVAL/CANCEL_ARRIVAL（交易所收到请求）
+    3. RECEIPT_TO_STRATEGY（策略看到回执）
+    4. INTERVAL_END（最后做边界对齐）
+    """
+    print("\n--- Test 22: Event Deterministic Ordering ---")
+    
+    import heapq
+    from quant_framework.runner.event_loop import (
+        Event, EventType, EVENT_TYPE_PRIORITY, reset_event_seq_counter
+    )
+    
+    # 重置序列号计数器确保测试隔离
+    reset_event_seq_counter()
+    
+    # 创建同一时刻的多种事件（故意打乱顺序创建）
+    t = 1000
+    events = [
+        Event(time=t, event_type=EventType.INTERVAL_END, data="interval"),
+        Event(time=t, event_type=EventType.RECEIPT_TO_STRATEGY, data="receipt1"),
+        Event(time=t, event_type=EventType.SEGMENT_END, data="segment"),
+        Event(time=t, event_type=EventType.ORDER_ARRIVAL, data="order"),
+        Event(time=t, event_type=EventType.RECEIPT_TO_STRATEGY, data="receipt2"),
+        Event(time=t, event_type=EventType.CANCEL_ARRIVAL, data="cancel"),
+    ]
+    
+    # 放入heap
+    heap = []
+    for event in events:
+        heapq.heappush(heap, event)
+    
+    # 按顺序弹出
+    popped = []
+    while heap:
+        popped.append(heapq.heappop(heap))
+    
+    print("事件弹出顺序:")
+    for i, event in enumerate(popped):
+        print(f"  {i+1}. {event.event_type.name} (priority={event.priority}, seq={event.seq})")
+    
+    # 验证优先级顺序
+    expected_order = [
+        EventType.SEGMENT_END,      # priority 1
+        EventType.ORDER_ARRIVAL,    # priority 2
+        EventType.CANCEL_ARRIVAL,   # priority 3
+        EventType.RECEIPT_TO_STRATEGY,  # priority 4 (receipt1)
+        EventType.RECEIPT_TO_STRATEGY,  # priority 4 (receipt2, seq更大)
+        EventType.INTERVAL_END,     # priority 5
+    ]
+    
+    actual_order = [e.event_type for e in popped]
+    assert actual_order == expected_order, \
+        f"事件顺序不正确\n期望: {[e.name for e in expected_order]}\n实际: {[e.name for e in actual_order]}"
+    
+    # 验证同类型事件按seq排序
+    receipt_events = [e for e in popped if e.event_type == EventType.RECEIPT_TO_STRATEGY]
+    assert receipt_events[0].data == "receipt1" and receipt_events[1].data == "receipt2", \
+        "同类型事件应按创建顺序（seq）排序"
+    
+    # 多次运行验证确定性
+    for run in range(3):
+        reset_event_seq_counter()
+        heap2 = []
+        for event in events:
+            heapq.heappush(heap2, Event(
+                time=event.time,
+                event_type=event.event_type,
+                data=event.data,
+            ))
+        result = []
+        while heap2:
+            result.append(heapq.heappop(heap2).event_type)
+        assert result == expected_order, f"第{run+1}次运行结果不一致"
+    
+    print("✓ 多次运行结果一致，确保确定性")
+    print("✓ Event deterministic ordering test passed")
+
+
+def test_peek_advance_pop_paradigm():
+    """测试修复问题1：事件循环使用"peek, advance, pop batch"范式。
+    
+    验证交易所在处理事件前被推进到正确时间，避免"生成过去事件"的因果反转。
+    
+    测试场景：
+    1. 在区间内某时刻有订单到达
+    2. 交易所advance产生的回执时间 <= 订单到达时间
+    3. 验证回执被正确处理（不会出现因果反转）
+    """
+    print("\n--- Test 23: Peek-Advance-Pop Paradigm ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建有足够成交量的区间，确保会产生回执
+    snapshots = [
+        create_test_snapshot(1000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 100)]),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 100)]),
+    ]
+    
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    
+    # 记录事件处理顺序的策略
+    class EventOrderTrackingStrategy:
+        def __init__(self):
+            self.event_log = []  # [(event_type, time)]
+        
+        def on_snapshot(self, snapshot, oms):
+            ts = snapshot.ts_exch if hasattr(snapshot, 'ts_exch') else 0
+            self.event_log.append(("SNAPSHOT", ts))
+            # 第一个快照时下单，位置靠前确保会成交
+            if len(self.event_log) == 1:
+                return [Order(
+                    order_id="test-order",
+                    side=Side.BUY,
+                    price=100.0,
+                    qty=5,
+                )]
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            self.event_log.append(("RECEIPT", receipt.timestamp, receipt.recv_time))
+            return []
+    
+    strategy = EventOrderTrackingStrategy()
+    
+    # 使用延迟配置
+    runner_config = RunnerConfig(
+        delay_out=100,  # 订单在1100时到达
+        delay_in=50,    # 回执延迟50
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"事件日志: {strategy.event_log}")
+    print(f"订单提交数: {results['diagnostics']['orders_submitted']}")
+    print(f"回执生成数: {results['diagnostics']['receipts_generated']}")
+    
+    # 验证因果顺序：快照先于回执
+    snapshot_indices = [i for i, e in enumerate(strategy.event_log) if e[0] == "SNAPSHOT"]
+    receipt_indices = [i for i, e in enumerate(strategy.event_log) if e[0] == "RECEIPT"]
+    
+    if receipt_indices:
+        # 第一个快照应该在任何回执之前
+        assert snapshot_indices[0] < receipt_indices[0], "第一个快照应该在回执之前处理"
+        print("✓ 因果顺序正确：快照先于回执")
+        
+        # 验证回执时间戳符合因果逻辑
+        for event in strategy.event_log:
+            if event[0] == "RECEIPT":
+                timestamp, recv_time = event[1], event[2]
+                assert recv_time >= timestamp, f"recv_time({recv_time})应 >= timestamp({timestamp})"
+                print(f"✓ 回执时间因果正确: timestamp={timestamp}, recv_time={recv_time}")
+    
+    print("✓ Peek-advance-pop paradigm test passed")
+
+
+def test_receipt_recv_time_authority():
+    """测试修复问题3：RECEIPT_TO_STRATEGY事件使用recv_time作为权威策略侧时间。
+    
+    验证处理回执时，current_recvtime使用event.recv_time或receipt.recv_time，
+    而不是从event.time推导。
+    """
+    print("\n--- Test 24: Receipt recv_time Authority ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建快照
+    snapshots = [
+        create_test_snapshot(1000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 80)]),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 80)]),
+    ]
+    
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    
+    # 记录recv_time的策略
+    recorded_recv_times = []
+    
+    class RecvTimeTrackingStrategy:
+        def __init__(self):
+            self.order_placed = False
+        
+        def on_snapshot(self, snapshot, oms):
+            if not self.order_placed:
+                self.order_placed = True
+                return [Order(
+                    order_id="recv-time-test",
+                    side=Side.BUY,
+                    price=100.0,
+                    qty=3,
+                )]
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            # 记录回执的recv_time
+            recorded_recv_times.append({
+                'receipt_timestamp': receipt.timestamp,
+                'receipt_recv_time': receipt.recv_time,
+            })
+            return []
+    
+    strategy = RecvTimeTrackingStrategy()
+    
+    # 配置延迟
+    delay_in = 200
+    runner_config = RunnerConfig(
+        delay_out=50,
+        delay_in=delay_in,
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"记录的recv_time: {recorded_recv_times}")
+    
+    # 验证recv_time = timestamp + delay_in
+    for record in recorded_recv_times:
+        expected_recv_time = record['receipt_timestamp'] + delay_in
+        assert record['receipt_recv_time'] == expected_recv_time, \
+            f"recv_time应为{expected_recv_time}（timestamp + delay_in），实际为{record['receipt_recv_time']}"
+        print(f"✓ recv_time正确: {record['receipt_timestamp']} + {delay_in} = {record['receipt_recv_time']}")
+    
+    print("✓ Receipt recv_time authority test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -1107,6 +1393,9 @@ def run_all_tests():
         test_historical_receipts_processing,
         test_intra_segment_advancement,
         test_receipt_delay_consistency,
+        test_event_deterministic_ordering,
+        test_peek_advance_pop_paradigm,
+        test_receipt_recv_time_authority,
     ]
     
     passed = 0
