@@ -885,7 +885,6 @@ def test_intra_segment_advancement():
     print("\n--- Test 20: Intra-Segment Advancement ---")
     
     from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
-    from quant_framework.core.types import OrderReceipt
     
     class MockFeed:
         def __init__(self, snapshots):
@@ -983,7 +982,6 @@ def test_receipt_delay_consistency():
     print("\n--- Test 21: Receipt Delay Consistency ---")
     
     from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
-    from quant_framework.core.types import OrderReceipt
     
     class MockFeed:
         def __init__(self, snapshots):
