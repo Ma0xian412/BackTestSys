@@ -600,15 +600,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
         if n == 0:
             return segments
 
-        forced_clear: Dict[Tuple[Side, Price], int] = {}
-        for i in range(len(segments) - 1):
-            cur = segments[i]
-            nxt = segments[i + 1]
-            if nxt.bid_price < cur.bid_price - EPSILON:
-                forced_clear[(Side.BUY, cur.bid_price)] = i
-            if nxt.ask_price > cur.ask_price + EPSILON:
-                forced_clear[(Side.SELL, cur.ask_price)] = i
-
         price_universe_bid: Set[Price] = set()
         price_universe_ask: Set[Price] = set()
         for seg in segments:
@@ -633,13 +624,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 m_total = sum(seg.trades.get((side, price), 0) for seg in segments)
                 delta_q = q_b - q_a
                 n_total = delta_q + m_total
-
-                forced_idx = forced_clear.get((side, price))
-                if forced_idx is not None:
-                    net_flow_per_seg[forced_idx][(side, price)] = int(round(n_total))
-                    if n_total < 0:
-                        cancels_per_seg[forced_idx][(side, price)] = int(round(abs(n_total)))
-                    continue
 
                 active_segs = [
                     i
