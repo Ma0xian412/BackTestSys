@@ -51,19 +51,30 @@ EVENT_TYPE_PRIORITY = {
     EventType.INTERVAL_END: 5,
 }
 
+# 默认优先级：用于未知事件类型，设置为最低优先级确保已知类型总是优先处理
+DEFAULT_EVENT_PRIORITY = 99
+
 # 全局序列号计数器
+# 注意：此模块设计为单线程使用（典型的回测场景）。
+# 如果需要多线程支持，应使用threading.Lock或itertools.count()等线程安全替代方案。
 _event_seq_counter = 0
 
 
 def _get_next_seq() -> int:
-    """获取下一个事件序列号。"""
+    """获取下一个事件序列号。
+    
+    注意：此函数非线程安全，仅用于单线程回测场景。
+    """
     global _event_seq_counter
     _event_seq_counter += 1
     return _event_seq_counter
 
 
 def reset_event_seq_counter() -> None:
-    """重置事件序列号计数器（用于测试）。"""
+    """重置事件序列号计数器（用于测试）。
+    
+    注意：此函数非线程安全，仅用于单线程回测场景。
+    """
     global _event_seq_counter
     _event_seq_counter = 0
 
@@ -90,7 +101,7 @@ class Event:
     def __post_init__(self):
         """初始化优先级和序列号。"""
         if self.priority is None:
-            self.priority = EVENT_TYPE_PRIORITY.get(self.event_type, 99)
+            self.priority = EVENT_TYPE_PRIORITY.get(self.event_type, DEFAULT_EVENT_PRIORITY)
         if self.seq is None:
             self.seq = _get_next_seq()
 
