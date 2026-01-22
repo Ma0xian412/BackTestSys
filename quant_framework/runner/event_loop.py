@@ -441,26 +441,51 @@ class EventLoopRunner:
         
         self._pending_receipts = remaining
         
-        # 按时间顺序处理所有历史回执，确保因果一致性
-        if historical:
-            historical.sort(key=lambda item: item[0])
-            for recv_time, receipt in historical:
-                self.current_recvtime = recv_time
-                self.oms.on_receipt(receipt)
-                
-                if receipt.receipt_type in ["FILL", "PARTIAL"]:
-                    self.diagnostics["orders_filled"] += 1
-                
-                # 策略回调
-                orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
-                for order in orders:
-                    self.oms.submit(order, recv_time)
-                    self.diagnostics["orders_submitted"] += 1
+        # 使用通用处理方法处理历史回执，确保因果一致性
+        self._process_receipt_batch(historical)
 
     def _queue_receipt_for_future(self, recv_time: int, receipt: OrderReceipt) -> None:
         """缓存将在后续区间到达的回执。"""
         receipt.recv_time = recv_time
         self._pending_receipts.append((recv_time, receipt))
+
+    def _process_receipt_batch(self, receipts: List[Tuple[int, OrderReceipt]], t_b: int = None) -> bool:
+        """处理一批回执，按时间顺序处理并调用策略回调。
+        
+        Args:
+            receipts: (recv_time, receipt) 元组列表
+            t_b: 区间结束时间，用于判断是否需要构建tape（可选）
+            
+        Returns:
+            如果提供了t_b，返回是否需要构建tape；否则返回False
+        """
+        if not receipts:
+            return False
+        
+        receipts.sort(key=lambda item: item[0])
+        needs_tape = False
+        
+        for recv_time, receipt in receipts:
+            self.current_recvtime = recv_time
+            self.oms.on_receipt(receipt)
+            
+            if receipt.receipt_type in ["FILL", "PARTIAL"]:
+                self.diagnostics["orders_filled"] += 1
+            
+            # 策略回调
+            # 注意：使用current_snapshot，这是当前最新的市场状态
+            orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
+            for order in orders:
+                self.oms.submit(order, recv_time)
+                self.diagnostics["orders_submitted"] += 1
+                
+                if t_b is not None:
+                    recv_arr = recv_time + self.config.delay_out
+                    exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+                    if exchtime_arr < t_b:
+                        needs_tape = True
+        
+        return needs_tape
 
     def _process_receipts_without_tape(self, recv_a: int, recv_b: int, t_b: int) -> bool:
         """仅处理区间内回执，判断是否需要继续构建tape。"""
@@ -479,26 +504,7 @@ class EventLoopRunner:
         if not in_window:
             return False
 
-        in_window.sort(key=lambda item: item[0])
-        needs_tape = False
-        for recv_time, receipt in in_window:
-            self.current_recvtime = recv_time
-            self.oms.on_receipt(receipt)
-
-            if receipt.receipt_type in ["FILL", "PARTIAL"]:
-                self.diagnostics["orders_filled"] += 1
-
-            orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
-            for order in orders:
-                self.oms.submit(order, recv_time)
-                self.diagnostics["orders_submitted"] += 1
-
-                recv_arr = recv_time + self.config.delay_out
-                exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
-                if exchtime_arr < t_b:
-                    needs_tape = True
-
-        return needs_tape
+        return self._process_receipt_batch(in_window, t_b)
 
     def _get_market_qty_from_snapshot(self, order: Order, snapshot: NormalizedSnapshot) -> int:
         """从快照获取订单价位的市场队列深度。
