@@ -2,8 +2,8 @@
 
 本模块定义回测系统中使用的基础类型：
 - 基本类型别名：Price, Qty, OrderId, Timestamp
-- 枚举类型：Side, OrderStatus, TimeInForce, ReceiptType
-- 数据类：Level, NormalizedSnapshot, Order, Fill, TapeSegment, OrderReceipt等
+- 枚举类型：Side, OrderStatus, TimeInForce, ReceiptType, RequestType
+- 数据类：Level, NormalizedSnapshot, Order, CancelRequest, Fill, TapeSegment, OrderReceipt等
 """
 
 from dataclasses import dataclass, field
@@ -15,6 +15,9 @@ Price = float      # 价格类型
 Qty = int          # 数量类型
 OrderId = str      # 订单ID类型
 Timestamp = int    # 时间戳类型
+
+# 快照推送最小间隔（毫秒）
+SNAPSHOT_MIN_INTERVAL_MS = 500
 
 
 class Side(Enum):
@@ -39,20 +42,35 @@ class TimeInForce(Enum):
     IOC = "IOC"  # 立即成交否则撤销
 
 
+class RequestType(Enum):
+    """策略请求类型枚举。
+    
+    策略可以发出两类请求：
+    - ORDER: 挂单请求（新订单）
+    - CANCEL: 撤单请求
+    """
+    ORDER = "ORDER"    # 挂单请求
+    CANCEL = "CANCEL"  # 撤单请求
+
+
 class ReceiptType(Enum):
     """订单回执类型枚举。
 
     用于EventLoop架构中的回执消息。
-    与OrderStatus分开定义，用于区分：
-    - OrderStatus: 内部订单状态跟踪
-    - ReceiptType: 交易所到策略的消息类型
-
-    虽然部分值重叠，但在系统中服务于不同目的。
+    
+    回执分为两大类：
+    1. 成交类回执：FILL, PARTIAL
+    2. 撤单类回执：CANCELED, REJECTED
+    
+    撤单回执的判断方法：
+    - fill_qty > 0: 撤单成功，且在撤单前有部分成交
+    - fill_qty == 0: 撤单成功，撤单前无成交
+    - receipt_type == REJECTED: 撤单失败（订单不存在或已完成）
     """
     FILL = "FILL"          # 完全成交
     PARTIAL = "PARTIAL"    # 部分成交
-    CANCELED = "CANCELED"  # 已撤销
-    REJECTED = "REJECTED"  # 已拒绝
+    CANCELED = "CANCELED"  # 已撤销（撤单成功）
+    REJECTED = "REJECTED"  # 已拒绝（撤单失败或订单被拒）
 
 @dataclass
 class Level:
@@ -133,6 +151,20 @@ class Order:
 
 
 @dataclass
+class CancelRequest:
+    """撤单请求。
+    
+    策略发出的撤单请求，包含要撤销的订单ID。
+    
+    Attributes:
+        order_id: 要撤销的订单ID
+        create_time: 撤单请求创建时间
+    """
+    order_id: OrderId
+    create_time: Timestamp = 0
+
+
+@dataclass
 class Fill:
     """成交记录。
 
@@ -185,6 +217,18 @@ class TapeSegment:
 @dataclass
 class OrderReceipt:
     """订单回执（用于EventLoop架构）。
+    
+    回执分为两大类：
+    
+    1. 成交类回执（对应挂单请求）:
+       - FILL: 完全成交，fill_qty = 订单数量
+       - PARTIAL: 部分成交，fill_qty = 已成交数量，remaining_qty = 剩余数量
+    
+    2. 撤单类回执（对应撤单请求）:
+       - CANCELED: 撤单成功
+         - fill_qty > 0: 撤单前有部分成交
+         - fill_qty == 0: 撤单前无成交
+       - REJECTED: 撤单失败（订单不存在、已完成或已撤销）
 
     Attributes:
         order_id: 订单ID

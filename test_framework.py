@@ -1806,6 +1806,138 @@ def test_crossing_immediate_execution():
     print("✓ Crossing immediate execution test passed")
 
 
+def test_nonuniform_snapshot_timing():
+    """测试非均匀快照推送时间处理。
+    
+    验证场景：
+    1. 当快照间隔超过500ms时，所有变化归因到最后500ms
+    2. 中间未推送期间视为"静默期"
+    """
+    print("\n--- Test 29: Non-uniform Snapshot Timing ---")
+    
+    # 启用非均匀快照时间处理
+    tape_config = TapeConfig(
+        enable_nonuniform_snapshot_timing=True,
+        snapshot_min_interval_ms=500,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 创建间隔为1500ms的快照（超过500ms阈值）
+    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60,
+                                last_vol_split=[])
+    curr = create_test_snapshot(2500, 100.5, 101.5, bid_qty=40, ask_qty=50,
+                                last_vol_split=[(100.5, 20)])  # 有成交
+    
+    tape = builder.build(prev, curr)
+    
+    print(f"快照间隔: 1500ms (超过500ms阈值)")
+    print(f"生成了{len(tape)}个段")
+    
+    for seg in tape:
+        print(f"  段{seg.index}: t=[{seg.t_start}, {seg.t_end}], "
+              f"duration={seg.t_end - seg.t_start}ms, "
+              f"bid={seg.bid_price}, ask={seg.ask_price}")
+        if seg.trades:
+            print(f"    trades: {dict(seg.trades)}")
+    
+    # 验证：应该有静默段 + 变化段
+    # 静默段: [1000, 2000] (1000ms)
+    # 变化段: [2000, 2500] (500ms)
+    assert len(tape) >= 2, f"应该至少有2个段，实际{len(tape)}个"
+    
+    # 第一段应该是静默段（无成交）
+    quiet_seg = tape[0]
+    assert quiet_seg.t_start == 1000, f"静默段应从1000开始，实际{quiet_seg.t_start}"
+    assert quiet_seg.t_end == 2000, f"静默段应到2000结束，实际{quiet_seg.t_end}"
+    assert not quiet_seg.trades, "静默段不应有成交"
+    print(f"  ✓ 静默段正确: [{quiet_seg.t_start}, {quiet_seg.t_end}]")
+    
+    # 成交应该在变化段
+    total_trades = sum(
+        sum(seg.trades.values()) for seg in tape[1:]
+    )
+    print(f"  变化段总成交量: {total_trades}")
+    
+    # 测试2: 间隔小于500ms时不应添加静默段
+    print("\n测试短间隔快照...")
+    prev2 = create_test_snapshot(3000, 100.0, 101.0)
+    curr2 = create_test_snapshot(3400, 100.5, 101.5, last_vol_split=[(100.5, 10)])
+    
+    tape2 = builder.build(prev2, curr2)
+    print(f"快照间隔: 400ms (小于500ms阈值)")
+    print(f"生成了{len(tape2)}个段")
+    
+    # 间隔小于阈值时，应该正常处理（不添加静默段）
+    first_seg_start = tape2[0].t_start
+    assert first_seg_start == 3000, f"第一段应从3000开始，实际{first_seg_start}"
+    print(f"  ✓ 短间隔正确处理，从{first_seg_start}开始")
+    
+    print("✓ Non-uniform snapshot timing test passed")
+
+
+def test_request_and_receipt_types():
+    """测试请求类型和回执类型的设计。
+    
+    验证：
+    1. RequestType枚举（ORDER/CANCEL）
+    2. ReceiptType枚举（FILL/PARTIAL/CANCELED/REJECTED）
+    3. CancelRequest数据类
+    4. 撤单回执的判断逻辑
+    """
+    print("\n--- Test 30: Request and Receipt Types ---")
+    
+    from quant_framework.core.types import RequestType, ReceiptType, CancelRequest, OrderReceipt
+    
+    # 测试RequestType
+    print("测试RequestType...")
+    assert RequestType.ORDER.value == "ORDER"
+    assert RequestType.CANCEL.value == "CANCEL"
+    print(f"  ✓ RequestType: ORDER={RequestType.ORDER.value}, CANCEL={RequestType.CANCEL.value}")
+    
+    # 测试CancelRequest
+    print("测试CancelRequest...")
+    cancel_req = CancelRequest(order_id="test-order-1", create_time=1000)
+    assert cancel_req.order_id == "test-order-1"
+    assert cancel_req.create_time == 1000
+    print(f"  ✓ CancelRequest创建成功: order_id={cancel_req.order_id}")
+    
+    # 测试撤单回执逻辑
+    print("测试撤单回执逻辑...")
+    
+    # 撤单成功（撤单前有部分成交）
+    receipt1 = OrderReceipt(
+        order_id="order-1",
+        receipt_type="CANCELED",
+        timestamp=1100,
+        fill_qty=5,  # 撤单前成交5
+        remaining_qty=0,
+    )
+    assert receipt1.receipt_type == "CANCELED" and receipt1.fill_qty > 0
+    print(f"  ✓ 撤单成功(有部分成交): fill_qty={receipt1.fill_qty}")
+    
+    # 撤单成功（撤单前无成交）
+    receipt2 = OrderReceipt(
+        order_id="order-2",
+        receipt_type="CANCELED",
+        timestamp=1200,
+        fill_qty=0,  # 撤单前无成交
+        remaining_qty=0,
+    )
+    assert receipt2.receipt_type == "CANCELED" and receipt2.fill_qty == 0
+    print(f"  ✓ 撤单成功(无成交): fill_qty={receipt2.fill_qty}")
+    
+    # 撤单失败
+    receipt3 = OrderReceipt(
+        order_id="order-3",
+        receipt_type="REJECTED",
+        timestamp=1300,
+    )
+    assert receipt3.receipt_type == "REJECTED"
+    print(f"  ✓ 撤单失败: receipt_type={receipt3.receipt_type}")
+    
+    print("✓ Request and receipt types test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -1841,6 +1973,8 @@ def run_all_tests():
         test_segment_queue_zero_constraint,
         test_segment_price_change_queue_constraint_detailed,
         test_crossing_immediate_execution,
+        test_nonuniform_snapshot_timing,
+        test_request_and_receipt_types,
     ]
     
     passed = 0
