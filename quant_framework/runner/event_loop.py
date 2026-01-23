@@ -18,11 +18,26 @@
 
 import heapq
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Protocol, TYPE_CHECKING
 from enum import Enum, auto
 
 from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
-from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment
+from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest
+
+if TYPE_CHECKING:
+    from ..trading.receipt_logger import ReceiptLogger
+
+
+class IReceiptLogger(Protocol):
+    """回执记录器接口协议。"""
+    
+    def register_order(self, order_id: str, qty: int) -> None:
+        """注册订单。"""
+        ...
+    
+    def log_receipt(self, receipt: OrderReceipt) -> None:
+        """记录回执。"""
+        ...
 
 
 class EventType(Enum):
@@ -185,6 +200,7 @@ class EventLoopRunner:
         strategy: IStrategy,
         oms: IOrderManager,
         config: RunnerConfig = None,
+        receipt_logger: Optional[IReceiptLogger] = None,
     ):
         """初始化运行器。
 
@@ -195,6 +211,7 @@ class EventLoopRunner:
             strategy: 策略
             oms: 订单管理器
             config: 运行器配置
+            receipt_logger: 回执记录器（可选）
         """
         self.feed = feed
         self.tape_builder = tape_builder
@@ -202,6 +219,7 @@ class EventLoopRunner:
         self.strategy = strategy
         self.oms = oms
         self.config = config or RunnerConfig()
+        self.receipt_logger = receipt_logger
 
         # 验证时间线配置
         if self.config.timeline.a <= 0:
@@ -212,6 +230,9 @@ class EventLoopRunner:
         self.current_recvtime = 0
         self.current_snapshot: Optional[NormalizedSnapshot] = None
         self._pending_receipts: List[Tuple[int, OrderReceipt]] = []
+        
+        # 待处理的撤单请求列表（从策略获取）
+        self._pending_cancels: List[Tuple[int, CancelRequest]] = []
 
         # 诊断信息
         self.diagnostics: Dict[str, Any] = {
@@ -219,6 +240,7 @@ class EventLoopRunner:
             "orders_submitted": 0,
             "orders_filled": 0,
             "receipts_generated": 0,
+            "cancels_submitted": 0,
         }
 
     def run(self) -> Dict[str, Any]:
@@ -240,8 +262,19 @@ class EventLoopRunner:
         # 初始快照回调
         orders = self.strategy.on_snapshot(prev, self.oms)
         for order in orders:
-            self.oms.submit(order, self.current_recvtime)
+            # 如果订单已有create_time（预设发送时间），使用该时间
+            # 否则使用当前时间
+            submit_time = order.create_time if order.create_time > 0 else self.current_recvtime
+            self.oms.submit(order, submit_time)
             self.diagnostics["orders_submitted"] += 1
+            # 注册到receipt_logger
+            if self.receipt_logger:
+                self.receipt_logger.register_order(order.order_id, order.qty)
+        
+        # 从策略获取待处理的撤单请求（如果策略支持）
+        if hasattr(self.strategy, 'get_pending_cancels'):
+            self._pending_cancels = self.strategy.get_pending_cancels()
+            self.diagnostics["cancels_submitted"] = len(self._pending_cancels)
 
         interval_count = 0
 
@@ -354,6 +387,9 @@ class EventLoopRunner:
         # 避免"生成过去事件"的因果反转问题
         current_seg_idx = 0
         last_exchtime = t_a
+        
+        # 调度区间内的撤单请求
+        self._schedule_pending_cancels(event_queue, t_a, t_b)
 
         while event_queue:
             # Step 1: Peek 下一个事件的时间（不弹出）
@@ -444,6 +480,10 @@ class EventLoopRunner:
                 self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
             
             self.oms.on_receipt(receipt)
+            
+            # 记录回执到logger
+            if self.receipt_logger:
+                self.receipt_logger.log_receipt(receipt)
 
             if receipt.receipt_type in ["FILL", "PARTIAL"]:
                 self.diagnostics["orders_filled"] += 1
@@ -464,6 +504,18 @@ class EventLoopRunner:
                         event_type=EventType.ORDER_ARRIVAL,
                         data=order,
                     ))
+        
+        elif event.event_type == EventType.CANCEL_ARRIVAL:
+            # 撤单到达：处理撤单请求
+            self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
+            cancel_request = event.data
+            
+            # 调用交易所处理撤单
+            receipt = self.exchange.on_cancel_arrival(cancel_request.order_id, event.time)
+            
+            if receipt:
+                # 调度撤单回执到策略
+                self._schedule_receipt(receipt, event_queue, recv_b)
 
         elif event.event_type == EventType.INTERVAL_END:
             snapshot = event.data
@@ -491,11 +543,10 @@ class EventLoopRunner:
             self.diagnostics["orders_submitted"] += 1
     
     def _has_order_events_between(self, recv_a: int, recv_b: int, t_a: int, t_b: int) -> bool:
-        """判断区间内是否存在需要处理的订单事件。"""
+        """判断区间内是否存在需要处理的订单或撤单事件。"""
         active_orders = self.oms.get_active_orders()
-        if not active_orders:
-            return False
-
+        
+        # 检查活跃订单
         for order in active_orders:
             if order.arrival_time is not None:
                 if order.arrival_time < t_b:
@@ -508,6 +559,13 @@ class EventLoopRunner:
 
             exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
             if exchtime_arr < t_b:
+                return True
+        
+        # 检查待处理的撤单
+        for cancel_sent_time, cancel_request in self._pending_cancels:
+            recv_arr = cancel_sent_time + self.config.delay_out
+            exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+            if exchtime_arr >= t_a and exchtime_arr < t_b:
                 return True
 
         return False
@@ -546,6 +604,37 @@ class EventLoopRunner:
         """缓存将在后续区间到达的回执。"""
         receipt.recv_time = recv_time
         self._pending_receipts.append((recv_time, receipt))
+
+    def _schedule_pending_cancels(self, event_queue: List[Event], t_a: int, t_b: int) -> None:
+        """调度区间内的撤单请求到事件队列。
+        
+        将撤单发送时间落在区间[t_a, t_b)内的撤单请求加入事件队列。
+        
+        Args:
+            event_queue: 事件队列
+            t_a: 区间开始的交易所时间
+            t_b: 区间结束的交易所时间
+        """
+        remaining: List[Tuple[int, CancelRequest]] = []
+        
+        for cancel_sent_time, cancel_request in self._pending_cancels:
+            # 计算撤单到达交易所的时间
+            recv_arr = cancel_sent_time + self.config.delay_out
+            exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+            
+            if exchtime_arr >= t_a and exchtime_arr < t_b:
+                # 撤单到达时间在区间内，加入事件队列
+                heapq.heappush(event_queue, Event(
+                    time=exchtime_arr,
+                    event_type=EventType.CANCEL_ARRIVAL,
+                    data=cancel_request,
+                ))
+            elif exchtime_arr >= t_b:
+                # 撤单到达时间在未来区间，保留
+                remaining.append((cancel_sent_time, cancel_request))
+            # else: 撤单到达时间早于当前区间，已过期，丢弃
+        
+        self._pending_cancels = remaining
 
     def _schedule_receipt(self, receipt: OrderReceipt, event_queue: List[Event], recv_b: int) -> None:
         """统一调度回执到策略的事件。
