@@ -145,7 +145,9 @@ class ReceiptLogger:
             raise ValueError("No output file specified")
         
         # 确保目录存在
-        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+        dir_path = os.path.dirname(output_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         
         with open(output_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=[

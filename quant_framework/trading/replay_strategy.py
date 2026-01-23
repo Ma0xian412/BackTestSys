@@ -13,6 +13,7 @@ CSV文件格式：
 """
 
 import csv
+import logging
 import os
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
@@ -20,6 +21,9 @@ from typing import List, Tuple, Optional
 from ..core.interfaces import IStrategy
 from ..core.types import Order, CancelRequest, Side, OrderReceipt
 from ..core.dto import SnapshotDTO, ReadOnlyOMSView
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -134,7 +138,7 @@ class ReplayStrategy(IStrategy):
                     self.orders.append(record)
                 except (KeyError, ValueError) as e:
                     # 跳过无效行
-                    print(f"Warning: Skipping invalid order row: {row}, error: {e}")
+                    logger.warning(f"Skipping invalid order row: {row}, error: {e}")
     
     def _load_cancels(self, filepath: str) -> None:
         """从CSV文件加载撤单记录。
@@ -153,7 +157,7 @@ class ReplayStrategy(IStrategy):
                     self.cancels.append(record)
                 except (KeyError, ValueError) as e:
                     # 跳过无效行
-                    print(f"Warning: Skipping invalid cancel row: {row}, error: {e}")
+                    logger.warning(f"Skipping invalid cancel row: {row}, error: {e}")
     
     def _prepare_pending_events(self) -> None:
         """准备待处理的订单和撤单事件，按时间排序。"""

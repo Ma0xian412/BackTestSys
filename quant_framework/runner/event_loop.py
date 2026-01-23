@@ -18,11 +18,26 @@
 
 import heapq
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Protocol, TYPE_CHECKING
 from enum import Enum, auto
 
 from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
 from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest
+
+if TYPE_CHECKING:
+    from ..trading.receipt_logger import ReceiptLogger
+
+
+class IReceiptLogger(Protocol):
+    """回执记录器接口协议。"""
+    
+    def register_order(self, order_id: str, qty: int) -> None:
+        """注册订单。"""
+        ...
+    
+    def log_receipt(self, receipt: OrderReceipt) -> None:
+        """记录回执。"""
+        ...
 
 
 class EventType(Enum):
@@ -185,7 +200,7 @@ class EventLoopRunner:
         strategy: IStrategy,
         oms: IOrderManager,
         config: RunnerConfig = None,
-        receipt_logger: Optional[Any] = None,
+        receipt_logger: Optional[IReceiptLogger] = None,
     ):
         """初始化运行器。
 
