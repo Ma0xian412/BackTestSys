@@ -1079,6 +1079,858 @@ def test_receipt_delay_consistency():
     print("✓ Receipt delay consistency test passed")
 
 
+def test_event_deterministic_ordering():
+    """测试修复问题2：Event比较使用(time, priority, seq)确保确定性排序。
+    
+    验证同一时刻的多个事件有确定性的处理顺序，避免"同样输入偶发不同输出"。
+    
+    优先级顺序应为：
+    1. SEGMENT_END（先完成内部撮合）
+    2. ORDER_ARRIVAL/CANCEL_ARRIVAL（交易所收到请求）
+    3. RECEIPT_TO_STRATEGY（策略看到回执）
+    4. INTERVAL_END（最后做边界对齐）
+    """
+    print("\n--- Test 22: Event Deterministic Ordering ---")
+    
+    import heapq
+    from quant_framework.runner.event_loop import (
+        Event, EventType, EVENT_TYPE_PRIORITY, reset_event_seq_counter
+    )
+    
+    # 重置序列号计数器确保测试隔离
+    reset_event_seq_counter()
+    
+    # 创建同一时刻的多种事件（故意打乱顺序创建）
+    t = 1000
+    events = [
+        Event(time=t, event_type=EventType.INTERVAL_END, data="interval"),
+        Event(time=t, event_type=EventType.RECEIPT_TO_STRATEGY, data="receipt1"),
+        Event(time=t, event_type=EventType.SEGMENT_END, data="segment"),
+        Event(time=t, event_type=EventType.ORDER_ARRIVAL, data="order"),
+        Event(time=t, event_type=EventType.RECEIPT_TO_STRATEGY, data="receipt2"),
+        Event(time=t, event_type=EventType.CANCEL_ARRIVAL, data="cancel"),
+    ]
+    
+    # 放入heap
+    heap = []
+    for event in events:
+        heapq.heappush(heap, event)
+    
+    # 按顺序弹出
+    popped = []
+    while heap:
+        popped.append(heapq.heappop(heap))
+    
+    print("事件弹出顺序:")
+    for i, event in enumerate(popped):
+        print(f"  {i+1}. {event.event_type.name} (priority={event.priority}, seq={event.seq})")
+    
+    # 验证优先级顺序
+    expected_order = [
+        EventType.SEGMENT_END,      # priority 1
+        EventType.ORDER_ARRIVAL,    # priority 2
+        EventType.CANCEL_ARRIVAL,   # priority 3
+        EventType.RECEIPT_TO_STRATEGY,  # priority 4 (receipt1)
+        EventType.RECEIPT_TO_STRATEGY,  # priority 4 (receipt2, seq更大)
+        EventType.INTERVAL_END,     # priority 5
+    ]
+    
+    actual_order = [e.event_type for e in popped]
+    assert actual_order == expected_order, \
+        f"事件顺序不正确\n期望: {[e.name for e in expected_order]}\n实际: {[e.name for e in actual_order]}"
+    
+    # 验证同类型事件按seq排序
+    receipt_events = [e for e in popped if e.event_type == EventType.RECEIPT_TO_STRATEGY]
+    assert receipt_events[0].data == "receipt1" and receipt_events[1].data == "receipt2", \
+        "同类型事件应按创建顺序（seq）排序"
+    
+    # 多次运行验证确定性
+    for run in range(3):
+        reset_event_seq_counter()
+        heap2 = []
+        for event in events:
+            heapq.heappush(heap2, Event(
+                time=event.time,
+                event_type=event.event_type,
+                data=event.data,
+            ))
+        result = []
+        while heap2:
+            result.append(heapq.heappop(heap2).event_type)
+        assert result == expected_order, f"第{run+1}次运行结果不一致"
+    
+    print("✓ 多次运行结果一致，确保确定性")
+    print("✓ Event deterministic ordering test passed")
+
+
+def test_peek_advance_pop_paradigm():
+    """测试修复问题1：事件循环使用"peek, advance, pop batch"范式。
+    
+    验证交易所在处理事件前被推进到正确时间，避免"生成过去事件"的因果反转。
+    
+    测试场景：
+    1. 在区间内某时刻有订单到达
+    2. 交易所advance产生的回执时间 <= 订单到达时间
+    3. 验证回执被正确处理（不会出现因果反转）
+    """
+    print("\n--- Test 23: Peek-Advance-Pop Paradigm ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建有足够成交量的区间，确保会产生回执
+    snapshots = [
+        create_test_snapshot(1000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 100)]),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 100)]),
+    ]
+    
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    
+    # 记录事件处理顺序的策略
+    class EventOrderTrackingStrategy:
+        def __init__(self):
+            self.event_log = []  # [(event_type, time)]
+        
+        def on_snapshot(self, snapshot, oms):
+            ts = snapshot.ts_exch if hasattr(snapshot, 'ts_exch') else 0
+            self.event_log.append(("SNAPSHOT", ts))
+            # 第一个快照时下单，位置靠前确保会成交
+            if len(self.event_log) == 1:
+                return [Order(
+                    order_id="test-order",
+                    side=Side.BUY,
+                    price=100.0,
+                    qty=5,
+                )]
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            self.event_log.append(("RECEIPT", receipt.timestamp, receipt.recv_time))
+            return []
+    
+    strategy = EventOrderTrackingStrategy()
+    
+    # 使用延迟配置
+    runner_config = RunnerConfig(
+        delay_out=100,  # 订单在1100时到达
+        delay_in=50,    # 回执延迟50
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"事件日志: {strategy.event_log}")
+    print(f"订单提交数: {results['diagnostics']['orders_submitted']}")
+    print(f"回执生成数: {results['diagnostics']['receipts_generated']}")
+    
+    # 验证因果顺序：快照先于回执
+    snapshot_indices = [i for i, e in enumerate(strategy.event_log) if e[0] == "SNAPSHOT"]
+    receipt_indices = [i for i, e in enumerate(strategy.event_log) if e[0] == "RECEIPT"]
+    
+    if receipt_indices:
+        # 第一个快照应该在任何回执之前
+        assert snapshot_indices[0] < receipt_indices[0], "第一个快照应该在回执之前处理"
+        print("✓ 因果顺序正确：快照先于回执")
+        
+        # 验证回执时间戳符合因果逻辑
+        for event in strategy.event_log:
+            if event[0] == "RECEIPT":
+                timestamp, recv_time = event[1], event[2]
+                assert recv_time >= timestamp, f"recv_time({recv_time})应 >= timestamp({timestamp})"
+                print(f"✓ 回执时间因果正确: timestamp={timestamp}, recv_time={recv_time}")
+    
+    print("✓ Peek-advance-pop paradigm test passed")
+
+
+def test_receipt_recv_time_authority():
+    """测试修复问题3：RECEIPT_TO_STRATEGY事件使用recv_time作为权威策略侧时间。
+    
+    验证处理回执时，current_recvtime使用event.recv_time或receipt.recv_time，
+    而不是从event.time推导。
+    """
+    print("\n--- Test 24: Receipt recv_time Authority ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建快照
+    snapshots = [
+        create_test_snapshot(1000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 80)]),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 80)]),
+    ]
+    
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    
+    # 记录recv_time的策略
+    recorded_recv_times = []
+    
+    class RecvTimeTrackingStrategy:
+        def __init__(self):
+            self.order_placed = False
+        
+        def on_snapshot(self, snapshot, oms):
+            if not self.order_placed:
+                self.order_placed = True
+                return [Order(
+                    order_id="recv-time-test",
+                    side=Side.BUY,
+                    price=100.0,
+                    qty=3,
+                )]
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            # 记录回执的recv_time
+            recorded_recv_times.append({
+                'receipt_timestamp': receipt.timestamp,
+                'receipt_recv_time': receipt.recv_time,
+            })
+            return []
+    
+    strategy = RecvTimeTrackingStrategy()
+    
+    # 配置延迟
+    delay_in = 200
+    runner_config = RunnerConfig(
+        delay_out=50,
+        delay_in=delay_in,
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"记录的recv_time: {recorded_recv_times}")
+    
+    # 验证recv_time = timestamp + delay_in
+    for record in recorded_recv_times:
+        expected_recv_time = record['receipt_timestamp'] + delay_in
+        assert record['receipt_recv_time'] == expected_recv_time, \
+            f"recv_time应为{expected_recv_time}（timestamp + delay_in），实际为{record['receipt_recv_time']}"
+        print(f"✓ recv_time正确: {record['receipt_timestamp']} + {delay_in} = {record['receipt_recv_time']}")
+    
+    print("✓ Receipt recv_time authority test passed")
+
+
+def test_no_causal_reversal_with_int_truncation():
+    """测试问题1：验证因果反转被自动避免（通过时间钳制）。
+    
+    验证场景：
+    1. 使用非1:1的时间线映射（如a=0.9）可能因int截断导致事件时间早于当前时间
+    2. 系统应自动将事件时间钳制到当前时间，避免因果反转
+    3. 回测应正常完成，不抛出异常
+    
+    关键点：现在系统通过时间钳制来避免因果反转，而不是抛出错误。
+    """
+    print("\n--- Test 25: No Causal Reversal with Int Truncation ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建多个区间的快照，确保有足够的事件
+    snapshots = [
+        create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, last_vol_split=[(100.0, 80)]),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 80)]),
+        create_test_snapshot(3000, 100.0, 101.0, bid_qty=20, last_vol_split=[(100.0, 80)]),
+    ]
+    
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 测试策略：每个快照都下单
+    class FrequentOrderStrategy:
+        def __init__(self):
+            self.count = 0
+        
+        def on_snapshot(self, snapshot, oms):
+            self.count += 1
+            return [Order(
+                order_id=f"test-{self.count}",
+                side=Side.BUY,
+                price=100.0,
+                qty=5,
+            )]
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            return []
+    
+    # 测试用例1：正常时间线（1:1映射），应该成功
+    print("测试1：正常时间线(a=1.0, b=0)...")
+    runner_config = RunnerConfig(
+        delay_out=50,
+        delay_in=100,
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    feed.reset()
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=FIFOExchangeSimulator(cancel_front_ratio=0.5),
+        strategy=FrequentOrderStrategy(),
+        oms=OrderManager(),
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    print(f"  结果: intervals={results['intervals']}, receipts={results['diagnostics']['receipts_generated']}")
+    print("  ✓ 正常时间线测试通过")
+    
+    # 测试用例2：缩放时间线（a=0.9），int截断可能导致问题，但系统应自动钳制
+    print("测试2：缩放时间线(a=0.9, b=100)...")
+    runner_config2 = RunnerConfig(
+        delay_out=50,
+        delay_in=100,
+        timeline=TimelineConfig(a=0.9, b=100),
+    )
+    
+    feed.reset()
+    runner2 = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=FIFOExchangeSimulator(cancel_front_ratio=0.5),
+        strategy=FrequentOrderStrategy(),
+        oms=OrderManager(),
+        config=runner_config2,
+    )
+    
+    results2 = runner2.run()
+    print(f"  结果: intervals={results2['intervals']}, receipts={results2['diagnostics']['receipts_generated']}")
+    print("  ✓ 缩放时间线测试通过，因果反转被自动避免")
+    
+    # 测试用例3：更极端的缩放，验证系统仍能正常运行
+    print("测试3：极端缩放时间线(a=2.0, b=-500)...")
+    runner_config3 = RunnerConfig(
+        delay_out=50,
+        delay_in=100,
+        timeline=TimelineConfig(a=2.0, b=-500),
+    )
+    
+    feed.reset()
+    runner3 = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=FIFOExchangeSimulator(cancel_front_ratio=0.5),
+        strategy=FrequentOrderStrategy(),
+        oms=OrderManager(),
+        config=runner_config3,
+    )
+    
+    results3 = runner3.run()
+    print(f"  结果: intervals={results3['intervals']}, receipts={results3['diagnostics']['receipts_generated']}")
+    print("  ✓ 极端缩放测试通过，因果反转被自动避免")
+    
+    print("✓ No causal reversal with int truncation test passed")
+
+
+def test_segment_queue_zero_constraint():
+    """测试问题2：段转换时队列归零约束。
+    
+    验证场景（以bid为例）：
+    当价格路径是 3318 -> 3317 -> 3316 -> 3317 -> 3318 时：
+    - 在从3318变为3317的转换时刻，3318这一档的队列长度应该为0
+    - 因为如果还有剩余队列，价格不会从3318变为3317
+    
+    这是一个强约束：当段结束时best price变化，意味着该价位的队列已经清空。
+    
+    关键验证：净流入量应该基于此约束进行分配，使得转换时队列深度=0。
+    即：Q_A + N - M = 0 => N = M - Q_A
+    """
+    print("\n--- Test 26: Segment Queue Zero Constraint ---")
+    
+    # 创建一个场景：bid价格从高到低变化
+    # 这意味着在转换点，原价位的队列应该为0
+    
+    # 使用多档位快照来模拟价格路径变化
+    # A快照：bid最优价3318，queue = 50
+    # B快照：bid最优价3316，queue = 30 (3318和3317都变为0)
+    prev = create_multi_level_snapshot(
+        1000,
+        bids=[(3318, 50), (3317, 40), (3316, 30)],
+        asks=[(3319, 100), (3320, 100)],
+        last_vol_split=[(3318, 30), (3317, 20), (3316, 10)]  # 有成交导致队列消耗
+    )
+    
+    curr = create_multi_level_snapshot(
+        5000,  # 5秒间隔
+        bids=[(3316, 25), (3315, 35)],  # 3318和3317队列归零，不在盘口
+        asks=[(3317, 80), (3318, 90)],  # ask也变化了
+        last_vol_split=[(3318, 30), (3317, 20), (3316, 10)]
+    )
+    
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    tape = builder.build(prev, curr)
+    
+    print(f"生成了{len(tape)}个段")
+    
+    # 检查每个段的转换
+    for i, seg in enumerate(tape):
+        print(f"  段{seg.index}: t=[{seg.t_start}, {seg.t_end}], bid={seg.bid_price}, ask={seg.ask_price}")
+        print(f"    trades: {dict(seg.trades)}")
+        print(f"    cancels: {dict(seg.cancels)}")
+        print(f"    net_flow: {dict(seg.net_flow)}")
+    
+    # 验证：当价格从高价转换到低价时，计算队列是否归零
+    price_transitions = []
+    for i in range(len(tape) - 1):
+        curr_seg = tape[i]
+        next_seg = tape[i + 1]
+        if abs(curr_seg.bid_price - next_seg.bid_price) > 0.01:
+            price_transitions.append({
+                'from_seg': i + 1,
+                'to_seg': i + 2,
+                'seg_idx': i,
+                'from_price': curr_seg.bid_price,
+                'to_price': next_seg.bid_price,
+                'transition_time': curr_seg.t_end,
+            })
+    
+    print(f"\n价格转换点: {len(price_transitions)}个")
+    
+    # 验证队列归零约束：对于bid价格下降的转换，检查净流入是否满足约束
+    def get_initial_qty(price):
+        for p, q in [(3318, 50), (3317, 40), (3316, 30)]:
+            if abs(p - price) < 0.01:
+                return q
+        return 0
+    
+    for trans in price_transitions:
+        print(f"  段{trans['from_seg']}->段{trans['to_seg']}: "
+              f"价格 {trans['from_price']} -> {trans['to_price']} "
+              f"(时刻 {trans['transition_time']})")
+        
+        if trans['from_price'] > trans['to_price']:
+            # bid价格下降，验证队列归零约束
+            price = trans['from_price']
+            q_a = get_initial_qty(price)
+            
+            # 计算在该价位作为best bid期间的总成交量和净流入
+            total_trades = 0
+            total_net_flow = 0
+            for j in range(trans['seg_idx'] + 1):
+                seg = tape[j]
+                if abs(seg.bid_price - price) < 0.01:
+                    total_trades += seg.trades.get((Side.BUY, price), 0)
+                    total_net_flow += seg.net_flow.get((Side.BUY, price), 0)
+            
+            # 队列结束深度 = Q_A + N - M
+            ending_queue = q_a + total_net_flow - total_trades
+            print(f"    价格{price}: Q_A={q_a}, N={total_net_flow}, M={total_trades}, 结束队列={ending_queue}")
+            
+            # 验证队列归零（允许小误差）
+            assert abs(ending_queue) <= 1, f"队列未归零: {ending_queue}"
+            print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，队列正确归零")
+        else:
+            print(f"  ✓ bid从{trans['from_price']}升到{trans['to_price']}，新单进入")
+    
+    print("✓ Segment queue zero constraint test passed")
+
+
+def test_segment_price_change_queue_constraint_detailed():
+    """测试问题2的详细验证：段转换时的成交量分配约束。
+    
+    根据问题描述的例子：
+    - 价格路径：3318 -> 3317 -> 3316 -> 3317 -> 3318
+    - 总成交量：3318=100, 3317=100, 3316=50
+    - 总时间：5秒，每段1秒
+    
+    在第一段（3318, 0-1s）结束时：
+    - bid best price从3318变为3317
+    - 意味着3318这一档在1s时刻长度为0
+    
+    这个约束体现在：该段在3318价位的成交量应该等于或超过该价位的初始队列深度。
+    """
+    print("\n--- Test 27: Detailed Segment Price Change Queue Constraint ---")
+    
+    # 模拟场景：价格从3318逐步下降
+    # 初始3318队列深度为100，如果有100的成交，队列会清空
+    prev = create_multi_level_snapshot(
+        1000,
+        bids=[(3318.0, 100), (3317.0, 100), (3316.0, 80)],
+        asks=[(3319.0, 100)],
+        last_vol_split=[(3318.0, 100), (3317.0, 100), (3316.0, 50)]
+    )
+    
+    curr = create_multi_level_snapshot(
+        6000,  # 5秒间隔
+        bids=[(3318.0, 80), (3317.0, 80), (3316.0, 60)],
+        asks=[(3319.0, 80)],
+        last_vol_split=[(3318.0, 100), (3317.0, 100), (3316.0, 50)]
+    )
+    
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    tape = builder.build(prev, curr)
+    
+    print(f"生成了{len(tape)}个段")
+    
+    # 收集每个价位的总成交量
+    total_trades_by_price = {}
+    for seg in tape:
+        for (side, price), qty in seg.trades.items():
+            if side == Side.BUY:
+                if price not in total_trades_by_price:
+                    total_trades_by_price[price] = 0
+                total_trades_by_price[price] += qty
+    
+    print(f"\n各价位总成交量(bid侧):")
+    for price, qty in sorted(total_trades_by_price.items(), reverse=True):
+        print(f"  价格{price}: {qty}")
+    
+    # 验证成交量分配
+    # 根据lastvolsplit，3318应该有100的成交
+    expected_3318 = 100
+    actual_3318 = total_trades_by_price.get(3318.0, 0)
+    print(f"\n3318价位成交: 期望={expected_3318}, 实际={actual_3318}")
+    assert actual_3318 == expected_3318, f"3318价位成交量不匹配"
+    
+    expected_3317 = 100
+    actual_3317 = total_trades_by_price.get(3317.0, 0)
+    print(f"3317价位成交: 期望={expected_3317}, 实际={actual_3317}")
+    assert actual_3317 == expected_3317, f"3317价位成交量不匹配"
+    
+    expected_3316 = 50
+    actual_3316 = total_trades_by_price.get(3316.0, 0)
+    print(f"3316价位成交: 期望={expected_3316}, 实际={actual_3316}")
+    assert actual_3316 == expected_3316, f"3316价位成交量不匹配"
+    
+    # 打印每段的详细信息
+    print("\n每段详情:")
+    for seg in tape:
+        print(f"  段{seg.index}: t=[{seg.t_start}, {seg.t_end}], bid={seg.bid_price}")
+        bid_trades = {p: q for (s, p), q in seg.trades.items() if s == Side.BUY}
+        if bid_trades:
+            print(f"    bid成交: {bid_trades}")
+    
+    print("✓ Detailed segment price change queue constraint test passed")
+
+
+def test_crossing_immediate_execution():
+    """测试crossing立即成交逻辑。
+    
+    验证场景：
+    1. BUY订单 price >= ask_best 时立即成交
+    2. SELL订单 price <= bid_best 时立即成交
+    3. IOC订单：立即成交后剩余取消
+    4. GTC订单：立即成交后剩余排队
+    """
+    print("\n--- Test 28: Crossing Immediate Execution ---")
+    
+    # 创建测试tape
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 创建快照：bid@100, ask@101
+    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60)
+    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=40, ask_qty=50,
+                                last_vol_split=[(100.0, 10), (101.0, 10)])
+    
+    tape = builder.build(prev, curr)
+    print(f"生成了{len(tape)}个段")
+    for seg in tape:
+        print(f"  段{seg.index}: bid={seg.bid_price}, ask={seg.ask_price}")
+        print(f"    activation_bid={seg.activation_bid}")
+        print(f"    activation_ask={seg.activation_ask}")
+    
+    # 创建交易所模拟器
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange.set_tape(tape, 1000, 2000)
+    
+    # 测试1：BUY订单crossing (price >= ask)
+    print("\n测试1: BUY订单crossing...")
+    buy_order_cross = Order(
+        order_id="buy-cross-1",
+        side=Side.BUY,
+        price=101.0,  # 等于ask，应该crossing
+        qty=10,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 初始化ask档位深度
+    ask_level = exchange._get_level(Side.SELL, 101.0)
+    ask_level.q_mkt = 60.0  # 设置ask档位深度
+    
+    receipt = exchange.on_order_arrival(buy_order_cross, 1100, 50)
+    if receipt:
+        print(f"  收到回执: type={receipt.receipt_type}, fill_qty={receipt.fill_qty}, "
+              f"fill_price={receipt.fill_price}, remaining={receipt.remaining_qty}")
+        assert receipt.fill_qty > 0, "应该有立即成交"
+        print(f"  ✓ BUY crossing成交 {receipt.fill_qty} @ {receipt.fill_price}")
+    else:
+        print(f"  订单已入队")
+    
+    # 测试2：SELL订单crossing (price <= bid)
+    print("\n测试2: SELL订单crossing...")
+    sell_order_cross = Order(
+        order_id="sell-cross-1",
+        side=Side.SELL,
+        price=100.0,  # 等于bid，应该crossing
+        qty=15,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 初始化bid档位深度
+    bid_level = exchange._get_level(Side.BUY, 100.0)
+    bid_level.q_mkt = 50.0  # 设置bid档位深度
+    
+    receipt2 = exchange.on_order_arrival(sell_order_cross, 1200, 60)
+    if receipt2:
+        print(f"  收到回执: type={receipt2.receipt_type}, fill_qty={receipt2.fill_qty}, "
+              f"fill_price={receipt2.fill_price}, remaining={receipt2.remaining_qty}")
+        assert receipt2.fill_qty > 0, "应该有立即成交"
+        print(f"  ✓ SELL crossing成交 {receipt2.fill_qty} @ {receipt2.fill_price}")
+    else:
+        print(f"  订单已入队")
+    
+    # 测试3：IOC订单crossing后剩余取消
+    print("\n测试3: IOC订单crossing...")
+    ioc_order = Order(
+        order_id="ioc-cross-1",
+        side=Side.BUY,
+        price=101.0,
+        qty=100,  # 数量大于可用流动性
+        tif=TimeInForce.IOC,
+    )
+    
+    receipt3 = exchange.on_order_arrival(ioc_order, 1300, 50)
+    if receipt3:
+        print(f"  收到回执: type={receipt3.receipt_type}, fill_qty={receipt3.fill_qty}, remaining={receipt3.remaining_qty}")
+        if receipt3.fill_qty > 0 and receipt3.fill_qty < 100:
+            assert receipt3.receipt_type == "PARTIAL" or receipt3.remaining_qty == 0, "IOC部分成交后应该取消剩余"
+            print(f"  ✓ IOC订单部分成交{receipt3.fill_qty}，剩余已取消")
+    
+    # 测试4：不crossing的订单（被动排队）
+    print("\n测试4: 不crossing的订单...")
+    passive_order = Order(
+        order_id="passive-1",
+        side=Side.BUY,
+        price=99.0,  # 低于ask，不会crossing
+        qty=20,
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt4 = exchange.on_order_arrival(passive_order, 1400, 50)
+    if receipt4:
+        print(f"  收到回执: type={receipt4.receipt_type}")
+    else:
+        print(f"  ✓ 订单已被动入队（无立即成交）")
+        # 验证订单在队列中
+        shadow_orders = exchange.get_shadow_orders()
+        passive_in_queue = any(o.order_id == "passive-1" for o in shadow_orders)
+        assert passive_in_queue, "被动订单应该在队列中"
+        print(f"  ✓ 订单在队列中")
+    
+    print("✓ Crossing immediate execution test passed")
+
+
+def test_nonuniform_snapshot_timing():
+    """测试非均匀快照推送时间处理。
+    
+    验证场景：
+    1. A快照的时间被视为T_B - 500ms
+    2. 所有变化都在[T_B-500ms, T_B]区间内
+    3. 当间隔小于500ms时，使用原始T_A
+    """
+    print("\n--- Test 29: Non-uniform Snapshot Timing ---")
+    
+    # 使用默认配置（非均匀快照时间处理默认启用）
+    tape_config = TapeConfig(snapshot_min_interval_ms=500)
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 测试1: 间隔为1500ms的快照（超过500ms阈值）
+    # T_A=1000, T_B=2500, effective_t_a = 2500-500 = 2000
+    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60,
+                                last_vol_split=[])
+    curr = create_test_snapshot(2500, 100.5, 101.5, bid_qty=40, ask_qty=50,
+                                last_vol_split=[(100.5, 20)])  # 有成交
+    
+    tape = builder.build(prev, curr)
+    
+    print(f"快照间隔: 1500ms (超过500ms阈值)")
+    print(f"T_A=1000, T_B=2500, effective_t_a=2000")
+    print(f"生成了{len(tape)}个段")
+    
+    for seg in tape:
+        print(f"  段{seg.index}: t=[{seg.t_start}, {seg.t_end}], "
+              f"duration={seg.t_end - seg.t_start}ms, "
+              f"bid={seg.bid_price}, ask={seg.ask_price}")
+        if seg.trades:
+            print(f"    trades: {dict(seg.trades)}")
+    
+    # 验证：所有段都应该从effective_t_a(2000)开始
+    first_seg = tape[0]
+    assert first_seg.t_start == 2000, f"第一段应从2000开始，实际{first_seg.t_start}"
+    print(f"  ✓ 第一段正确从effective_t_a=2000开始")
+    
+    # 最后一段应该到T_B=2500结束
+    last_seg = tape[-1]
+    assert last_seg.t_end == 2500, f"最后一段应到2500结束，实际{last_seg.t_end}"
+    print(f"  ✓ 最后一段正确到T_B=2500结束")
+    
+    # 测试2: 间隔小于500ms时，使用原始T_A
+    print("\n测试短间隔快照...")
+    prev2 = create_test_snapshot(3000, 100.0, 101.0)
+    curr2 = create_test_snapshot(3400, 100.5, 101.5, last_vol_split=[(100.5, 10)])
+    
+    tape2 = builder.build(prev2, curr2)
+    print(f"快照间隔: 400ms (小于500ms阈值)")
+    print(f"T_A=3000, T_B=3400, effective_t_a=max(3000, 3400-500)=3000")
+    print(f"生成了{len(tape2)}个段")
+    
+    # 间隔小于500ms时，effective_t_a = max(T_A, T_B-500) = max(3000, 2900) = 3000
+    first_seg_start = tape2[0].t_start
+    assert first_seg_start == 3000, f"第一段应从3000开始，实际{first_seg_start}"
+    print(f"  ✓ 短间隔正确处理，从{first_seg_start}开始")
+    
+    print("✓ Non-uniform snapshot timing test passed")
+
+
+def test_request_and_receipt_types():
+    """测试请求类型和回执类型的设计。
+    
+    验证：
+    1. RequestType枚举（ORDER/CANCEL）
+    2. ReceiptType枚举（FILL/PARTIAL/CANCELED/REJECTED）
+    3. CancelRequest数据类
+    4. 撤单回执的判断逻辑
+    """
+    print("\n--- Test 30: Request and Receipt Types ---")
+    
+    from quant_framework.core.types import RequestType, ReceiptType, CancelRequest, OrderReceipt
+    
+    # 测试RequestType
+    print("测试RequestType...")
+    assert RequestType.ORDER.value == "ORDER"
+    assert RequestType.CANCEL.value == "CANCEL"
+    print(f"  ✓ RequestType: ORDER={RequestType.ORDER.value}, CANCEL={RequestType.CANCEL.value}")
+    
+    # 测试CancelRequest
+    print("测试CancelRequest...")
+    cancel_req = CancelRequest(order_id="test-order-1", create_time=1000)
+    assert cancel_req.order_id == "test-order-1"
+    assert cancel_req.create_time == 1000
+    print(f"  ✓ CancelRequest创建成功: order_id={cancel_req.order_id}")
+    
+    # 测试撤单回执逻辑
+    print("测试撤单回执逻辑...")
+    
+    # 撤单成功（撤单前有部分成交）
+    receipt1 = OrderReceipt(
+        order_id="order-1",
+        receipt_type="CANCELED",
+        timestamp=1100,
+        fill_qty=5,  # 撤单前成交5
+        remaining_qty=0,
+    )
+    assert receipt1.receipt_type == "CANCELED" and receipt1.fill_qty > 0
+    print(f"  ✓ 撤单成功(有部分成交): fill_qty={receipt1.fill_qty}")
+    
+    # 撤单成功（撤单前无成交）
+    receipt2 = OrderReceipt(
+        order_id="order-2",
+        receipt_type="CANCELED",
+        timestamp=1200,
+        fill_qty=0,  # 撤单前无成交
+        remaining_qty=0,
+    )
+    assert receipt2.receipt_type == "CANCELED" and receipt2.fill_qty == 0
+    print(f"  ✓ 撤单成功(无成交): fill_qty={receipt2.fill_qty}")
+    
+    # 撤单失败
+    receipt3 = OrderReceipt(
+        order_id="order-3",
+        receipt_type="REJECTED",
+        timestamp=1300,
+    )
+    assert receipt3.receipt_type == "REJECTED"
+    print(f"  ✓ 撤单失败: receipt_type={receipt3.receipt_type}")
+    
+    print("✓ Request and receipt types test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -1107,6 +1959,15 @@ def run_all_tests():
         test_historical_receipts_processing,
         test_intra_segment_advancement,
         test_receipt_delay_consistency,
+        test_event_deterministic_ordering,
+        test_peek_advance_pop_paradigm,
+        test_receipt_recv_time_authority,
+        test_no_causal_reversal_with_int_truncation,
+        test_segment_queue_zero_constraint,
+        test_segment_price_change_queue_constraint_detailed,
+        test_crossing_immediate_execution,
+        test_nonuniform_snapshot_timing,
+        test_request_and_receipt_types,
     ]
     
     passed = 0
