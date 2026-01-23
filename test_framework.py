@@ -1931,6 +1931,337 @@ def test_request_and_receipt_types():
     print("✓ Request and receipt types test passed")
 
 
+def test_replay_strategy():
+    """测试重放策略的CSV读取和订单生成功能。"""
+    print("\n--- Test 31: Replay Strategy ---")
+    
+    import os
+    import tempfile
+    from quant_framework.trading.replay_strategy import ReplayStrategy, OrderRecord, CancelRecord
+    from quant_framework.core.types import Order, CancelRequest, Side
+    
+    # 创建临时CSV文件
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 创建订单文件
+        order_file = os.path.join(tmpdir, "PubOrderLog_TestMachine_Day20240101_Id12345.csv")
+        with open(order_file, 'w') as f:
+            f.write("OrderId,LimitPrice,Volume,OrderDirection,SentTime\n")
+            f.write("1001,100.5,10,Buy,1000\n")
+            f.write("1002,99.0,20,Sell,1100\n")
+            f.write("1003,101.0,15,Buy,1200\n")
+        
+        # 创建撤单文件
+        cancel_file = os.path.join(tmpdir, "PubOrderCancelRequestLog_TestMachine_Day20240101_Id12345.csv")
+        with open(cancel_file, 'w') as f:
+            f.write("OrderId,CancelSentTime\n")
+            f.write("1001,1500\n")
+            f.write("1002,1600\n")
+        
+        # 测试策略加载
+        strategy = ReplayStrategy(
+            name="TestReplay",
+            order_file=order_file,
+            cancel_file=cancel_file,
+        )
+        
+        # 验证加载的订单
+        assert len(strategy.orders) == 3, f"应加载3个订单，实际{len(strategy.orders)}"
+        assert strategy.orders[0].order_id == 1001
+        assert strategy.orders[0].limit_price == 100.5
+        assert strategy.orders[0].volume == 10
+        assert strategy.orders[0].direction == "Buy"
+        assert strategy.orders[0].sent_time == 1000
+        print(f"  ✓ 成功加载3个订单")
+        
+        # 验证加载的撤单
+        assert len(strategy.cancels) == 2, f"应加载2个撤单，实际{len(strategy.cancels)}"
+        assert strategy.cancels[0].order_id == 1001
+        assert strategy.cancels[0].cancel_sent_time == 1500
+        print(f"  ✓ 成功加载2个撤单")
+        
+        # 验证pending_orders按时间排序
+        assert len(strategy.pending_orders) == 3
+        times = [t for t, o in strategy.pending_orders]
+        assert times == sorted(times), "订单应按时间排序"
+        print(f"  ✓ 订单按时间正确排序")
+        
+        # 验证pending_cancels
+        assert len(strategy.pending_cancels) == 2
+        print(f"  ✓ 撤单列表正确准备")
+        
+        # 测试on_snapshot返回所有订单
+        class MockOMSView:
+            def get_active_orders(self):
+                return []
+            def get_portfolio(self):
+                return None
+        
+        # 创建mock snapshot
+        from quant_framework.core.dto import SnapshotDTO, LevelDTO
+        snapshot = SnapshotDTO(
+            ts_exch=1000,
+            bids=(LevelDTO(100.0, 100),),
+            asks=(LevelDTO(101.0, 100),),
+        )
+        
+        orders = strategy.on_snapshot(snapshot, MockOMSView())
+        assert len(orders) == 3, f"第一次快照应返回3个订单，实际{len(orders)}"
+        assert all(isinstance(o, Order) for o in orders)
+        print(f"  ✓ 第一次快照返回所有3个订单")
+        
+        # 验证第二次快照不返回订单
+        orders2 = strategy.on_snapshot(snapshot, MockOMSView())
+        assert len(orders2) == 0, "后续快照不应返回订单"
+        print(f"  ✓ 后续快照不返回订单")
+        
+        # 验证get_pending_cancels
+        cancels = strategy.get_pending_cancels()
+        assert len(cancels) == 2
+        assert all(isinstance(c[1], CancelRequest) for c in cancels)
+        print(f"  ✓ get_pending_cancels返回2个撤单请求")
+        
+        # 验证统计信息
+        stats = strategy.get_statistics()
+        assert stats['total_orders'] == 3
+        assert stats['total_cancels'] == 2
+        print(f"  ✓ 统计信息正确: {stats}")
+    
+    print("✓ Replay strategy test passed")
+
+
+def test_receipt_logger():
+    """测试回执记录器的功能。"""
+    print("\n--- Test 32: Receipt Logger ---")
+    
+    import os
+    import tempfile
+    from quant_framework.trading.receipt_logger import ReceiptLogger, ReceiptRecord
+    from quant_framework.core.types import OrderReceipt
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_file = os.path.join(tmpdir, "receipts.csv")
+        
+        # 创建logger
+        logger = ReceiptLogger(output_file=output_file)
+        
+        # 注册订单
+        logger.register_order("order-1", 100)
+        logger.register_order("order-2", 50)
+        logger.register_order("order-3", 30)
+        
+        assert len(logger.order_total_qty) == 3
+        print(f"  ✓ 注册3个订单成功")
+        
+        # 记录回执 - 部分成交
+        receipt1 = OrderReceipt(
+            order_id="order-1",
+            receipt_type="PARTIAL",
+            timestamp=1000,
+            fill_qty=30,
+            fill_price=100.5,
+            remaining_qty=70,
+        )
+        receipt1.recv_time = 1010
+        logger.log_receipt(receipt1)
+        
+        # 记录回执 - 全部成交
+        receipt2 = OrderReceipt(
+            order_id="order-1",
+            receipt_type="FILL",
+            timestamp=2000,
+            fill_qty=70,
+            fill_price=100.5,
+            remaining_qty=0,
+        )
+        receipt2.recv_time = 2010
+        logger.log_receipt(receipt2)
+        
+        # 记录回执 - 撤单
+        receipt3 = OrderReceipt(
+            order_id="order-2",
+            receipt_type="CANCELED",
+            timestamp=3000,
+            fill_qty=20,  # 撤单前有部分成交
+            fill_price=99.0,
+            remaining_qty=30,
+        )
+        receipt3.recv_time = 3010
+        logger.log_receipt(receipt3)
+        
+        # 记录回执 - 拒绝
+        receipt4 = OrderReceipt(
+            order_id="order-3",
+            receipt_type="REJECTED",
+            timestamp=4000,
+            fill_qty=0,
+            fill_price=0.0,
+            remaining_qty=30,
+        )
+        receipt4.recv_time = 4010
+        logger.log_receipt(receipt4)
+        
+        assert len(logger.records) == 4
+        print(f"  ✓ 记录4条回执成功")
+        
+        # 验证统计
+        stats = logger.get_statistics()
+        assert stats['total_receipts'] == 4
+        assert stats['total_orders'] == 3
+        assert stats['partial_fill_count'] == 1
+        assert stats['full_fill_count'] == 1
+        assert stats['cancel_count'] == 1
+        assert stats['reject_count'] == 1
+        print(f"  ✓ 回执类型统计正确")
+        
+        # 验证成交量统计
+        assert logger.order_filled_qty['order-1'] == 100  # 全部成交
+        assert logger.order_filled_qty['order-2'] == 20   # 部分成交后撤单
+        assert logger.order_filled_qty['order-3'] == 0    # 被拒绝
+        print(f"  ✓ 成交量统计正确")
+        
+        # 计算成交率
+        fill_rate_qty = logger.calculate_fill_rate()
+        # 总量: 100 + 50 + 30 = 180
+        # 成交: 100 + 20 + 0 = 120
+        expected_rate = 120 / 180
+        assert abs(fill_rate_qty - expected_rate) < 0.01, f"成交率应为{expected_rate}，实际{fill_rate_qty}"
+        print(f"  ✓ 按数量成交率: {fill_rate_qty:.2%}")
+        
+        fill_rate_count = logger.calculate_fill_rate_by_count()
+        # 3个订单中1个完全成交
+        expected_rate_count = 1 / 3
+        assert abs(fill_rate_count - expected_rate_count) < 0.01
+        print(f"  ✓ 按订单数成交率: {fill_rate_count:.2%}")
+        
+        # 保存到文件
+        logger.save_to_file()
+        assert os.path.exists(output_file)
+        
+        # 验证文件内容
+        with open(output_file, 'r') as f:
+            lines = f.readlines()
+        assert len(lines) == 5  # 1 header + 4 records
+        print(f"  ✓ CSV文件保存成功，共{len(lines)-1}条记录")
+        
+        # 打印统计摘要
+        print("\n  统计摘要:")
+        for key, value in stats.items():
+            print(f"    {key}: {value}")
+    
+    print("✓ Receipt logger test passed")
+
+
+def test_replay_integration():
+    """测试重放策略与事件循环的集成。"""
+    print("\n--- Test 33: Replay Strategy Integration ---")
+    
+    import os
+    import tempfile
+    from quant_framework.trading.replay_strategy import ReplayStrategy
+    from quant_framework.trading.receipt_logger import ReceiptLogger
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig
+    from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
+    from quant_framework.trading.oms import OrderManager, Portfolio
+    from quant_framework.core.types import NormalizedSnapshot, Level
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 创建订单文件（时间与快照时间匹配）
+        order_file = os.path.join(tmpdir, "orders.csv")
+        with open(order_file, 'w') as f:
+            f.write("OrderId,LimitPrice,Volume,OrderDirection,SentTime\n")
+            # 在快照1000时发送，到达时间应在区间内
+            f.write("1,100.0,10,Buy,1000\n")
+            f.write("2,101.0,5,Sell,1100\n")
+        
+        # 创建撤单文件
+        cancel_file = os.path.join(tmpdir, "cancels.csv")
+        with open(cancel_file, 'w') as f:
+            f.write("OrderId,CancelSentTime\n")
+            f.write("1,1500\n")
+        
+        # 创建快照数据
+        snapshots = [
+            NormalizedSnapshot(
+                ts_exch=1000,
+                bids=[Level(100.0, 100)],
+                asks=[Level(101.0, 100)],
+                last_vol_split=[(100.0, 50)],
+            ),
+            NormalizedSnapshot(
+                ts_exch=2000,
+                bids=[Level(100.0, 80)],
+                asks=[Level(101.0, 90)],
+                last_vol_split=[(100.0, 30)],
+            ),
+        ]
+        
+        # 创建mock feed
+        class MockFeed:
+            def __init__(self, snapshots):
+                self.snapshots = snapshots
+                self.idx = 0
+            
+            def next(self):
+                if self.idx < len(self.snapshots):
+                    snap = self.snapshots[self.idx]
+                    self.idx += 1
+                    return snap
+                return None
+            
+            def reset(self):
+                self.idx = 0
+        
+        # 创建组件
+        feed = MockFeed(snapshots)
+        tape_builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+        exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+        strategy = ReplayStrategy(
+            name="TestReplay",
+            order_file=order_file,
+            cancel_file=cancel_file,
+        )
+        oms = OrderManager(portfolio=Portfolio(cash=100000.0))
+        receipt_logger = ReceiptLogger()
+        
+        # 创建runner
+        runner = EventLoopRunner(
+            feed=feed,
+            tape_builder=tape_builder,
+            exchange=exchange,
+            strategy=strategy,
+            oms=oms,
+            config=RunnerConfig(delay_out=0, delay_in=0),
+            receipt_logger=receipt_logger,
+        )
+        
+        # 运行回测
+        results = runner.run()
+        
+        print(f"  回测结果: {results}")
+        print(f"  提交订单数: {results['diagnostics']['orders_submitted']}")
+        print(f"  撤单数: {results['diagnostics']['cancels_submitted']}")
+        print(f"  生成回执数: {results['diagnostics']['receipts_generated']}")
+        
+        # 验证订单被提交
+        assert results['diagnostics']['orders_submitted'] == 2, \
+            f"应提交2个订单，实际{results['diagnostics']['orders_submitted']}"
+        print(f"  ✓ 订单正确提交")
+        
+        # 验证撤单被处理
+        assert results['diagnostics']['cancels_submitted'] == 1, \
+            f"应有1个撤单，实际{results['diagnostics']['cancels_submitted']}"
+        print(f"  ✓ 撤单正确处理")
+        
+        # 验证receipt_logger接收到回执
+        if receipt_logger.records:
+            print(f"  ✓ ReceiptLogger记录了{len(receipt_logger.records)}条回执")
+            for record in receipt_logger.records:
+                print(f"    - {record.order_id}: {record.receipt_type}, fill_qty={record.fill_qty}")
+    
+    print("✓ Replay strategy integration test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -1968,6 +2299,9 @@ def run_all_tests():
         test_crossing_immediate_execution,
         test_nonuniform_snapshot_timing,
         test_request_and_receipt_types,
+        test_replay_strategy,
+        test_receipt_logger,
+        test_replay_integration,
     ]
     
     passed = 0
