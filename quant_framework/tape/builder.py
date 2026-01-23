@@ -47,10 +47,9 @@ class TapeConfig:
     top_k: int = 5  # Number of price levels to track
     
     # 非均匀快照推送配置
-    # Snapshot推送最小间隔（毫秒）：当快照间隔超过此值时，变化归因到最后min_interval_ms内
+    # Snapshot推送最小间隔（毫秒）：快照实际上是在T_B-min_interval_ms到T_B之间产生的变化
+    # 所以A快照的时间被视为T_B - min_interval_ms
     snapshot_min_interval_ms: int = 500
-    # 是否启用非均匀快照时间处理（默认关闭以保持向后兼容）
-    enable_nonuniform_snapshot_timing: bool = False
 
 
 class UnifiedTapeBuilder(ITapeBuilder):
@@ -83,9 +82,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         从A/B快照构建tape段。
         
-        非均匀快照时间处理：
-        当快照间隔超过snapshot_min_interval_ms时，所有变化归因到最后min_interval_ms内。
-        例如：间隔1500ms，变化归因到[t_b - 500ms, t_b]区间。
+        非均匀快照时间处理（默认启用）：
+        快照只在关键字段变化时推送，最小间隔500ms。
+        将A快照的时间视为T_B - 500ms，所有变化归因到[T_B-500ms, T_B]区间。
         
         Args:
             prev: Previous snapshot (A) at time T_A / 前一个快照（A），在T_A时刻
@@ -108,16 +107,14 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 f"快照时间必须严格递增。"
             )
         
-        # 处理非均匀快照时间
-        # 当间隔超过min_interval时，变化归因到最后min_interval内
-        interval = t_b - t_a
-        effective_t_a = t_a
-        
-        if self.config.enable_nonuniform_snapshot_timing:
-            min_interval = self.config.snapshot_min_interval_ms
-            if interval > min_interval:
-                # 变化归因到最后min_interval内
-                effective_t_a = t_b - min_interval
+        # 非均匀快照时间处理（默认启用）
+        # 将A快照的时间视为T_B - min_interval_ms
+        # 这样所有变化都归因到最后min_interval_ms内
+        min_interval = self.config.snapshot_min_interval_ms
+        effective_t_a = t_b - min_interval
+        # 确保effective_t_a不小于原始t_a（处理间隔小于min_interval的情况）
+        if effective_t_a < t_a:
+            effective_t_a = t_a
         
         # Extract endpoint best prices
         bid_a = self._best_price(prev, Side.BUY) or 0.0
@@ -130,39 +127,16 @@ class UnifiedTapeBuilder(ITapeBuilder):
         price_set = {p for p, q in last_vol_split if q > 0}
         
         if not price_set:
-            # No trades - create segment(s) based on timing
-            if effective_t_a > t_a:
-                # 两个段：静默期 + 变化期
-                return [
-                    TapeSegment(
-                        index=1,
-                        t_start=t_a,
-                        t_end=effective_t_a,
-                        bid_price=bid_a,
-                        ask_price=ask_a,
-                        activation_bid=self._compute_activation_set(bid_a, Side.BUY),
-                        activation_ask=self._compute_activation_set(ask_a, Side.SELL),
-                    ),
-                    TapeSegment(
-                        index=2,
-                        t_start=effective_t_a,
-                        t_end=t_b,
-                        bid_price=bid_b,
-                        ask_price=ask_b,
-                        activation_bid=self._compute_activation_set(bid_b, Side.BUY),
-                        activation_ask=self._compute_activation_set(ask_b, Side.SELL),
-                    ),
-                ]
-            else:
-                return [TapeSegment(
-                    index=1,
-                    t_start=t_a,
-                    t_end=t_b,
-                    bid_price=bid_a,
-                    ask_price=ask_a,
-                    activation_bid=self._compute_activation_set(bid_a, Side.BUY),
-                    activation_ask=self._compute_activation_set(ask_a, Side.SELL),
-                )]
+            # No trades - single segment from effective_t_a to t_b
+            return [TapeSegment(
+                index=1,
+                t_start=effective_t_a,
+                t_end=t_b,
+                bid_price=bid_a,
+                ask_price=ask_a,
+                activation_bid=self._compute_activation_set(bid_a, Side.BUY),
+                activation_ask=self._compute_activation_set(ask_a, Side.SELL),
+            )]
         
         p_min = min(price_set)
         p_max = max(price_set)
@@ -181,7 +155,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         bid_path = self._build_path_with_meeting_sequence(bid_a, bid_b, meeting_seq)
         ask_path = self._build_path_with_meeting_sequence(ask_a, ask_b, meeting_seq)
         
-        # 合并路径为全局段 - 使用effective_t_a作为实际开始时间
+        # 合并路径为全局段 - 使用effective_t_a作为开始时间
         segments = self._merge_paths_to_segments(bid_path, ask_path, effective_t_a, t_b)
         
         if not segments:
@@ -195,34 +169,14 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 activation_ask=self._compute_activation_set(ask_a, Side.SELL),
             )]
         
-        # 如果有静默期，在前面添加静默段
-        quiet_segment = None
-        if effective_t_a > t_a:
-            quiet_segment = TapeSegment(
-                index=0,  # 临时索引，后面会重新编号
-                t_start=t_a,
-                t_end=effective_t_a,
-                bid_price=bid_a,
-                ask_price=ask_a,
-                activation_bid=self._compute_activation_set(bid_a, Side.BUY),
-                activation_ask=self._compute_activation_set(ask_a, Side.SELL),
-            )
-        
-        # Compute activation sets for each segment (non-quiet segments only)
+        # Compute activation sets for each segment
         segments = self._add_activation_sets(segments, prev, curr)
         
-        # Two-round iterative volume allocation (non-quiet segments only)
+        # Two-round iterative volume allocation
         segments = self._allocate_volumes_iterative(segments, e_bid, e_ask, effective_t_a, t_b)
         
         # Derive cancellations and net flow using queue-zero constraint at price transitions
         segments = self._derive_cancellations_and_net_flow(segments, prev, curr)
-        
-        # Now add quiet segment at the beginning if needed
-        if quiet_segment is not None:
-            segments = [quiet_segment] + segments
-            # 重新编号
-            for i, seg in enumerate(segments):
-                segments[i] = replace(seg, index=i + 1)
         
         return segments
     

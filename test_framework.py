@@ -1810,19 +1810,18 @@ def test_nonuniform_snapshot_timing():
     """测试非均匀快照推送时间处理。
     
     验证场景：
-    1. 当快照间隔超过500ms时，所有变化归因到最后500ms
-    2. 中间未推送期间视为"静默期"
+    1. A快照的时间被视为T_B - 500ms
+    2. 所有变化都在[T_B-500ms, T_B]区间内
+    3. 当间隔小于500ms时，使用原始T_A
     """
     print("\n--- Test 29: Non-uniform Snapshot Timing ---")
     
-    # 启用非均匀快照时间处理
-    tape_config = TapeConfig(
-        enable_nonuniform_snapshot_timing=True,
-        snapshot_min_interval_ms=500,
-    )
+    # 使用默认配置（非均匀快照时间处理默认启用）
+    tape_config = TapeConfig(snapshot_min_interval_ms=500)
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
     
-    # 创建间隔为1500ms的快照（超过500ms阈值）
+    # 测试1: 间隔为1500ms的快照（超过500ms阈值）
+    # T_A=1000, T_B=2500, effective_t_a = 2500-500 = 2000
     prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60,
                                 last_vol_split=[])
     curr = create_test_snapshot(2500, 100.5, 101.5, bid_qty=40, ask_qty=50,
@@ -1831,6 +1830,7 @@ def test_nonuniform_snapshot_timing():
     tape = builder.build(prev, curr)
     
     print(f"快照间隔: 1500ms (超过500ms阈值)")
+    print(f"T_A=1000, T_B=2500, effective_t_a=2000")
     print(f"生成了{len(tape)}个段")
     
     for seg in tape:
@@ -1840,34 +1840,27 @@ def test_nonuniform_snapshot_timing():
         if seg.trades:
             print(f"    trades: {dict(seg.trades)}")
     
-    # 验证：应该有静默段 + 变化段
-    # 静默段: [1000, 2000] (1000ms)
-    # 变化段: [2000, 2500] (500ms)
-    assert len(tape) >= 2, f"应该至少有2个段，实际{len(tape)}个"
+    # 验证：所有段都应该从effective_t_a(2000)开始
+    first_seg = tape[0]
+    assert first_seg.t_start == 2000, f"第一段应从2000开始，实际{first_seg.t_start}"
+    print(f"  ✓ 第一段正确从effective_t_a=2000开始")
     
-    # 第一段应该是静默段（无成交）
-    quiet_seg = tape[0]
-    assert quiet_seg.t_start == 1000, f"静默段应从1000开始，实际{quiet_seg.t_start}"
-    assert quiet_seg.t_end == 2000, f"静默段应到2000结束，实际{quiet_seg.t_end}"
-    assert not quiet_seg.trades, "静默段不应有成交"
-    print(f"  ✓ 静默段正确: [{quiet_seg.t_start}, {quiet_seg.t_end}]")
+    # 最后一段应该到T_B=2500结束
+    last_seg = tape[-1]
+    assert last_seg.t_end == 2500, f"最后一段应到2500结束，实际{last_seg.t_end}"
+    print(f"  ✓ 最后一段正确到T_B=2500结束")
     
-    # 成交应该在变化段
-    total_trades = sum(
-        sum(seg.trades.values()) for seg in tape[1:]
-    )
-    print(f"  变化段总成交量: {total_trades}")
-    
-    # 测试2: 间隔小于500ms时不应添加静默段
+    # 测试2: 间隔小于500ms时，使用原始T_A
     print("\n测试短间隔快照...")
     prev2 = create_test_snapshot(3000, 100.0, 101.0)
     curr2 = create_test_snapshot(3400, 100.5, 101.5, last_vol_split=[(100.5, 10)])
     
     tape2 = builder.build(prev2, curr2)
     print(f"快照间隔: 400ms (小于500ms阈值)")
+    print(f"T_A=3000, T_B=3400, effective_t_a=max(3000, 3400-500)=3000")
     print(f"生成了{len(tape2)}个段")
     
-    # 间隔小于阈值时，应该正常处理（不添加静默段）
+    # 间隔小于500ms时，effective_t_a = max(T_A, T_B-500) = max(3000, 2900) = 3000
     first_seg_start = tape2[0].t_start
     assert first_seg_start == 3000, f"第一段应从3000开始，实际{first_seg_start}"
     print(f"  ✓ 短间隔正确处理，从{first_seg_start}开始")
