@@ -2466,6 +2466,22 @@ def test_multiple_orders_at_same_price():
         segment_iterations=2,
     )
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 构建tape并输出路径
+    tape = builder.build(prev, curr)
+    print(f"\n  Tape路径 (共{len(tape)}个段):")
+    for seg in tape:
+        print(f"    段{seg.index}: t=[{seg.t_start}, {seg.t_end}], bid={seg.bid_price}, ask={seg.ask_price}")
+        if seg.trades:
+            print(f"      trades: {dict(seg.trades)}")
+        if seg.cancels:
+            print(f"      cancels: {dict(seg.cancels)}")
+        if seg.net_flow:
+            print(f"      net_flow: {dict(seg.net_flow)}")
+        print(f"      activation_bid: {seg.activation_bid}")
+        print(f"      activation_ask: {seg.activation_ask}")
+    print()
+    
     exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
     oms = OrderManager()
     
