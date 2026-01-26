@@ -4,8 +4,7 @@ from dataclasses import replace
 from typing import Dict, List, Tuple, Set
 
 from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment
-
-EPSILON = 1e-12
+from .constants import EPSILON
 
 
 class QueueConstraintResolver:

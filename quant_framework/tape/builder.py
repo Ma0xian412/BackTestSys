@@ -15,12 +15,8 @@ import math
 
 from ..core.interfaces import ITapeBuilder
 from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment
+from .constants import EPSILON, LAMBDA_THRESHOLD
 from .queue_constraints import QueueConstraintResolver
-
-
-# Constants
-EPSILON = 1e-12
-LAMBDA_THRESHOLD = 1e-6
 
 
 @dataclass
