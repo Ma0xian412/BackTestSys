@@ -615,7 +615,10 @@ def test_dto_snapshot():
     dto = to_snapshot_dto(snapshot)
     
     print(f"DTO类型: {type(dto).__name__}")
-    print(f"DTO是否为frozen: True")  # dataclass frozen=True
+    # 验证DTO是frozen（使用dataclass的__dataclass_fields__属性检查）
+    is_frozen = hasattr(dto, '__dataclass_fields__') and dto.__class__.__dataclass_params__.frozen
+    print(f"DTO是否为frozen: {is_frozen}")
+    assert is_frozen, "SnapshotDTO应该是frozen=True"
     
     # 验证数据正确转换 - ts_recv是主时间线
     assert dto.ts_recv == 1000, f"时间戳应为1000，实际为{dto.ts_recv}"
@@ -2964,6 +2967,142 @@ def test_post_crossing_fill_with_net_increment():
     print("✓ Post-crossing fill with net increment test passed")
 
 
+def test_snapshot_duplication():
+    """测试快照复制功能。
+    
+    当两个快照之间的间隔超过500ms时，前一个快照会被复制以填充间隔。
+    复制的快照的last_vol_split为空。
+    
+    时间单位：tick（每tick=100ns）。500ms = 5_000_000 ticks。
+    """
+    print("\n--- Test 38: Snapshot Duplication ---")
+    
+    from quant_framework.core.data_loader import SnapshotDuplicatingFeed
+    from quant_framework.core.types import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
+    
+    # 创建简单的mock feed
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 测试1: 间隔1000ms，应该生成1个复制快照
+    print("\n测试1: 间隔1000ms (需要1个复制快照)...")
+    t1 = 1000 * TICK_PER_MS
+    t2 = 2000 * TICK_PER_MS
+    snapshots1 = [
+        create_test_snapshot(t1, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t2, 100.0, 101.0, last_vol_split=[(100.0, 20)]),
+    ]
+    
+    feed1 = SnapshotDuplicatingFeed(MockFeed(snapshots1))
+    
+    result1 = []
+    while True:
+        snap = feed1.next()
+        if snap is None:
+            break
+        result1.append(snap)
+    
+    print(f"  输入: 2个快照 (t={t1}, {t2})")
+    print(f"  输出: {len(result1)}个快照")
+    for i, snap in enumerate(result1):
+        print(f"    {i+1}: t={snap.ts_recv}, last_vol_split={snap.last_vol_split}")
+    
+    assert len(result1) == 3, f"应生成3个快照(A, A', B)，实际{len(result1)}"
+    assert result1[0].ts_recv == t1, f"第1个快照时间应为{t1}"
+    assert result1[1].ts_recv == t1 + SNAPSHOT_MIN_INTERVAL_TICK, f"第2个快照时间应为{t1 + SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result1[2].ts_recv == t2, f"第3个快照时间应为{t2}"
+    assert result1[1].last_vol_split == [], "复制快照的last_vol_split应为空"
+    print("  ✓ 1000ms间隔正确生成1个复制快照")
+    
+    # 测试2: 间隔2000ms，应该生成3个复制快照
+    print("\n测试2: 间隔2000ms (需要3个复制快照)...")
+    t3 = 1000 * TICK_PER_MS
+    t4 = 3000 * TICK_PER_MS
+    snapshots2 = [
+        create_test_snapshot(t3, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t4, 100.0, 101.0, last_vol_split=[(100.0, 30)]),
+    ]
+    
+    feed2 = SnapshotDuplicatingFeed(MockFeed(snapshots2))
+    
+    result2 = []
+    while True:
+        snap = feed2.next()
+        if snap is None:
+            break
+        result2.append(snap)
+    
+    print(f"  输入: 2个快照 (t={t3}, {t4})")
+    print(f"  输出: {len(result2)}个快照")
+    for i, snap in enumerate(result2):
+        print(f"    {i+1}: t={snap.ts_recv}, last_vol_split={snap.last_vol_split}")
+    
+    assert len(result2) == 5, f"应生成5个快照(A, A', A'', A''', B)，实际{len(result2)}"
+    assert result2[0].ts_recv == t3, f"第1个快照时间应为{t3}"
+    assert result2[1].ts_recv == t3 + SNAPSHOT_MIN_INTERVAL_TICK, f"第2个快照时间应为{t3 + SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result2[2].ts_recv == t3 + 2 * SNAPSHOT_MIN_INTERVAL_TICK, f"第3个快照时间应为{t3 + 2 * SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result2[3].ts_recv == t3 + 3 * SNAPSHOT_MIN_INTERVAL_TICK, f"第4个快照时间应为{t3 + 3 * SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result2[4].ts_recv == t4, f"第5个快照时间应为{t4}"
+    
+    # 验证所有复制快照的last_vol_split为空
+    for i in range(1, 4):
+        assert result2[i].last_vol_split == [], f"复制快照{i+1}的last_vol_split应为空"
+    print("  ✓ 2000ms间隔正确生成3个复制快照")
+    
+    # 测试3: 间隔500ms，不需要复制
+    print("\n测试3: 间隔500ms (不需要复制)...")
+    t5 = 1000 * TICK_PER_MS
+    t6 = 1500 * TICK_PER_MS
+    snapshots3 = [
+        create_test_snapshot(t5, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t6, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    feed3 = SnapshotDuplicatingFeed(MockFeed(snapshots3))
+    
+    result3 = []
+    while True:
+        snap = feed3.next()
+        if snap is None:
+            break
+        result3.append(snap)
+    
+    print(f"  输入: 2个快照 (t={t5}, {t6})")
+    print(f"  输出: {len(result3)}个快照")
+    
+    assert len(result3) == 2, f"应生成2个快照（无复制），实际{len(result3)}"
+    assert result3[0].ts_recv == t5
+    assert result3[1].ts_recv == t6
+    print("  ✓ 500ms间隔不需要复制")
+    
+    # 测试4: 重置功能
+    print("\n测试4: 重置功能...")
+    feed3.reset()
+    result4 = []
+    while True:
+        snap = feed3.next()
+        if snap is None:
+            break
+        result4.append(snap)
+    
+    assert len(result4) == 2, f"重置后应能再次获取2个快照"
+    print("  ✓ 重置功能正常")
+    
+    print("✓ Snapshot duplication test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -3008,6 +3147,7 @@ def run_all_tests():
         test_multiple_orders_at_same_price,
         test_crossing_blocked_by_existing_shadow,
         test_post_crossing_fill_with_net_increment,
+        test_snapshot_duplication,
     ]
     
     passed = 0

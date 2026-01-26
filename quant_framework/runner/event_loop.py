@@ -217,8 +217,6 @@ class EventLoopRunner:
         self.oms = oms
         self.config = config or RunnerConfig()
         self.receipt_logger = receipt_logger
-        # 时间线配置验证（向后兼容）
-        # 现在使用单一recv时间线，无需验证a值
 
         # 当前状态（统一使用recv time）
         self.current_time = 0  # 统一时间（ts_recv）
