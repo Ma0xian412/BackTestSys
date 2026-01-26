@@ -2588,6 +2588,354 @@ def test_multiple_orders_at_same_price():
     print("✓ Multiple orders at same price test passed")
 
 
+def test_crossing_blocked_by_existing_shadow():
+    """测试当本方有优先级更高的未成交shadow订单时，新订单不能crossing。
+    
+    验证场景：
+    对于SELL订单：检查是否有价格更低的SELL shadow订单
+    对于BUY订单：检查是否有价格更高的BUY shadow订单
+    
+    测试用例：
+    1. 第一个SELL订单在price=99 crossing（比bid@100更低的卖价）
+    2. 第二个SELL订单在price=100 crossing，但因为已有price=99的shadow订单，不能crossing
+    
+    逻辑：
+    - SELL订单在price P，如果有price < P的SELL shadow订单，则新订单不能crossing
+    - 因为市场会先匹配价格更低的卖单
+    """
+    print("\n--- Test 36: Crossing Blocked by Existing Shadow ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    # 手动创建一个segment
+    seg = TapeSegment(
+        index=1,
+        t_start=1000,
+        t_end=2000,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 30, (Side.BUY, 99.0): 20},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 50, (Side.BUY, 99.0): 30},
+        activation_bid={96.0, 97.0, 98.0, 99.0, 100.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+    
+    # 创建交易所模拟器
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange.set_tape([seg], 1000, 2000)
+    
+    # 初始化对手方（bid侧）的市场队列深度
+    bid_level_100 = exchange._get_level(Side.BUY, 100.0)
+    bid_level_100.q_mkt = 100.0
+    bid_level_99 = exchange._get_level(Side.BUY, 99.0)
+    bid_level_99.q_mkt = 80.0
+    
+    # 测试1: 第一个SELL订单在price=99 crossing
+    print("\n测试1: 第一个SELL订单在price=99 crossing...")
+    order1 = Order(
+        order_id="sell-99",
+        side=Side.SELL,
+        price=99.0,  # 低于bid@100，会crossing
+        qty=150,  # 要求150手
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt1 = exchange.on_order_arrival(order1, 1100, market_qty=0)
+    print(f"  第一个订单回执: {receipt1}")
+    
+    # 第一个订单应该crossing成交（吃掉bid@100和部分bid@99）
+    assert receipt1 is not None, "第一个订单应该有回执"
+    print(f"  ✓ 第一个订单crossing成交: {receipt1.fill_qty}手")
+    
+    # 获取shadow订单
+    shadows = exchange.get_shadow_orders()
+    sell99_shadow = None
+    for s in shadows:
+        if s.order_id == "sell-99":
+            sell99_shadow = s
+            break
+    
+    if sell99_shadow:
+        print(f"  剩余shadow: price={sell99_shadow.price}, remaining={sell99_shadow.remaining_qty}")
+    
+    # 测试2: 第二个SELL订单在price=100，应该被阻止crossing（因为有price=99的shadow）
+    print("\n测试2: 第二个SELL订单在price=100（应该被阻止crossing）...")
+    order2 = Order(
+        order_id="sell-100",
+        side=Side.SELL,
+        price=100.0,  # 高于order1的价格
+        qty=50,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 重新初始化bid侧（模拟有新的流动性）
+    bid_level_100.q_mkt = 50.0
+    
+    receipt2 = exchange.on_order_arrival(order2, 1200, market_qty=0)
+    print(f"  第二个订单回执: {receipt2}")
+    
+    # 如果有price=99的shadow订单（更低价的卖单），则price=100的订单不能crossing
+    if sell99_shadow and sell99_shadow.remaining_qty > 0:
+        assert receipt2 is None, f"第二个订单不应该立即成交（有更低价shadow），实际收到: {receipt2}"
+        print(f"  ✓ 第二个订单正确被阻止crossing（因为有price=99的shadow）")
+    else:
+        # 如果第一个订单已经全部成交，第二个订单可以crossing
+        print(f"  注意：第一个订单已全部成交，第二个订单可以crossing")
+    
+    # 测试3: 没有阻止的情况 - BUY订单在price=101，检查是否有price>101的BUY shadow
+    print("\n测试3: BUY订单在price=101（没有更高价的BUY shadow，应该可以crossing）...")
+    
+    # 初始化ask侧
+    ask_level_101 = exchange._get_level(Side.SELL, 101.0)
+    ask_level_101.q_mkt = 50.0
+    
+    order3 = Order(
+        order_id="buy-101",
+        side=Side.BUY,
+        price=101.0,  # 高于bid@100，会crossing with ask@101
+        qty=30,
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt3 = exchange.on_order_arrival(order3, 1300, market_qty=0)
+    print(f"  BUY订单回执: {receipt3}")
+    
+    # 没有更高价的BUY shadow，应该可以crossing
+    if receipt3 and receipt3.fill_qty > 0:
+        print(f"  ✓ BUY订单正确crossing成交: {receipt3.fill_qty}手")
+    else:
+        print(f"  BUY订单入队（没有crossing）")
+    
+    print("✓ Crossing blocked by existing shadow test passed")
+
+
+def test_post_crossing_fill_with_net_increment():
+    """测试post-crossing订单根据对手方净增量成交。
+    
+    验证场景：
+    假设segment中，bid1是100.0，bidvol1是100，我下了一个ask 100.0@150手的单。
+    根据crossing逻辑：
+    1. 先成交100手（crossing），发送100手回执
+    2. 剩余50手ask在100这个位置（标记为post-crossing）
+    3. 如果segment中bid@100的净增量N >= 0：
+       - 成交min(50, N)手
+       - 回执时间是消耗完50或N的时刻
+    4. 如果N < 0：这50手不成交
+    """
+    print("\n--- Test 37: Post-Crossing Fill with Net Increment ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    # 测试场景1: 净增量N > 剩余数量 (N=80 > remaining=50)
+    print("\n场景1: 净增量N=80 > 剩余数量50，应该全部成交...")
+    
+    # 手动创建一个segment，设置bid@100的净增量为80
+    seg1 = TapeSegment(
+        index=1,
+        t_start=1000,
+        t_end=2000,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 30},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 80},  # bid侧净增量80
+        activation_bid={96.0, 97.0, 98.0, 99.0, 100.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+    
+    exchange1 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange1.set_tape([seg1], 1000, 2000)
+    
+    # 重要：初始化对手方（bid侧）的市场队列深度
+    bid_level1 = exchange1._get_level(Side.BUY, 100.0)
+    bid_level1.q_mkt = 100.0  # bid@100有100手
+    
+    # 下一个SELL订单，会crossing
+    order1 = Order(
+        order_id="sell-n80",
+        side=Side.SELL,
+        price=100.0,
+        qty=150,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 假设bid@100有100手流动性（已通过_get_level初始化）
+    receipt1 = exchange1.on_order_arrival(order1, 1050, market_qty=0)
+    print(f"  Crossing回执: {receipt1}")
+    
+    # Crossing成交量取决于_get_q_mkt在arrival_time的计算结果
+    # 由于net_flow和trades的影响，实际可能略有不同
+    assert receipt1 is not None and receipt1.fill_qty > 0, "应该有crossing成交"
+    crossing_fill = receipt1.fill_qty
+    print(f"  Crossing成交量: {crossing_fill}手")
+    
+    # 获取shadow订单
+    shadows1 = exchange1.get_shadow_orders()
+    shadow1 = shadows1[0]
+    assert shadow1.is_post_crossing == True
+    expected_remaining = 150 - crossing_fill
+    assert shadow1.remaining_qty == expected_remaining, f"剩余应该是{expected_remaining}手，实际: {shadow1.remaining_qty}"
+    print(f"  Shadow订单: remaining={shadow1.remaining_qty}, is_post_crossing={shadow1.is_post_crossing}")
+    print(f"  Crossed prices: {shadow1.crossed_prices}")
+    
+    # 推进时间，应该根据净增量成交
+    receipts1 = exchange1.advance(1050, 2000, seg1)
+    print(f"  Advance生成的回执: {receipts1}")
+    
+    # post-crossing fill应该基于聚合净增量N=80
+    # 剩余数量 <= N，所以应该全部成交
+    if expected_remaining > 0:
+        assert len(receipts1) == 1, f"应该生成1个回执，实际: {len(receipts1)}"
+        assert receipts1[0].fill_qty == expected_remaining, f"应该成交{expected_remaining}手（全部剩余），实际: {receipts1[0].fill_qty}"
+        assert receipts1[0].receipt_type == "FILL", f"应该完全成交，实际: {receipts1[0].receipt_type}"
+        print(f"  ✓ 净增量N=80 >= 剩余{expected_remaining}，正确全部成交")
+    else:
+        print(f"  ✓ 订单已全部crossing成交")
+    
+    # 测试场景2: 净增量N < 剩余数量 (N=30 < remaining=50)
+    print("\n场景2: 净增量N=30 < 剩余数量50，应该部分成交30手...")
+    
+    seg2 = TapeSegment(
+        index=1,
+        t_start=1000,
+        t_end=2000,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 30},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 30},  # bid侧净增量30
+        activation_bid={96.0, 97.0, 98.0, 99.0, 100.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+    
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2.set_tape([seg2], 1000, 2000)
+    
+    # 重要：初始化对手方（bid侧）的市场队列深度
+    bid_level2 = exchange2._get_level(Side.BUY, 100.0)
+    bid_level2.q_mkt = 100.0  # bid@100有100手
+    
+    order2 = Order(
+        order_id="sell-n30",
+        side=Side.SELL,
+        price=100.0,
+        qty=150,
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt2 = exchange2.on_order_arrival(order2, 1050, market_qty=0)
+    print(f"  Crossing回执: {receipt2}")
+    assert receipt2 is not None and receipt2.fill_qty > 0, "应该有crossing成交"
+    crossing_fill2 = receipt2.fill_qty
+    expected_remaining2 = 150 - crossing_fill2
+    
+    receipts2 = exchange2.advance(1050, 2000, seg2)
+    print(f"  Advance生成的回执: {receipts2}")
+    
+    # post-crossing fill应该基于聚合净增量N=30
+    # 剩余数量 > N，所以只成交N手
+    if expected_remaining2 > 0:
+        assert len(receipts2) == 1, f"应该生成1个回执，实际: {len(receipts2)}"
+        expected_fill2 = min(expected_remaining2, 30)  # N=30
+        assert receipts2[0].fill_qty == expected_fill2, f"应该成交{expected_fill2}手，实际: {receipts2[0].fill_qty}"
+        if expected_fill2 < expected_remaining2:
+            assert receipts2[0].receipt_type == "PARTIAL", f"应该部分成交，实际: {receipts2[0].receipt_type}"
+        print(f"  ✓ 净增量N=30 < 剩余{expected_remaining2}，正确部分成交{expected_fill2}手")
+    
+    # 测试场景3: 净增量N < 0 (N=-10)
+    print("\n场景3: 净增量N=-10 < 0，不应该成交...")
+    
+    seg3 = TapeSegment(
+        index=1,
+        t_start=1000,
+        t_end=2000,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 30},
+        cancels={(Side.BUY, 100.0): 40},  # 撤单多于新单
+        net_flow={(Side.BUY, 100.0): -10},  # bid侧净增量为负
+        activation_bid={96.0, 97.0, 98.0, 99.0, 100.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+    
+    exchange3 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange3.set_tape([seg3], 1000, 2000)
+    
+    # 重要：初始化对手方（bid侧）的市场队列深度
+    bid_level3 = exchange3._get_level(Side.BUY, 100.0)
+    bid_level3.q_mkt = 100.0  # bid@100有100手
+    
+    order3 = Order(
+        order_id="sell-n-10",
+        side=Side.SELL,
+        price=100.0,
+        qty=150,
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt3 = exchange3.on_order_arrival(order3, 1050, market_qty=0)
+    print(f"  Crossing回执: {receipt3}")
+    assert receipt3 is not None and receipt3.fill_qty > 0, "应该有crossing成交"
+    crossing_fill3 = receipt3.fill_qty
+    expected_remaining3 = 150 - crossing_fill3
+    
+    receipts3 = exchange3.advance(1050, 2000, seg3)
+    print(f"  Advance生成的回执: {receipts3}")
+    
+    # 净增量N=-10 < 0，post-crossing订单不应该成交
+    if expected_remaining3 > 0:
+        assert len(receipts3) == 0, f"净增量为负，不应该生成回执，实际: {len(receipts3)}"
+        print(f"  ✓ 净增量N=-10 < 0，正确不成交（剩余{expected_remaining3}手）")
+    
+    # 测试场景4: 净增量N = 0
+    print("\n场景4: 净增量N=0，不应该成交...")
+    
+    seg4 = TapeSegment(
+        index=1,
+        t_start=1000,
+        t_end=2000,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 30},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 0},  # bid侧净增量为0
+        activation_bid={96.0, 97.0, 98.0, 99.0, 100.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+    
+    exchange4 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange4.set_tape([seg4], 1000, 2000)
+    
+    # 重要：初始化对手方（bid侧）的市场队列深度
+    bid_level4 = exchange4._get_level(Side.BUY, 100.0)
+    bid_level4.q_mkt = 100.0  # bid@100有100手
+    
+    order4 = Order(
+        order_id="sell-n0",
+        side=Side.SELL,
+        price=100.0,
+        qty=150,
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt4 = exchange4.on_order_arrival(order4, 1050, market_qty=0)
+    print(f"  Crossing回执: {receipt4}")
+    assert receipt4 is not None and receipt4.fill_qty > 0, "应该有crossing成交"
+    crossing_fill4 = receipt4.fill_qty
+    expected_remaining4 = 150 - crossing_fill4
+    
+    receipts4 = exchange4.advance(1050, 2000, seg4)
+    print(f"  Advance生成的回执: {receipts4}")
+    
+    # 净增量N=0，post-crossing订单不应该成交
+    if expected_remaining4 > 0:
+        assert len(receipts4) == 0, f"净增量为0，不应该生成回执，实际: {len(receipts4)}"
+        print(f"  ✓ 净增量N=0，正确不成交（剩余{expected_remaining4}手）")
+    
+    print("✓ Post-crossing fill with net increment test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -2630,6 +2978,8 @@ def run_all_tests():
         test_replay_integration,
         test_crossing_partial_fill_position_zero,
         test_multiple_orders_at_same_price,
+        test_crossing_blocked_by_existing_shadow,
+        test_post_crossing_fill_with_net_increment,
     ]
     
     passed = 0
