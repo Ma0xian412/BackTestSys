@@ -1771,7 +1771,7 @@ def test_crossing_immediate_execution():
     ask_level = exchange._get_level(Side.SELL, 101.0)
     ask_level.q_mkt = 60.0  # 设置ask档位深度
     
-    receipt = exchange.on_order_arrival(buy_order_cross, 1100, 50)
+    receipt = exchange.on_order_arrival(buy_order_cross, 1100 * TICK_PER_MS, 50)
     if receipt:
         print(f"  收到回执: type={receipt.receipt_type}, fill_qty={receipt.fill_qty}, "
               f"fill_price={receipt.fill_price}, remaining={receipt.remaining_qty}")
@@ -1794,7 +1794,7 @@ def test_crossing_immediate_execution():
     bid_level = exchange._get_level(Side.BUY, 100.0)
     bid_level.q_mkt = 50.0  # 设置bid档位深度
     
-    receipt2 = exchange.on_order_arrival(sell_order_cross, 1200, 60)
+    receipt2 = exchange.on_order_arrival(sell_order_cross, 1200 * TICK_PER_MS, 60)
     if receipt2:
         print(f"  收到回执: type={receipt2.receipt_type}, fill_qty={receipt2.fill_qty}, "
               f"fill_price={receipt2.fill_price}, remaining={receipt2.remaining_qty}")
@@ -1813,7 +1813,7 @@ def test_crossing_immediate_execution():
         tif=TimeInForce.IOC,
     )
     
-    receipt3 = exchange.on_order_arrival(ioc_order, 1300, 50)
+    receipt3 = exchange.on_order_arrival(ioc_order, 1300 * TICK_PER_MS, 50)
     if receipt3:
         print(f"  收到回执: type={receipt3.receipt_type}, fill_qty={receipt3.fill_qty}, remaining={receipt3.remaining_qty}")
         if receipt3.fill_qty > 0 and receipt3.fill_qty < 100:
@@ -1830,7 +1830,7 @@ def test_crossing_immediate_execution():
         tif=TimeInForce.GTC,
     )
     
-    receipt4 = exchange.on_order_arrival(passive_order, 1400, 50)
+    receipt4 = exchange.on_order_arrival(passive_order, 1400 * TICK_PER_MS, 50)
     if receipt4:
         print(f"  收到回执: type={receipt4.receipt_type}")
     else:
@@ -2664,7 +2664,7 @@ def test_crossing_blocked_by_existing_shadow():
         tif=TimeInForce.GTC,
     )
     
-    receipt1 = exchange.on_order_arrival(order1, 1100, market_qty=0)
+    receipt1 = exchange.on_order_arrival(order1, 1100 * TICK_PER_MS, market_qty=0)
     print(f"  第一个订单回执: {receipt1}")
     
     # 第一个订单应该crossing成交（吃掉bid@100和部分bid@99）
@@ -2695,7 +2695,7 @@ def test_crossing_blocked_by_existing_shadow():
     # 重新初始化bid侧（模拟有新的流动性）
     bid_level_100.q_mkt = 50.0
     
-    receipt2 = exchange.on_order_arrival(order2, 1200, market_qty=0)
+    receipt2 = exchange.on_order_arrival(order2, 1200 * TICK_PER_MS, market_qty=0)
     print(f"  第二个订单回执: {receipt2}")
     
     # 如果有price=99的shadow订单（更低价的卖单），则price=100的订单不能crossing
@@ -2721,7 +2721,7 @@ def test_crossing_blocked_by_existing_shadow():
         tif=TimeInForce.GTC,
     )
     
-    receipt3 = exchange.on_order_arrival(order3, 1300, market_qty=0)
+    receipt3 = exchange.on_order_arrival(order3, 1300 * TICK_PER_MS, market_qty=0)
     print(f"  BUY订单回执: {receipt3}")
     
     # 没有更高价的BUY shadow，应该可以crossing
