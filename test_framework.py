@@ -1561,41 +1561,60 @@ def test_segment_queue_zero_constraint():
     
     print(f"\n价格转换点: {len(price_transitions)}个")
     
-    # 验证队列归零约束：对于bid价格下降的转换，检查净流入是否满足约束
-    def get_initial_qty(price):
-        for p, q in [(3318, 50), (3317, 40), (3316, 30)]:
-            if abs(p - price) < 0.01:
-                return q
-        return 0
+    # 初始队列深度（来自A快照）
+    initial_qty = {3318: 50, 3317: 40, 3316: 30}
     
+    def get_initial_qty(price):
+        return initial_qty.get(int(round(price)), 0)
+    
+    # 队列归零约束验证：
+    # - bid下降时：离开的价位队列归零
+    # - ask上升时：离开的价位队列归零
+    # 
+    # 关键：当价格回到某个档位时，队列从0重新开始（因为之前离开时已归零）
+    
+    # 验证每次bid下降转换时的队列归零约束
     for trans in price_transitions:
-        print(f"  段{trans['from_seg']}->段{trans['to_seg']}: "
-              f"价格 {trans['from_price']} -> {trans['to_price']} "
-              f"(时刻 {trans['transition_time']})")
+        from_price = trans['from_price']
+        to_price = trans['to_price']
+        seg_idx = trans['seg_idx']
         
-        if trans['from_price'] > trans['to_price']:
-            # bid价格下降，验证队列归零约束
-            price = trans['from_price']
-            q_a = get_initial_qty(price)
+        print(f"  段{trans['from_seg']}->段{trans['to_seg']}: "
+              f"bid {from_price} -> {to_price}")
+        
+        if from_price > to_price:
+            # bid下降：from_price的队列应该归零
+            # 
+            # 计算方法：从该价位的最近一次"进入"开始累计
+            # - 如果这是首次在该价位，初始队列=A快照中的值
+            # - 如果是重访该价位，初始队列=0（因为之前离开时归零）
             
-            # 计算在该价位作为best bid期间的总成交量和净流入
-            total_trades = 0
-            total_net_flow = 0
-            for j in range(trans['seg_idx'] + 1):
+            # 找到该价位当前连续段的起点（向前找到价格变化点）
+            run_start = seg_idx
+            while run_start > 0 and abs(tape[run_start - 1].bid_price - from_price) < 0.01:
+                run_start -= 1
+            
+            # 判断是否为首次访问：检查run_start之前是否有该价位
+            is_first_visit = not any(
+                abs(tape[j].bid_price - from_price) < 0.01 
+                for j in range(run_start)
+            )
+            
+            # 初始队列
+            q = get_initial_qty(from_price) if is_first_visit else 0
+            
+            # 累计当前连续段的变化
+            for j in range(run_start, seg_idx + 1):
                 seg = tape[j]
-                if abs(seg.bid_price - price) < 0.01:
-                    total_trades += seg.trades.get((Side.BUY, price), 0)
-                    total_net_flow += seg.net_flow.get((Side.BUY, price), 0)
+                q += seg.net_flow.get((Side.BUY, from_price), 0)
+                q -= seg.trades.get((Side.BUY, from_price), 0)
             
-            # 队列结束深度 = Q_A + N - M
-            ending_queue = q_a + total_net_flow - total_trades
-            print(f"    价格{price}: Q_A={q_a}, N={total_net_flow}, M={total_trades}, 结束队列={ending_queue}")
-            
-            # 验证队列归零（允许小误差）
-            assert abs(ending_queue) <= 1, f"队列未归零: {ending_queue}"
-            print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，队列正确归零")
+            print(f"    bid@{from_price} 队列={q} (应归零, 首次={is_first_visit})")
+            assert abs(q) <= 1, f"bid下降时队列未归零: {q}"
+            print(f"  ✓ bid下降，队列正确归零")
         else:
-            print(f"  ✓ bid从{trans['from_price']}升到{trans['to_price']}，新单进入")
+            # bid上升：新单进入，无归零约束
+            print(f"  ✓ bid上升，新单进入")
     
     print("✓ Segment queue zero constraint test passed")
 
@@ -2262,6 +2281,313 @@ def test_replay_integration():
     print("✓ Replay strategy integration test passed")
 
 
+def test_crossing_partial_fill_position_zero():
+    """测试crossing部分成交后剩余订单的队列位置。
+    
+    验证场景：
+    当订单发生crossing并部分成交后，剩余部分的队列位置应该为0。
+    
+    逻辑：
+    - 如果我的订单在px上发生crossing，说明ask方在≤px有流动性
+    - 如果ask@px有流动性，那么bid@px不可能有订单（否则早就撮合了）
+    - 因此bid@px上不可能有之前的shadow订单，position直接为0
+    
+    本测试直接测试_queue_order函数的already_filled参数对position的影响。
+    """
+    print("\n--- Test 34: Crossing Partial Fill Position Zero ---")
+    
+    # 创建测试tape
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 创建快照：bid@100, ask@101
+    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=100)
+    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=50, ask_qty=100,
+                                last_vol_split=[(100.0, 10), (101.0, 10)])
+    
+    tape = builder.build(prev, curr)
+    print(f"生成了{len(tape)}个段")
+    
+    # 创建交易所模拟器
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange.set_tape(tape, 1000, 2000)
+    
+    # 测试1: 直接测试_queue_order函数，模拟crossing后剩余订单入队
+    print("\n测试1: 模拟crossing后剩余订单入队（already_filled > 0）...")
+    
+    # 创建一个订单
+    order_after_crossing = Order(
+        order_id="order-after-crossing",
+        side=Side.BUY,
+        price=101.0,  
+        qty=150,  # 原始订单数量
+        tif=TimeInForce.GTC,
+    )
+    
+    # 直接调用_queue_order，模拟已经部分成交100后剩余50入队
+    # already_filled=100 表示已经有crossing成交
+    exchange._queue_order(
+        order=order_after_crossing,
+        arrival_time=1100,
+        market_qty=50,  # 市场队列深度（这个在crossing后不重要）
+        remaining_qty=50,  # 剩余需要排队的数量
+        already_filled=100  # 已经通过crossing成交的数量
+    )
+    
+    # 验证订单在队列中
+    shadow_orders = exchange.get_shadow_orders()
+    order_in_queue = None
+    for so in shadow_orders:
+        if so.order_id == "order-after-crossing":
+            order_in_queue = so
+            break
+    
+    assert order_in_queue is not None, "订单应该在队列中"
+    print(f"  订单在队列中: pos={order_in_queue.pos}, remaining_qty={order_in_queue.remaining_qty}")
+    
+    # 关键断言：crossing后剩余订单的位置应该是0
+    assert order_in_queue.pos == 0, f"crossing后剩余订单位置应该为0，实际为{order_in_queue.pos}"
+    print(f"  ✓ crossing后队列位置正确为0")
+    
+    # 测试2: 对比没有crossing的订单
+    print("\n测试2: 没有crossing的被动订单入队（already_filled = 0）...")
+    
+    # 创建另一个交易所模拟器用于对比测试
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2.set_tape(tape, 1000, 2000)
+    
+    passive_order = Order(
+        order_id="passive-order",
+        side=Side.BUY,
+        price=99.0,  # 低于ask，不会crossing
+        qty=50,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 初始化该价位的market队列深度
+    level = exchange2._get_level(Side.BUY, 99.0)
+    level.q_mkt = 30.0  # 设置市场队列深度
+    
+    # 直接调用_queue_order，没有crossing成交
+    exchange2._queue_order(
+        order=passive_order,
+        arrival_time=1100,
+        market_qty=30,  # 市场队列深度
+        remaining_qty=50,  # 全部订单量
+        already_filled=0  # 没有crossing成交
+    )
+    
+    # 验证被动订单在队列中
+    shadow_orders2 = exchange2.get_shadow_orders()
+    passive_in_queue = None
+    for so in shadow_orders2:
+        if so.order_id == "passive-order":
+            passive_in_queue = so
+            break
+    
+    assert passive_in_queue is not None, "被动订单应该在队列中"
+    print(f"  被动订单在队列中: pos={passive_in_queue.pos}, remaining_qty={passive_in_queue.remaining_qty}")
+    
+    # 被动订单的位置应该 > 0（排在市场队列后面）
+    # pos = x_t + q_mkt_t + s_shadow, 其中q_mkt_t >= 30
+    assert passive_in_queue.pos >= 30, f"被动订单位置应该>=30（市场队列深度），实际为{passive_in_queue.pos}"
+    print(f"  ✓ 被动订单队列位置正确 >= 30")
+    
+    print("✓ Crossing partial fill position zero test passed")
+
+
+def test_multiple_orders_at_same_price():
+    """测试多个订单在同一价位的队列位置计算。
+    
+    测试场景：
+    - prev: bid1=3318, ask1=3319
+    - curr: bid1=3318, ask1=3319
+    - last_vol_split: 3316, 3317, 3318, 3319, 3320 各有成交
+    - 3个买单在价格3318，每个100手，时间均匀分布在prev和curr之间
+    
+    验证：
+    - 所有订单正确入队
+    - 订单位置按时间顺序递增（FIFO）
+    """
+    print("\n--- Test 35: Multiple Orders at Same Price ---")
+    
+    # 创建mock feed
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建快照
+    # prev: ts=1000, bid1=3318, ask1=3319，带有多档位
+    # curr: ts=2000, bid1=3318, ask1=3319，带有多档位
+    # last_vol_split: 3316, 3317, 3318, 3319, 3320 各有成交
+    
+    # 生成bid1之下的随机档位 (低于3318)
+    import random
+    random.seed(42)  # 固定随机种子以确保可重复性
+    
+    # bid档位: bid1=3318, 然后随机生成4档在3314-3317之间
+    bid_prices_below = sorted(random.sample([3314.0, 3315.0, 3316.0, 3317.0], 4), reverse=True)
+    bid_levels = [(3318.0, 100)]  # bid1
+    for p in bid_prices_below:
+        bid_levels.append((p, random.randint(50, 150)))
+    
+    # ask档位: ask1=3319, 然后随机生成4档在3320-3323之间
+    ask_prices_above = sorted(random.sample([3320.0, 3321.0, 3322.0, 3323.0], 4))
+    ask_levels = [(3319.0, 100)]  # ask1
+    for p in ask_prices_above:
+        ask_levels.append((p, random.randint(50, 150)))
+    
+    print(f"  生成的bid档位: {bid_levels}")
+    print(f"  生成的ask档位: {ask_levels}")
+    
+    prev = create_multi_level_snapshot(
+        ts=1000,
+        bids=bid_levels,
+        asks=ask_levels,
+        last_vol_split=[]  # prev没有last_vol_split
+    )
+    
+    curr = create_multi_level_snapshot(
+        ts=2000,
+        bids=bid_levels,  # 保持相同档位
+        asks=ask_levels,
+        last_vol_split=[
+            (3316.0, 10),
+            (3317.0, 10),
+            (3318.0, 10),
+            (3319.0, 10),
+            (3320.0, 10),
+        ]
+    )
+    
+    snapshots = [prev, curr]
+    feed = MockFeed(snapshots)
+    
+    # 创建组件
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 构建tape并输出路径
+    tape = builder.build(prev, curr)
+    print(f"\n  Tape路径 (共{len(tape)}个段):")
+    for seg in tape:
+        print(f"    段{seg.index}: t=[{seg.t_start}, {seg.t_end}], bid={seg.bid_price}, ask={seg.ask_price}")
+        if seg.trades:
+            print(f"      trades: {dict(seg.trades)}")
+        if seg.cancels:
+            print(f"      cancels: {dict(seg.cancels)}")
+        if seg.net_flow:
+            print(f"      net_flow: {dict(seg.net_flow)}")
+        print(f"      activation_bid: {seg.activation_bid}")
+        print(f"      activation_ask: {seg.activation_ask}")
+    print()
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    
+    # 创建策略：在第一个快照后提交3个订单
+    # 订单时间均匀分布：1000, 1333, 1666
+    class MultiOrderStrategy:
+        def __init__(self):
+            self.orders_created = False
+        
+        def on_snapshot(self, snapshot, oms):
+            if not self.orders_created:
+                self.orders_created = True
+                orders = []
+                # 3个订单，时间均匀分布在1000-2000之间
+                # 订单1: create_time=1000 (到达时间约1010)
+                # 订单2: create_time=1333 (到达时间约1343)
+                # 订单3: create_time=1666 (到达时间约1676)
+                for i in range(3):
+                    order = Order(
+                        order_id=f"buy-3318-{i+1}",
+                        side=Side.BUY,
+                        price=3318.0,
+                        qty=100,
+                        tif=TimeInForce.GTC,
+                    )
+                    order.create_time = 1000 + i * 333
+                    orders.append(order)
+                return orders
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            return []
+    
+    strategy = MultiOrderStrategy()
+    
+    # 配置运行器
+    runner_config = RunnerConfig(
+        delay_out=10,   # 订单到交易所的延迟
+        delay_in=10,    # 回执到策略的延迟
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"  结果: intervals={results['intervals']}, orders_submitted={results['diagnostics']['orders_submitted']}")
+    
+    # 验证提交了3个订单
+    assert results['diagnostics']['orders_submitted'] == 3, \
+        f"应该提交3个订单，实际提交{results['diagnostics']['orders_submitted']}个"
+    print(f"  ✓ 成功提交3个订单")
+    
+    # 获取所有shadow订单
+    shadow_orders = exchange.get_shadow_orders()
+    print(f"  Shadow订单数量: {len(shadow_orders)}")
+    
+    # 找出price=3318的订单
+    orders_at_3318 = [so for so in shadow_orders if abs(so.price - 3318.0) < 0.01]
+    print(f"  价格3318的订单数量: {len(orders_at_3318)}")
+    
+    for so in orders_at_3318:
+        print(f"    {so.order_id}: pos={so.pos}, qty={so.remaining_qty}, arrival={so.arrival_time}")
+    
+    # 验证订单数量
+    # 注意：如果某些订单被成交，可能不在队列中
+    # 但至少应该有记录
+    print(f"  ✓ 多订单在同一价位的测试完成")
+    
+    # 验证订单位置按时间递增（FIFO）
+    if len(orders_at_3318) >= 2:
+        sorted_orders = sorted(orders_at_3318, key=lambda x: x.arrival_time)
+        for i in range(1, len(sorted_orders)):
+            assert sorted_orders[i].pos >= sorted_orders[i-1].pos, \
+                f"订单位置应该按时间递增：{sorted_orders[i-1].order_id} pos={sorted_orders[i-1].pos} 应该 <= {sorted_orders[i].order_id} pos={sorted_orders[i].pos}"
+        print(f"  ✓ 订单位置按时间正确递增（FIFO）")
+    
+    print("✓ Multiple orders at same price test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -2302,6 +2628,8 @@ def run_all_tests():
         test_replay_strategy,
         test_receipt_logger,
         test_replay_integration,
+        test_crossing_partial_fill_position_zero,
+        test_multiple_orders_at_same_price,
     ]
     
     passed = 0

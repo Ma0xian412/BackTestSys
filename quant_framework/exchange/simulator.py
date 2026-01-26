@@ -519,16 +519,26 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         level = self._get_level(side, price)
         
-        # Initialize Q_mkt if first order at this level
-        if not level.queue and level.q_mkt == 0:
-            level.q_mkt = float(market_qty)
-        
-        # Calculate position using coordinate-axis model
-        x_t = self._get_x_coord(side, price, arrival_time)
-        q_mkt_t = self._get_q_mkt(side, price, arrival_time)
-        s_shadow = level.shadow_qty_at_time(arrival_time)
-        
-        pos = x_t + q_mkt_t + s_shadow
+        # Calculate position based on whether crossing occurred
+        if already_filled > 0:
+            # 订单发生了crossing（吃掉了对手方流动性）
+            # 剩余部分应该在队首，position为0
+            # 逻辑：如果我的订单在px上发生crossing，说明ask方在≤px有流动性
+            # 如果ask@px有流动性，那么bid@px不可能有订单（否则早就撮合了）
+            # 因此bid@px上不可能有之前的shadow订单，position直接为0
+            pos = 0
+        else:
+            # 没有crossing，使用坐标轴模型计算位置
+            # Initialize Q_mkt if first order at this level
+            if not level.queue and level.q_mkt == 0:
+                level.q_mkt = float(market_qty)
+            
+            # Calculate position using coordinate-axis model
+            x_t = self._get_x_coord(side, price, arrival_time)
+            q_mkt_t = self._get_q_mkt(side, price, arrival_time)
+            s_shadow = level.shadow_qty_at_time(arrival_time)
+            
+            pos = x_t + q_mkt_t + s_shadow
         
         # Create shadow order with remaining qty
         shadow = ShadowOrder(
