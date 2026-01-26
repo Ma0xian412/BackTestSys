@@ -137,40 +137,36 @@ class Event:
 
 @dataclass
 class TimelineConfig:
-    """双时间线配置。
-
-    映射公式:
-    - recvtime = a * exchtime + b
-    - exchtime = (recvtime - b) / a
-
-    要求: a > 0（严格单调）
-
-    Attributes:
-        a: 缩放因子（默认1.0）
-        b: 偏移量（默认0.0）
+    """时间线配置（已弃用 - 保留用于向后兼容）。
+    
+    现在使用单一的recv timeline，此类仅为兼容性保留。
+    所有时间都直接使用ts_recv，无需转换。
+    
+    Deprecated: This class is kept for backward compatibility.
+    All time values now use ts_recv directly without conversion.
     """
-    a: float = 1.0
-    b: float = 0.0
+    a: float = 1.0  # 保持为1，无转换
+    b: float = 0.0  # 保持为0，无转换
 
     def exchtime_to_recvtime(self, exchtime: int) -> int:
-        """将交易所时间转换为接收时间。"""
-        return int(self.a * exchtime + self.b)
+        """恒等映射（已弃用）。"""
+        return exchtime  # 直接返回，无转换
 
     def recvtime_to_exchtime(self, recvtime: int) -> int:
-        """将接收时间转换为交易所时间。"""
-        if self.a <= 0:
-            raise ValueError("时间线缩放因子'a'必须为正数")
-        return int((recvtime - self.b) / self.a)
+        """恒等映射（已弃用）。"""
+        return recvtime  # 直接返回，无转换
 
 
 @dataclass
 class RunnerConfig:
     """事件循环运行器配置。
+    
+    所有时间使用统一的recv timeline (ts_recv)，单位为tick（每tick=100ns）。
 
     Attributes:
-        delay_out: 策略 -> 交易所的延迟（recvtime单位）
-        delay_in: 交易所 -> 策略的延迟（recvtime单位）
-        timeline: 双时间线映射配置
+        delay_out: 策略 -> 交易所的延迟（tick单位）
+        delay_in: 交易所 -> 策略的延迟（tick单位）
+        timeline: 时间线配置（已弃用，保留用于兼容）
     """
     delay_out: int = 0
     delay_in: int = 0
@@ -182,14 +178,15 @@ class RunnerConfig:
 
 
 class EventLoopRunner:
-    """事件循环运行器（支持双时间线）。
+    """事件循环运行器（单一recv时间线）。
 
     协调Tape构建、交易所仿真和策略执行的事件驱动循环。
+    
+    所有时间使用统一的recv timeline (ts_recv)，单位为tick（每tick=100ns）。
 
     主要功能：
-    - 双时间线支持：exchtime（交易所）和recvtime（策略）
+    - 单一时间线：所有事件使用ts_recv
     - 延迟处理：delay_out（策略->交易所），delay_in（交易所->策略）
-    - 线性时间映射：recvtime = a * exchtime + b
     """
 
     def __init__(
@@ -221,13 +218,8 @@ class EventLoopRunner:
         self.config = config or RunnerConfig()
         self.receipt_logger = receipt_logger
 
-        # 验证时间线配置
-        if self.config.timeline.a <= 0:
-            raise ValueError("时间线缩放因子'a'必须为正数")
-
-        # 当前状态
-        self.current_exchtime = 0
-        self.current_recvtime = 0
+        # 当前状态（统一使用recv time）
+        self.current_time = 0  # 统一时间（ts_recv）
         self.current_snapshot: Optional[NormalizedSnapshot] = None
         self._pending_receipts: List[Tuple[int, OrderReceipt]] = []
         
@@ -256,15 +248,14 @@ class EventLoopRunner:
             return {"error": "No data"}
 
         self.current_snapshot = prev
-        self.current_exchtime = int(prev.ts_exch)
-        self.current_recvtime = self.config.timeline.exchtime_to_recvtime(self.current_exchtime)
+        self.current_time = int(prev.ts_recv)  # 使用ts_recv
 
         # 初始快照回调
         orders = self.strategy.on_snapshot(prev, self.oms)
         for order in orders:
             # 如果订单已有create_time（预设发送时间），使用该时间
             # 否则使用当前时间
-            submit_time = order.create_time if order.create_time > 0 else self.current_recvtime
+            submit_time = order.create_time if order.create_time > 0 else self.current_time
             self.oms.submit(order, submit_time)
             self.diagnostics["orders_submitted"] += 1
             # 注册到receipt_logger
@@ -294,34 +285,31 @@ class EventLoopRunner:
 
         return {
             "intervals": interval_count,
-            "final_exchtime": self.current_exchtime,
-            "final_recvtime": self.current_recvtime,
+            "final_time": self.current_time,  # 统一时间
             "diagnostics": self.diagnostics,
         }
 
     def _run_interval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
         """运行一个区间[prev, curr]的事件循环。
         
+        使用统一的recv timeline。
         通过_schedule_pending_receipts确保所有时间上早于t_a的事件在区间开始时被处理。
 
         Args:
             prev: 前一个快照（在T_A时刻）
             curr: 当前快照（在T_B时刻）
         """
-        t_a = int(prev.ts_exch)
-        t_b = int(curr.ts_exch)
+        # 使用ts_recv作为统一时间线
+        t_a = int(prev.ts_recv)
+        t_b = int(curr.ts_recv)
 
         if t_b <= t_a:
             return
 
-        # 转换为接收时间
-        recv_a = self.config.timeline.exchtime_to_recvtime(t_a)
-        recv_b = self.config.timeline.exchtime_to_recvtime(t_b)
-
-        if not self._has_order_events_between(recv_a, recv_b, t_a, t_b):
-            needs_tape = self._process_receipts_without_tape(recv_a, recv_b, t_b)
+        if not self._has_order_events_between(t_a, t_b):
+            needs_tape = self._process_receipts_without_tape(t_a, t_b)
             if not needs_tape:
-                self._advance_without_tape(curr, t_b, recv_b)
+                self._advance_without_tape(curr, t_b)
                 return
 
         # 构建该区间的Tape
@@ -329,7 +317,7 @@ class EventLoopRunner:
 
         if not tape:
             # 无事件，直接推进到curr
-            self._advance_without_tape(curr, t_b, recv_b)
+            self._advance_without_tape(curr, t_b)
             return
 
         # 为新区间重置交易所并设置Tape
@@ -339,7 +327,7 @@ class EventLoopRunner:
         if hasattr(self.exchange, 'set_tape'):
             self.exchange.set_tape(tape, t_a, t_b)
 
-        # 初始化事件队列（使用exchtime）
+        # 初始化事件队列（统一时间线）
         event_queue: List[Event] = []
 
         # 添加段结束事件
@@ -357,18 +345,15 @@ class EventLoopRunner:
             data=curr,
         ))
 
-        self._schedule_pending_receipts(event_queue, recv_a, recv_b)
+        self._schedule_pending_receipts(event_queue, t_a, t_b)
 
         # 获取OMS中的待处理订单并调度到达事件
         # 确保所有时间上早于t_a的订单都已被处理
         pending_orders = self.oms.get_active_orders()
 
         for order in pending_orders:
-            # 计算订单到达交易所的时间
-            # 注意：时间戳假设为整数（毫秒或微秒精度的时间戳）
-            # Note: timestamps are assumed to be integers (ms or μs precision)
-            recv_arr = int(order.create_time) + int(self.config.delay_out)
-            exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+            # 计算订单到达交易所的时间（统一时间线）
+            arrival_time = int(order.create_time) + int(self.config.delay_out)
             
             # 跳过已经有arrival_time且已处理过的订单
             if order.arrival_time is not None:
@@ -376,9 +361,9 @@ class EventLoopRunner:
                 continue
             
             # 只处理到达时间在区间内的订单
-            if exchtime_arr >= t_a and exchtime_arr < t_b:
+            if arrival_time >= t_a and arrival_time < t_b:
                 heapq.heappush(event_queue, Event(
-                    time=exchtime_arr,
+                    time=arrival_time,
                     event_type=EventType.ORDER_ARRIVAL,
                     data=order,
                 ))
@@ -386,7 +371,7 @@ class EventLoopRunner:
         # 事件循环 - 使用"peek, advance, pop batch"范式
         # 避免"生成过去事件"的因果反转问题
         current_seg_idx = 0
-        last_exchtime = t_a
+        last_time = t_a
         
         # 调度区间内的撤单请求
         self._schedule_pending_cancels(event_queue, t_a, t_b)
@@ -397,29 +382,29 @@ class EventLoopRunner:
             
             # Step 2: 将交易所推进到t_next，期间产生的回执会被调度
             # 如果回执时间 <= t_next，会在同一轮被处理
-            if t_next > last_exchtime and current_seg_idx < len(tape):
+            if t_next > last_time and current_seg_idx < len(tape):
                 # 处理到t_next为止的所有完整段
                 while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= t_next:
                     seg = tape[current_seg_idx]
-                    receipts = self.exchange.advance(last_exchtime, seg.t_end, seg)
+                    receipts = self.exchange.advance(last_time, seg.t_end, seg)
 
                     # 调度回执发送到策略
                     for receipt in receipts:
-                        self._schedule_receipt(receipt, event_queue, recv_b)
+                        self._schedule_receipt(receipt, event_queue, t_b)
 
-                    last_exchtime = seg.t_end
+                    last_time = seg.t_end
                     current_seg_idx += 1
 
                 # 如果t_next落在当前段内部，需要先将交易所推进到t_next
                 # 确保t_next时刻的事件发生之前的成交已被正确处理
                 if current_seg_idx < len(tape):
                     seg = tape[current_seg_idx]
-                    if seg.t_start <= t_next < seg.t_end and t_next > last_exchtime:
+                    if seg.t_start <= t_next < seg.t_end and t_next > last_time:
                         # 推进到t_next（段内推进）
-                        receipts = self.exchange.advance(last_exchtime, t_next, seg)
+                        receipts = self.exchange.advance(last_time, t_next, seg)
                         for receipt in receipts:
-                            self._schedule_receipt(receipt, event_queue, recv_b)
-                        last_exchtime = t_next
+                            self._schedule_receipt(receipt, event_queue, t_b)
+                        last_time = t_next
 
             # Step 3: Pop并处理所有time==t_next的事件（批处理）
             # 这样新生成的回执（如果时间 <= t_next）会在heap中排在后面
@@ -430,7 +415,7 @@ class EventLoopRunner:
             
             # 处理同一时刻的所有事件（已按priority和seq排序）
             for event in events_at_t_next:
-                self._process_single_event(event, event_queue, tape, t_b, recv_b)
+                self._process_single_event(event, event_queue, tape, t_b)
 
     def _process_single_event(
         self,
@@ -438,23 +423,22 @@ class EventLoopRunner:
         event_queue: List[Event],
         tape: List[TapeSegment],
         t_b: int,
-        recv_b: int,
     ) -> None:
         """处理单个事件。
+        
+        使用统一的recv时间线。
         
         Args:
             event: 要处理的事件
             event_queue: 事件队列（用于调度新事件）
             tape: Tape段列表
             t_b: 区间结束时间
-            recv_b: 区间结束的接收时间
         """
-        # 更新当前时间
-        self.current_exchtime = event.time
+        # 更新当前时间（统一时间线）
+        self.current_time = event.time
         
         if event.event_type == EventType.ORDER_ARRIVAL:
-            # 订单到达：使用exchtime计算recvtime
-            self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
+            # 订单到达
             order = event.data
             order.arrival_time = event.time
 
@@ -465,19 +449,15 @@ class EventLoopRunner:
             if receipt:
                 # 所有回执都走统一RECEIPT_TO_STRATEGY调度
                 # 在recv_time时刻再oms.on_receipt，确保延迟因果一致性
-                self._schedule_receipt(receipt, event_queue, recv_b)
+                self._schedule_receipt(receipt, event_queue, t_b)
 
         elif event.event_type == EventType.RECEIPT_TO_STRATEGY:
             receipt = event.data
-            # Issue 3 修复：使用event.recv_time或receipt.recv_time作为权威的策略侧时间
-            # 而不是从event.time推导
+            # 使用event.recv_time或receipt.recv_time作为权威时间
             if event.recv_time is not None:
-                self.current_recvtime = event.recv_time
+                self.current_time = event.recv_time
             elif receipt.recv_time is not None:
-                self.current_recvtime = receipt.recv_time
-            else:
-                # 回退：从exchtime计算（理论上不应该发生）
-                self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
+                self.current_time = receipt.recv_time
             
             self.oms.on_receipt(receipt)
             
@@ -491,23 +471,21 @@ class EventLoopRunner:
             # 策略回调
             orders = self.strategy.on_receipt(receipt, self.current_snapshot, self.oms)
             for order in orders:
-                self.oms.submit(order, self.current_recvtime)
+                self.oms.submit(order, self.current_time)
                 self.diagnostics["orders_submitted"] += 1
 
-                # 调度订单到达
-                recv_arr = self.current_recvtime + self.config.delay_out
-                exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+                # 调度订单到达（统一时间线）
+                arrival_time = self.current_time + self.config.delay_out
 
-                if exchtime_arr < t_b:
+                if arrival_time < t_b:
                     heapq.heappush(event_queue, Event(
-                        time=exchtime_arr,
+                        time=arrival_time,
                         event_type=EventType.ORDER_ARRIVAL,
                         data=order,
                     ))
         
         elif event.event_type == EventType.CANCEL_ARRIVAL:
-            # 撤单到达：处理撤单请求
-            self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
+            # 撤单到达
             cancel_request = event.data
             
             # 调用交易所处理撤单
@@ -515,7 +493,7 @@ class EventLoopRunner:
             
             if receipt:
                 # 调度撤单回执到策略
-                self._schedule_receipt(receipt, event_queue, recv_b)
+                self._schedule_receipt(receipt, event_queue, t_b)
 
         elif event.event_type == EventType.INTERVAL_END:
             snapshot = event.data
@@ -525,25 +503,26 @@ class EventLoopRunner:
 
             # 策略回调
             self.current_snapshot = snapshot
-            self.current_recvtime = self.config.timeline.exchtime_to_recvtime(event.time)
 
             orders = self.strategy.on_snapshot(snapshot, self.oms)
             for order in orders:
-                self.oms.submit(order, self.current_recvtime)
+                self.oms.submit(order, self.current_time)
                 self.diagnostics["orders_submitted"] += 1
 
-    def _advance_without_tape(self, snapshot: NormalizedSnapshot, exchtime: int, recvtime: int) -> None:
+    def _advance_without_tape(self, snapshot: NormalizedSnapshot, time: int) -> None:
         """无订单区间快速推进并触发快照回调。"""
-        self.current_exchtime = exchtime
-        self.current_recvtime = recvtime
+        self.current_time = time
         self.current_snapshot = snapshot
         orders = self.strategy.on_snapshot(snapshot, self.oms)
         for order in orders:
-            self.oms.submit(order, recvtime)
+            self.oms.submit(order, time)
             self.diagnostics["orders_submitted"] += 1
     
-    def _has_order_events_between(self, recv_a: int, recv_b: int, t_a: int, t_b: int) -> bool:
-        """判断区间内是否存在需要处理的订单或撤单事件。"""
+    def _has_order_events_between(self, t_a: int, t_b: int) -> bool:
+        """判断区间内是否存在需要处理的订单或撤单事件。
+        
+        使用统一时间线。
+        """
         active_orders = self.oms.get_active_orders()
         
         # 检查活跃订单
@@ -553,43 +532,40 @@ class EventLoopRunner:
                     return True
                 continue
 
-            recv_arr = int(order.create_time) + int(self.config.delay_out)
-            if recv_arr < recv_a:
+            arrival_time = int(order.create_time) + int(self.config.delay_out)
+            if arrival_time < t_a:
                 continue
 
-            exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
-            if exchtime_arr < t_b:
+            if arrival_time < t_b:
                 return True
         
         # 检查待处理的撤单
         for cancel_sent_time, cancel_request in self._pending_cancels:
-            recv_arr = cancel_sent_time + self.config.delay_out
-            exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
-            if exchtime_arr >= t_a and exchtime_arr < t_b:
+            arrival_time = cancel_sent_time + self.config.delay_out
+            if arrival_time >= t_a and arrival_time < t_b:
                 return True
 
         return False
 
-    def _schedule_pending_receipts(self, event_queue: List[Event], recv_a: int, recv_b: int) -> None:
-        """将到达时间落在区间内的回执加入事件队列，并处理所有早于recv_a的历史回执。
+    def _schedule_pending_receipts(self, event_queue: List[Event], t_a: int, t_b: int) -> None:
+        """将到达时间落在区间内的回执加入事件队列，并处理所有早于t_a的历史回执。
         
-        确保所有时间上早于当前区间的回执都被正确处理，维护因果一致性。
+        使用统一时间线。确保所有时间上早于当前区间的回执都被正确处理，维护因果一致性。
         """
         remaining: List[Tuple[int, OrderReceipt]] = []
         historical: List[Tuple[int, OrderReceipt]] = []
         
         for recv_time, receipt in self._pending_receipts:
-            if recv_time < recv_a:
+            if recv_time < t_a:
                 # 历史回执：早于当前区间，需要立即处理
                 historical.append((recv_time, receipt))
-            elif recv_a <= recv_time <= recv_b:
+            elif t_a <= recv_time <= t_b:
                 # 当前区间内的回执：加入事件队列
-                exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_time)
                 heapq.heappush(event_queue, Event(
-                    time=exchtime_recv,
+                    time=recv_time,
                     event_type=EventType.RECEIPT_TO_STRATEGY,
                     data=receipt,
-                    recv_time=recv_time,  # 携带策略侧接收时间
+                    recv_time=recv_time,  # 携带接收时间
                 ))
             else:
                 # 未来回执：保留到后续区间处理
@@ -608,38 +584,37 @@ class EventLoopRunner:
     def _schedule_pending_cancels(self, event_queue: List[Event], t_a: int, t_b: int) -> None:
         """调度区间内的撤单请求到事件队列。
         
-        将撤单发送时间落在区间[t_a, t_b)内的撤单请求加入事件队列。
+        使用统一时间线。将撤单到达时间落在区间[t_a, t_b)内的撤单请求加入事件队列。
         
         Args:
             event_queue: 事件队列
-            t_a: 区间开始的交易所时间
-            t_b: 区间结束的交易所时间
+            t_a: 区间开始时间
+            t_b: 区间结束时间
         """
         remaining: List[Tuple[int, CancelRequest]] = []
         
         for cancel_sent_time, cancel_request in self._pending_cancels:
-            # 计算撤单到达交易所的时间
-            recv_arr = cancel_sent_time + self.config.delay_out
-            exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
+            # 计算撤单到达时间（统一时间线）
+            arrival_time = cancel_sent_time + self.config.delay_out
             
-            if exchtime_arr >= t_a and exchtime_arr < t_b:
+            if arrival_time >= t_a and arrival_time < t_b:
                 # 撤单到达时间在区间内，加入事件队列
                 heapq.heappush(event_queue, Event(
-                    time=exchtime_arr,
+                    time=arrival_time,
                     event_type=EventType.CANCEL_ARRIVAL,
                     data=cancel_request,
                 ))
-            elif exchtime_arr >= t_b:
+            elif arrival_time >= t_b:
                 # 撤单到达时间在未来区间，保留
                 remaining.append((cancel_sent_time, cancel_request))
             # else: 撤单到达时间早于当前区间，已过期，丢弃
         
         self._pending_cancels = remaining
 
-    def _schedule_receipt(self, receipt: OrderReceipt, event_queue: List[Event], recv_b: int) -> None:
+    def _schedule_receipt(self, receipt: OrderReceipt, event_queue: List[Event], t_b: int) -> None:
         """统一调度回执到策略的事件。
         
-        所有回执都通过此方法调度，确保delay_in延迟因果一致性。
+        使用统一时间线。所有回执都通过此方法调度，确保delay_in延迟因果一致性。
         回执会在recv_time时刻通过RECEIPT_TO_STRATEGY事件传递给策略。
         
         因果一致性保证：
@@ -649,40 +624,35 @@ class EventLoopRunner:
         Args:
             receipt: 订单回执
             event_queue: 事件队列
-            recv_b: 当前区间的接收时间上界
+            t_b: 当前区间的时间上界
         """
-        recv_fill = self.config.timeline.exchtime_to_recvtime(receipt.timestamp)
-        recv_recv = recv_fill + self.config.delay_in
+        # 统一时间线：直接使用timestamp加延迟
+        recv_time = receipt.timestamp + self.config.delay_in
         
         # 设置回执的接收时间
-        receipt.recv_time = recv_recv
+        receipt.recv_time = recv_time
         
-        if recv_recv <= recv_b:
-            # 转换回exchtime用于事件队列
-            exchtime_recv = self.config.timeline.recvtime_to_exchtime(recv_recv)
-            
+        if recv_time <= t_b:
             # 因果一致性保证：确保新事件时间 >= 当前时间
-            # 由于int截断可能导致 exchtime_recv < self.current_exchtime
-            # 为避免因果反转，将事件时间调整为当前时间
-            if exchtime_recv < self.current_exchtime:
-                exchtime_recv = self.current_exchtime
-                # 同时更新recv_time以保持一致性
-                recv_recv = self.config.timeline.exchtime_to_recvtime(exchtime_recv)
-                receipt.recv_time = recv_recv
+            if recv_time < self.current_time:
+                recv_time = self.current_time
+                receipt.recv_time = recv_time
             
             heapq.heappush(event_queue, Event(
-                time=exchtime_recv,
+                time=recv_time,
                 event_type=EventType.RECEIPT_TO_STRATEGY,
                 data=receipt,
-                recv_time=recv_recv,  # 携带策略侧接收时间
+                recv_time=recv_time,
             ))
         else:
-            self._queue_receipt_for_future(recv_recv, receipt)
+            self._queue_receipt_for_future(recv_time, receipt)
         
         self.diagnostics["receipts_generated"] += 1
 
     def _process_receipt_batch(self, receipts: List[Tuple[int, OrderReceipt]], t_b: int = None) -> bool:
         """处理一批回执，按时间顺序处理并调用策略回调。
+        
+        使用统一时间线。
         
         Args:
             receipts: (recv_time, receipt) 元组列表
@@ -698,7 +668,7 @@ class EventLoopRunner:
         needs_tape = False
         
         for recv_time, receipt in receipts:
-            self.current_recvtime = recv_time
+            self.current_time = recv_time
             self.oms.on_receipt(receipt)
             
             if receipt.receipt_type in ["FILL", "PARTIAL"]:
@@ -712,22 +682,24 @@ class EventLoopRunner:
                 self.diagnostics["orders_submitted"] += 1
                 
                 if t_b is not None:
-                    recv_arr = recv_time + self.config.delay_out
-                    exchtime_arr = self.config.timeline.recvtime_to_exchtime(recv_arr)
-                    if exchtime_arr < t_b:
+                    arrival_time = recv_time + self.config.delay_out
+                    if arrival_time < t_b:
                         needs_tape = True
         
         return needs_tape
 
-    def _process_receipts_without_tape(self, recv_a: int, recv_b: int, t_b: int) -> bool:
-        """仅处理区间内回执，判断是否需要继续构建tape。"""
+    def _process_receipts_without_tape(self, t_a: int, t_b: int) -> bool:
+        """仅处理区间内回执，判断是否需要继续构建tape。
+        
+        使用统一时间线。
+        """
         if not self._pending_receipts:
             return False
 
         in_window: List[Tuple[int, OrderReceipt]] = []
         remaining: List[Tuple[int, OrderReceipt]] = []
         for recv_time, receipt in self._pending_receipts:
-            if recv_a <= recv_time <= recv_b:
+            if t_a <= recv_time <= t_b:
                 in_window.append((recv_time, receipt))
             else:
                 remaining.append((recv_time, receipt))

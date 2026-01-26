@@ -7,6 +7,8 @@ This module implements the complete tape construction logic from the specificati
 - Conservation-based cancellation derivation
 - Top-5 activation window enforcement
 - Time scaling with lambda parameter
+
+All timestamps use the unified recv timeline (ts_recv) in tick units (100ns per tick).
 """
 
 from dataclasses import dataclass, replace
@@ -14,7 +16,7 @@ from typing import Dict, List, Tuple, Set, Optional
 import math
 
 from ..core.interfaces import ITapeBuilder
-from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level
+from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
 
 
 # Constants
@@ -24,7 +26,10 @@ LAMBDA_THRESHOLD = 1e-6
 
 @dataclass
 class TapeConfig:
-    """Configuration parameters for tape building."""
+    """Configuration parameters for tape building.
+    
+    All time values are in tick units (100ns per tick).
+    """
     
     # lastvolsplit -> single-side mapping
     ghost_rule: str = "symmetric"  # "symmetric", "proportion", "single_bid", "single_ask"
@@ -47,9 +52,10 @@ class TapeConfig:
     top_k: int = 5  # Number of price levels to track
     
     # 非均匀快照推送配置
-    # Snapshot推送最小间隔（毫秒）：快照实际上是在T_B-min_interval_ms到T_B之间产生的变化
-    # 所以A快照的时间被视为T_B - min_interval_ms
-    snapshot_min_interval_ms: int = 500
+    # Snapshot推送最小间隔（tick单位）：快照实际上是在T_B-min_interval到T_B之间产生的变化
+    # 所以A快照的时间被视为T_B - min_interval
+    # 500ms = 5_000_000 ticks (100ns per tick)
+    snapshot_min_interval_tick: int = SNAPSHOT_MIN_INTERVAL_TICK
 
 
 class UnifiedTapeBuilder(ITapeBuilder):
@@ -80,10 +86,10 @@ class UnifiedTapeBuilder(ITapeBuilder):
     def build(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> List[TapeSegment]:
         """Build tape segments from A/B snapshots.
         
-        从A/B快照构建tape段。
+        从A/B快照构建tape段。使用统一的recv timeline (ts_recv)。
         
         非均匀快照时间处理（默认启用）：
-        快照只在关键字段变化时推送，最小间隔500ms。
+        快照只在关键字段变化时推送，最小间隔500ms (5_000_000 ticks)。
         将A快照的时间视为T_B - 500ms，所有变化归因到[T_B-500ms, T_B]区间。
         
         Args:
@@ -96,8 +102,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         Raises:
             ValueError: 当 t_b <= t_a 时抛出，因为快照时间必须严格递增
         """
-        t_a = int(prev.ts_exch)
-        t_b = int(curr.ts_exch)
+        # 使用ts_recv作为主时间线
+        t_a = int(prev.ts_recv)
+        t_b = int(curr.ts_recv)
         
         # 快照时间必须严格递增，否则抛出ValueError
         # Snapshot timestamps must be strictly increasing
@@ -108,9 +115,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
             )
         
         # 非均匀快照时间处理（默认启用）
-        # 将A快照的时间视为T_B - min_interval_ms
-        # 这样所有变化都归因到最后min_interval_ms内
-        min_interval = self.config.snapshot_min_interval_ms
+        # 将A快照的时间视为T_B - min_interval
+        # 这样所有变化都归因到最后min_interval内
+        min_interval = self.config.snapshot_min_interval_tick
         effective_t_a = t_b - min_interval
         # 确保effective_t_a不小于原始t_a（处理间隔小于min_interval的情况）
         if effective_t_a < t_a:
@@ -479,10 +486,12 @@ class UnifiedTapeBuilder(ITapeBuilder):
         are well-defined within each segment.
         """
         # Build change events (normalized progress u in [0,1])
+        # Use len(path) as divisor so N path points generate N segments
+        # (each point starts a segment that ends at the next point's u or at u=1)
         events: List[Tuple[float, str, Price]] = []
         
-        bid_n = max(1, len(bid_path) - 1)
-        ask_n = max(1, len(ask_path) - 1)
+        bid_n = max(1, len(bid_path))
+        ask_n = max(1, len(ask_path))
         
         for i, p in enumerate(bid_path):
             u = i / bid_n if bid_n > 0 else 0.0

@@ -14,10 +14,17 @@ from enum import Enum
 Price = float      # 价格类型
 Qty = int          # 数量类型
 OrderId = str      # 订单ID类型
-Timestamp = int    # 时间戳类型
+Timestamp = int    # 时间戳类型（单位：tick，每tick=100ns，从0000-00-00开始计数）
 
-# 快照推送最小间隔（毫秒）
-SNAPSHOT_MIN_INTERVAL_MS = 500
+# 快照推送最小间隔（tick单位，500ms = 5_000_000 ticks）
+# 1ms = 10_000 ticks (100ns per tick)
+TICK_PER_MS = 10_000
+SNAPSHOT_MIN_INTERVAL_TICK = 500 * TICK_PER_MS  # 500ms in ticks
+
+# 快照时间容差（tick单位）
+# 由于RecvTick可能存在误差，相邻快照间隔不一定刚好是500ms
+# 默认容差为10ms = 100_000 ticks
+DEFAULT_SNAPSHOT_TOLERANCE_TICK = 10 * TICK_PER_MS  # 10ms in ticks
 
 
 class Side(Enum):
@@ -87,25 +94,28 @@ class Level:
 @dataclass
 class NormalizedSnapshot:
     """标准化快照数据。
+    
+    所有时间戳使用统一的recv timeline（ts_recv），单位为tick（每tick=100ns）。
+    ts_exch保留用于记录交易所时间，但所有事件调度使用ts_recv。
 
     Attributes:
-        ts_exch: 交易所时间戳
+        ts_recv: 接收时间戳（主时间线，tick单位，必填）
         bids: 买盘档位列表
         asks: 卖盘档位列表
         last_vol_split: 最近成交量在各价位的分布
-        ts_recv: 接收时间戳（可选）
+        ts_exch: 交易所时间戳（可选，仅用于记录）
         last: 最新价（可选）
         volume: 成交量（可选）
         turnover: 成交额（可选）
         average_price: 均价（可选）
     """
-    ts_exch: Timestamp
+    ts_recv: Timestamp  # 主时间线（必填）
     bids: List[Level]
     asks: List[Level]
     last_vol_split: List[Tuple[Price, Qty]] = field(default_factory=list)
 
     # 可选字段
-    ts_recv: Optional[Timestamp] = None
+    ts_exch: Optional[Timestamp] = None  # 交易所时间戳（仅记录）
     last: Optional[Price] = None
     volume: Optional[int] = None
     turnover: Optional[float] = None

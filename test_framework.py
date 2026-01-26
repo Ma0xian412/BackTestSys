@@ -22,11 +22,14 @@ from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, Tim
 def create_test_snapshot(ts: int, bid: float, ask: float,
                          bid_qty: int = 100, ask_qty: int = 100,
                          last_vol_split=None) -> NormalizedSnapshot:
-    """创建测试快照。"""
+    """创建测试快照。
+    
+    时间单位为tick（每tick=100ns）。
+    """
     if last_vol_split is None:
         last_vol_split = [(bid, 10), (ask, 10)]
     return NormalizedSnapshot(
-        ts_exch=ts,
+        ts_recv=ts,  # 主时间线
         bids=[Level(bid, bid_qty)],
         asks=[Level(ask, ask_qty)],
         last_vol_split=last_vol_split,
@@ -35,15 +38,34 @@ def create_test_snapshot(ts: int, bid: float, ask: float,
 
 def create_multi_level_snapshot(ts: int, bids: list, asks: list,
                                  last_vol_split=None) -> NormalizedSnapshot:
-    """创建多档位快照。"""
+    """创建多档位快照。
+    
+    时间单位为tick（每tick=100ns）。
+    """
     bid_levels = [Level(p, q) for p, q in bids]
     ask_levels = [Level(p, q) for p, q in asks]
     return NormalizedSnapshot(
-        ts_exch=ts,
+        ts_recv=ts,  # 主时间线
         bids=bid_levels,
         asks=ask_levels,
         last_vol_split=last_vol_split or [],
     )
+
+
+def print_tape_path(tape) -> None:
+    """打印tape路径详情。"""
+    print(f"\n  Tape路径 (共{len(tape)}个段):")
+    for seg in tape:
+        print(f"    段{seg.index}: t=[{seg.t_start}, {seg.t_end}], bid={seg.bid_price}, ask={seg.ask_price}")
+        if seg.trades:
+            print(f"      trades: {dict(seg.trades)}")
+        if seg.cancels:
+            print(f"      cancels: {dict(seg.cancels)}")
+        if seg.net_flow:
+            print(f"      net_flow: {dict(seg.net_flow)}")
+        print(f"      activation_bid: {seg.activation_bid}")
+        print(f"      activation_ask: {seg.activation_ask}")
+    print()
 
 
 def test_tape_builder_basic():
@@ -54,17 +76,11 @@ def test_tape_builder_basic():
     builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
     
     prev = create_test_snapshot(1000, 100.0, 101.0)
-    curr = create_test_snapshot(2000, 100.5, 101.5)
+    curr = create_test_snapshot(1500, 100.5, 101.5)
     
     tape = builder.build(prev, curr)
     
-    print(f"Generated {len(tape)} segments")
-    for seg in tape:
-        print(f"  Segment {seg.index}: t=[{seg.t_start}, {seg.t_end}], "
-              f"bid={seg.bid_price}, ask={seg.ask_price}")
-        print(f"    trades: {dict(seg.trades)}")
-        print(f"    cancels: {dict(seg.cancels)}")
-        print(f"    activation_bid: {seg.activation_bid}")
+    print_tape_path(tape)
     
     assert len(tape) > 0, "Tape should have at least one segment"
     
@@ -84,11 +100,11 @@ def test_tape_builder_no_trades():
     builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
     
     prev = create_test_snapshot(1000, 100.0, 101.0, last_vol_split=[])
-    curr = create_test_snapshot(2000, 100.5, 101.5, last_vol_split=[])
+    curr = create_test_snapshot(1500, 100.5, 101.5, last_vol_split=[])
     
     tape = builder.build(prev, curr)
     
-    print(f"Generated {len(tape)} segments (no trades)")
+    print_tape_path(tape)
     assert len(tape) == 1, "Should have single segment with no trades"
     
     print("✓ Tape builder no trades test passed")
@@ -109,7 +125,7 @@ def test_tape_builder_conservation():
         last_vol_split=[(100.0, 20), (101.0, 15)]
     )
     curr = create_multi_level_snapshot(
-        2000,
+        1500,
         bids=[(100.0, 40), (99.0, 35)],  # delta_Q_bid @ 100 = -10
         asks=[(101.0, 35), (102.0, 25)],  # delta_Q_ask @ 101 = -5
         last_vol_split=[(100.0, 20), (101.0, 15)]
@@ -117,7 +133,7 @@ def test_tape_builder_conservation():
     
     tape = builder.build(prev, curr)
     
-    print(f"Generated {len(tape)} segments")
+    print_tape_path(tape)
     
     # Check total trades
     total_bid_trades = sum(
@@ -207,13 +223,15 @@ def test_exchange_simulator_coordinate_axis():
     builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
     
     prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=30, ask_qty=30)
-    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=20, ask_qty=20,
+    curr = create_test_snapshot(1500, 100.0, 101.0, bid_qty=20, ask_qty=20,
                                 last_vol_split=[(100.0, 50)])
     
     tape = builder.build(prev, curr)
     
+    print_tape_path(tape)
+    
     # Set tape on exchange
-    exchange.set_tape(tape, 1000, 2000)
+    exchange.set_tape(tape, 1000, 1500)
     
     # Submit order 1 - should be at position tail(30) = 30
     order1 = Order(order_id="o1", side=Side.BUY, price=100.0, qty=20)
@@ -247,11 +265,14 @@ def test_exchange_simulator_fill():
     builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
     
     prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=30)
-    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=10,
+    curr = create_test_snapshot(1500, 100.0, 101.0, bid_qty=10,
                                 last_vol_split=[(100.0, 50)])
     
     tape = builder.build(prev, curr)
-    exchange.set_tape(tape, 1000, 2000)
+    
+    print_tape_path(tape)
+    
+    exchange.set_tape(tape, 1000, 1500)
     
     # Submit order at position 30 (market queue)
     order = Order(order_id="fill-test", side=Side.BUY, price=100.0, qty=15)
@@ -351,29 +372,30 @@ def test_strategy():
 
 
 def test_two_timeline():
-    """Test two-timeline support."""
-    print("\n--- Test 10: Two Timeline ---")
+    """Test timeline config (deprecated - now uses single timeline).
     
-    config = TimelineConfig(a=1.0, b=100)  # recvtime = exchtime + 100
+    TimelineConfig is kept for backward compatibility but now always returns
+    identity transformations (no conversion needed with single recv timeline).
+    """
+    print("\n--- Test 10: Timeline Config (Single Timeline) ---")
     
-    # Test conversions
-    exchtime = 1000
-    recvtime = config.exchtime_to_recvtime(exchtime)
-    print(f"exchtime {exchtime} -> recvtime {recvtime}")
-    assert recvtime == 1100, f"Expected 1100, got {recvtime}"
+    config = TimelineConfig(a=1.0, b=100)  # 已弃用参数，不再影响转换
     
-    # Reverse conversion
-    back_to_exch = config.recvtime_to_exchtime(recvtime)
-    print(f"recvtime {recvtime} -> exchtime {back_to_exch}")
-    assert back_to_exch == exchtime, f"Expected {exchtime}, got {back_to_exch}"
+    # Test conversions - now identity (no conversion with single timeline)
+    time = 1000
+    result = config.exchtime_to_recvtime(time)
+    print(f"time {time} -> result {result}")
+    assert result == time, f"Expected {time}, got {result}"
     
-    # Test with scaling
-    config2 = TimelineConfig(a=2.0, b=50)  # recvtime = 2 * exchtime + 50
-    recvtime2 = config2.exchtime_to_recvtime(1000)
-    print(f"With a=2.0, b=50: exchtime 1000 -> recvtime {recvtime2}")
-    assert recvtime2 == 2050, f"Expected 2050, got {recvtime2}"
+    # Reverse conversion - also identity
+    back = config.recvtime_to_exchtime(result)
+    print(f"result {result} -> back {back}")
+    assert back == time, f"Expected {time}, got {back}"
     
-    print("✓ Two timeline test passed")
+    # All times should pass through unchanged (single timeline)
+    print("Note: TimelineConfig is deprecated - all times use ts_recv directly")
+    
+    print("✓ Timeline config test passed")
 
 
 def test_integration_basic():
@@ -392,15 +414,16 @@ def test_integration_basic():
     
     # Create snapshots
     prev = create_test_snapshot(1000, 100.0, 101.0)
-    curr = create_test_snapshot(2000, 100.5, 101.5)
+    curr = create_test_snapshot(1500, 100.5, 101.5)
     prev_dto = to_snapshot_dto(prev)
     
     # Build tape
     tape = builder.build(prev, curr)
-    print(f"Built tape with {len(tape)} segments")
+    
+    print_tape_path(tape)
     
     # Set tape on exchange
-    exchange.set_tape(tape, 1000, 2000)
+    exchange.set_tape(tape, 1000, 1500)
     
     # Submit an order via strategy (使用DTO)
     orders = strategy.on_snapshot(prev_dto, oms_view)
@@ -447,13 +470,13 @@ def test_integration_with_delays():
         def reset(self):
             self.idx = 0
     
-    # Create snapshots
+    # Create snapshots (500ms intervals)
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, 
                             last_vol_split=[(100.0, 30)]),
-        create_test_snapshot(2000, 100.0, 101.0, bid_qty=40,
+        create_test_snapshot(1500, 100.0, 101.0, bid_qty=40,
                             last_vol_split=[(100.0, 40)]),
-        create_test_snapshot(3000, 100.0, 101.0, bid_qty=30,
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=30,
                             last_vol_split=[(100.0, 50)]),
     ]
     
@@ -529,11 +552,14 @@ def test_fill_priority():
     # Start with queue 30, end with queue 10
     # With lastvolsplit of 50 trades
     prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=30)
-    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=10,
+    curr = create_test_snapshot(1500, 100.0, 101.0, bid_qty=10,
                                 last_vol_split=[(100.0, 50)])
     
     tape = builder.build(prev, curr)
-    exchange.set_tape(tape, 1000, 2000)
+    
+    print_tape_path(tape)
+    
+    exchange.set_tape(tape, 1000, 1500)
     
     # Order 1: arrives at t=1100 when market_qty=30
     # Position should be at tail = 30
@@ -589,10 +615,13 @@ def test_dto_snapshot():
     dto = to_snapshot_dto(snapshot)
     
     print(f"DTO类型: {type(dto).__name__}")
-    print(f"DTO是否为frozen: {dto.__class__.__dataclass_fields__['ts_exch'].default is None}")
+    # 验证DTO是frozen（使用dataclass的__dataclass_fields__属性检查）
+    is_frozen = hasattr(dto, '__dataclass_fields__') and dto.__class__.__dataclass_params__.frozen
+    print(f"DTO是否为frozen: {is_frozen}")
+    assert is_frozen, "SnapshotDTO应该是frozen=True"
     
-    # 验证数据正确转换
-    assert dto.ts_exch == 1000, f"时间戳应为1000，实际为{dto.ts_exch}"
+    # 验证数据正确转换 - ts_recv是主时间线
+    assert dto.ts_recv == 1000, f"时间戳应为1000，实际为{dto.ts_recv}"
     assert len(dto.bids) == 1, f"买盘档位应为1，实际为{len(dto.bids)}"
     assert len(dto.asks) == 1, f"卖盘档位应为1，实际为{len(dto.asks)}"
     
@@ -604,7 +633,7 @@ def test_dto_snapshot():
     
     # 验证DTO不可变（尝试修改应抛出异常）
     try:
-        dto.ts_exch = 2000
+        dto.ts_recv = 2000
         assert False, "DTO应该是不可变的"
     except Exception:
         pass  # 预期的行为
@@ -757,7 +786,7 @@ def test_meeting_sequence_consistency():
         last_vol_split=[(99.5, 10), (100.5, 15), (101.0, 20), (100.0, 25)]
     )
     curr = create_multi_level_snapshot(
-        2000,
+        1500,
         bids=[(100.5, 40), (99.5, 35)],
         asks=[(101.5, 35), (102.5, 25)],
         last_vol_split=[(99.5, 10), (100.5, 15), (101.0, 20), (100.0, 25)]
@@ -765,7 +794,7 @@ def test_meeting_sequence_consistency():
     
     tape = builder.build(prev, curr)
     
-    print(f"生成了{len(tape)}个段")
+    print_tape_path(tape)
     
     # 获取所有bid和ask在各段的价格路径
     bid_prices = []
@@ -774,7 +803,6 @@ def test_meeting_sequence_consistency():
     for seg in tape:
         bid_prices.append(seg.bid_price)
         ask_prices.append(seg.ask_price)
-        print(f"  段{seg.index}: bid={seg.bid_price}, ask={seg.ask_price}")
     
     # 提取中间段的价格（去掉首尾，因为首尾可能不同）
     # 由于meeting sequence相同，中间段的bid和ask应该通过相同的价位
@@ -816,11 +844,11 @@ def test_historical_receipts_processing():
         def reset(self):
             self.idx = 0
     
-    # 创建测试快照
+    # 创建测试快照 (500ms intervals)
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0, bid_qty=50),
-        create_test_snapshot(2000, 100.0, 101.0, bid_qty=40),
-        create_test_snapshot(3000, 100.0, 101.0, bid_qty=30),
+        create_test_snapshot(1500, 100.0, 101.0, bid_qty=40),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=30),
     ]
     
     # 创建组件
@@ -901,10 +929,10 @@ def test_intra_segment_advancement():
         def reset(self):
             self.idx = 0
     
-    # 创建测试快照：有足够成交量的区间
+    # 创建测试快照：有足够成交量的区间 (500ms interval)
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, last_vol_split=[(100.0, 100)]),
-        create_test_snapshot(2000, 100.0, 101.0, bid_qty=20, last_vol_split=[(100.0, 100)]),
+        create_test_snapshot(1500, 100.0, 101.0, bid_qty=20, last_vol_split=[(100.0, 100)]),
     ]
     
     feed = MockFeed(snapshots)
@@ -940,7 +968,7 @@ def test_intra_segment_advancement():
     
     # 使用延迟配置，让订单在区间中间到达
     runner_config = RunnerConfig(
-        delay_out=500,  # 订单在recv_time+500时到达交易所
+        delay_out=250,  # 订单在recv_time+250时到达交易所
         delay_in=50,
         timeline=TimelineConfig(a=1.0, b=0),
     )
@@ -998,10 +1026,10 @@ def test_receipt_delay_consistency():
         def reset(self):
             self.idx = 0
     
-    # 创建测试快照
+    # 创建测试快照 (500ms interval)
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, last_vol_split=[(100.0, 10)]),
-        create_test_snapshot(2000, 100.0, 101.0, bid_qty=40, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(1500, 100.0, 101.0, bid_qty=40, last_vol_split=[(100.0, 10)]),
     ]
     
     feed = MockFeed(snapshots)
@@ -1192,10 +1220,10 @@ def test_peek_advance_pop_paradigm():
         def reset(self):
             self.idx = 0
     
-    # 创建有足够成交量的区间，确保会产生回执
+    # 创建有足够成交量的区间，确保会产生回执 (500ms interval)
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 100)]),
-        create_test_snapshot(2000, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 100)]),
+        create_test_snapshot(1500, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 100)]),
     ]
     
     feed = MockFeed(snapshots)
@@ -1294,10 +1322,10 @@ def test_receipt_recv_time_authority():
         def reset(self):
             self.idx = 0
     
-    # 创建快照
+    # 创建快照 (500ms interval)
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 80)]),
-        create_test_snapshot(2000, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 80)]),
+        create_test_snapshot(1500, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 80)]),
     ]
     
     feed = MockFeed(snapshots)
@@ -1394,11 +1422,11 @@ def test_no_causal_reversal_with_int_truncation():
         def reset(self):
             self.idx = 0
     
-    # 创建多个区间的快照，确保有足够的事件
+    # 创建多个区间的快照，确保有足够的事件 (500ms intervals)
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, last_vol_split=[(100.0, 80)]),
-        create_test_snapshot(2000, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 80)]),
-        create_test_snapshot(3000, 100.0, 101.0, bid_qty=20, last_vol_split=[(100.0, 80)]),
+        create_test_snapshot(1500, 100.0, 101.0, bid_qty=30, last_vol_split=[(100.0, 80)]),
+        create_test_snapshot(2000, 100.0, 101.0, bid_qty=20, last_vol_split=[(100.0, 80)]),
     ]
     
     feed = MockFeed(snapshots)
@@ -1520,7 +1548,7 @@ def test_segment_queue_zero_constraint():
     )
     
     curr = create_multi_level_snapshot(
-        5000,  # 5秒间隔
+        1500,  # 500ms间隔
         bids=[(3316, 25), (3315, 35)],  # 3318和3317队列归零，不在盘口
         asks=[(3317, 80), (3318, 90)],  # ask也变化了
         last_vol_split=[(3318, 30), (3317, 20), (3316, 10)]
@@ -1535,15 +1563,9 @@ def test_segment_queue_zero_constraint():
     
     tape = builder.build(prev, curr)
     
-    print(f"生成了{len(tape)}个段")
+    print_tape_path(tape)
     
     # 检查每个段的转换
-    for i, seg in enumerate(tape):
-        print(f"  段{seg.index}: t=[{seg.t_start}, {seg.t_end}], bid={seg.bid_price}, ask={seg.ask_price}")
-        print(f"    trades: {dict(seg.trades)}")
-        print(f"    cancels: {dict(seg.cancels)}")
-        print(f"    net_flow: {dict(seg.net_flow)}")
-    
     # 验证：当价格从高价转换到低价时，计算队列是否归零
     price_transitions = []
     for i in range(len(tape) - 1):
@@ -1625,11 +1647,11 @@ def test_segment_price_change_queue_constraint_detailed():
     根据问题描述的例子：
     - 价格路径：3318 -> 3317 -> 3316 -> 3317 -> 3318
     - 总成交量：3318=100, 3317=100, 3316=50
-    - 总时间：5秒，每段1秒
+    - 总时间：500ms
     
-    在第一段（3318, 0-1s）结束时：
+    在第一段（3318）结束时：
     - bid best price从3318变为3317
-    - 意味着3318这一档在1s时刻长度为0
+    - 意味着3318这一档在转换时刻长度为0
     
     这个约束体现在：该段在3318价位的成交量应该等于或超过该价位的初始队列深度。
     """
@@ -1645,7 +1667,7 @@ def test_segment_price_change_queue_constraint_detailed():
     )
     
     curr = create_multi_level_snapshot(
-        6000,  # 5秒间隔
+        1500,  # 500ms间隔
         bids=[(3318.0, 80), (3317.0, 80), (3316.0, 60)],
         asks=[(3319.0, 80)],
         last_vol_split=[(3318.0, 100), (3317.0, 100), (3316.0, 50)]
@@ -1660,7 +1682,7 @@ def test_segment_price_change_queue_constraint_detailed():
     
     tape = builder.build(prev, curr)
     
-    print(f"生成了{len(tape)}个段")
+    print_tape_path(tape)
     
     # 收集每个价位的总成交量
     total_trades_by_price = {}
@@ -1722,21 +1744,18 @@ def test_crossing_immediate_execution():
     )
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
     
-    # 创建快照：bid@100, ask@101
+    # 创建快照：bid@100, ask@101 (500ms interval)
     prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60)
-    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=40, ask_qty=50,
+    curr = create_test_snapshot(1500, 100.0, 101.0, bid_qty=40, ask_qty=50,
                                 last_vol_split=[(100.0, 10), (101.0, 10)])
     
     tape = builder.build(prev, curr)
-    print(f"生成了{len(tape)}个段")
-    for seg in tape:
-        print(f"  段{seg.index}: bid={seg.bid_price}, ask={seg.ask_price}")
-        print(f"    activation_bid={seg.activation_bid}")
-        print(f"    activation_ask={seg.activation_ask}")
+    
+    print_tape_path(tape)
     
     # 创建交易所模拟器
     exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange.set_tape(tape, 1000, 2000)
+    exchange.set_tape(tape, 1000, 1500)
     
     # 测试1：BUY订单crossing (price >= ask)
     print("\n测试1: BUY订单crossing...")
@@ -1832,56 +1851,67 @@ def test_nonuniform_snapshot_timing():
     1. A快照的时间被视为T_B - 500ms
     2. 所有变化都在[T_B-500ms, T_B]区间内
     3. 当间隔小于500ms时，使用原始T_A
+    
+    注意：时间单位为tick（每tick=100ns），500ms = 5_000_000 ticks
     """
     print("\n--- Test 29: Non-uniform Snapshot Timing ---")
     
+    from quant_framework.core.types import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
+    
     # 使用默认配置（非均匀快照时间处理默认启用）
-    tape_config = TapeConfig(snapshot_min_interval_ms=500)
+    # 使用tick单位
+    tape_config = TapeConfig(snapshot_min_interval_tick=SNAPSHOT_MIN_INTERVAL_TICK)
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
     
     # 测试1: 间隔为1500ms的快照（超过500ms阈值）
-    # T_A=1000, T_B=2500, effective_t_a = 2500-500 = 2000
-    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60,
+    # 转换为tick单位
+    t_a = 1000 * TICK_PER_MS
+    t_b = 2500 * TICK_PER_MS
+    effective_t_a = t_b - SNAPSHOT_MIN_INTERVAL_TICK  # 2000ms in ticks
+    
+    prev = create_test_snapshot(t_a, 100.0, 101.0, bid_qty=50, ask_qty=60,
                                 last_vol_split=[])
-    curr = create_test_snapshot(2500, 100.5, 101.5, bid_qty=40, ask_qty=50,
+    curr = create_test_snapshot(t_b, 100.5, 101.5, bid_qty=40, ask_qty=50,
                                 last_vol_split=[(100.5, 20)])  # 有成交
     
     tape = builder.build(prev, curr)
     
     print(f"快照间隔: 1500ms (超过500ms阈值)")
-    print(f"T_A=1000, T_B=2500, effective_t_a=2000")
+    print(f"T_A={t_a}, T_B={t_b}, effective_t_a={effective_t_a}")
     print(f"生成了{len(tape)}个段")
     
     for seg in tape:
         print(f"  段{seg.index}: t=[{seg.t_start}, {seg.t_end}], "
-              f"duration={seg.t_end - seg.t_start}ms, "
+              f"duration={(seg.t_end - seg.t_start) / TICK_PER_MS}ms, "
               f"bid={seg.bid_price}, ask={seg.ask_price}")
         if seg.trades:
             print(f"    trades: {dict(seg.trades)}")
     
-    # 验证：所有段都应该从effective_t_a(2000)开始
+    # 验证：所有段都应该从effective_t_a开始
     first_seg = tape[0]
-    assert first_seg.t_start == 2000, f"第一段应从2000开始，实际{first_seg.t_start}"
-    print(f"  ✓ 第一段正确从effective_t_a=2000开始")
+    assert first_seg.t_start == effective_t_a, f"第一段应从{effective_t_a}开始，实际{first_seg.t_start}"
+    print(f"  ✓ 第一段正确从effective_t_a={effective_t_a}开始")
     
-    # 最后一段应该到T_B=2500结束
+    # 最后一段应该到T_B结束
     last_seg = tape[-1]
-    assert last_seg.t_end == 2500, f"最后一段应到2500结束，实际{last_seg.t_end}"
-    print(f"  ✓ 最后一段正确到T_B=2500结束")
+    assert last_seg.t_end == t_b, f"最后一段应到{t_b}结束，实际{last_seg.t_end}"
+    print(f"  ✓ 最后一段正确到T_B={t_b}结束")
     
     # 测试2: 间隔小于500ms时，使用原始T_A
     print("\n测试短间隔快照...")
-    prev2 = create_test_snapshot(3000, 100.0, 101.0)
-    curr2 = create_test_snapshot(3400, 100.5, 101.5, last_vol_split=[(100.5, 10)])
+    t_a2 = 3000 * TICK_PER_MS
+    t_b2 = 3400 * TICK_PER_MS
+    prev2 = create_test_snapshot(t_a2, 100.0, 101.0)
+    curr2 = create_test_snapshot(t_b2, 100.5, 101.5, last_vol_split=[(100.5, 10)])
     
     tape2 = builder.build(prev2, curr2)
     print(f"快照间隔: 400ms (小于500ms阈值)")
-    print(f"T_A=3000, T_B=3400, effective_t_a=max(3000, 3400-500)=3000")
+    print(f"T_A={t_a2}, T_B={t_b2}, effective_t_a=max({t_a2}, {t_b2 - SNAPSHOT_MIN_INTERVAL_TICK})={t_a2}")
     print(f"生成了{len(tape2)}个段")
     
-    # 间隔小于500ms时，effective_t_a = max(T_A, T_B-500) = max(3000, 2900) = 3000
+    # 间隔小于500ms时，effective_t_a = max(T_A, T_B-500ms) = T_A
     first_seg_start = tape2[0].t_start
-    assert first_seg_start == 3000, f"第一段应从3000开始，实际{first_seg_start}"
+    assert first_seg_start == t_a2, f"第一段应从{t_a2}开始，实际{first_seg_start}"
     print(f"  ✓ 短间隔正确处理，从{first_seg_start}开始")
     
     print("✓ Non-uniform snapshot timing test passed")
@@ -2015,10 +2045,10 @@ def test_replay_strategy():
             def get_portfolio(self):
                 return None
         
-        # 创建mock snapshot
+        # 创建mock snapshot - 使用ts_recv作为主时间线
         from quant_framework.core.dto import SnapshotDTO, LevelDTO
         snapshot = SnapshotDTO(
-            ts_exch=1000,
+            ts_recv=1000,  # 主时间线
             bids=(LevelDTO(100.0, 100),),
             asks=(LevelDTO(101.0, 100),),
         )
@@ -2199,16 +2229,16 @@ def test_replay_integration():
             f.write("OrderId,CancelSentTime\n")
             f.write("1,1500\n")
         
-        # 创建快照数据
+        # 创建快照数据 - 使用ts_recv作为主时间线
         snapshots = [
             NormalizedSnapshot(
-                ts_exch=1000,
+                ts_recv=1000,  # 主时间线
                 bids=[Level(100.0, 100)],
                 asks=[Level(101.0, 100)],
                 last_vol_split=[(100.0, 50)],
             ),
             NormalizedSnapshot(
-                ts_exch=2000,
+                ts_recv=2000,  # 主时间线
                 bids=[Level(100.0, 80)],
                 asks=[Level(101.0, 90)],
                 last_vol_split=[(100.0, 30)],
@@ -2304,17 +2334,18 @@ def test_crossing_partial_fill_position_zero():
     )
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
     
-    # 创建快照：bid@100, ask@101
+    # 创建快照：bid@100, ask@101 (500ms interval)
     prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=100)
-    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=50, ask_qty=100,
+    curr = create_test_snapshot(1500, 100.0, 101.0, bid_qty=50, ask_qty=100,
                                 last_vol_split=[(100.0, 10), (101.0, 10)])
     
     tape = builder.build(prev, curr)
-    print(f"生成了{len(tape)}个段")
+    
+    print_tape_path(tape)
     
     # 创建交易所模拟器
     exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange.set_tape(tape, 1000, 2000)
+    exchange.set_tape(tape, 1000, 1500)
     
     # 测试1: 直接测试_queue_order函数，模拟crossing后剩余订单入队
     print("\n测试1: 模拟crossing后剩余订单入队（already_filled > 0）...")
@@ -2358,7 +2389,7 @@ def test_crossing_partial_fill_position_zero():
     
     # 创建另一个交易所模拟器用于对比测试
     exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange2.set_tape(tape, 1000, 2000)
+    exchange2.set_tape(tape, 1000, 1500)
     
     passive_order = Order(
         order_id="passive-order",
@@ -2463,7 +2494,7 @@ def test_multiple_orders_at_same_price():
     )
     
     curr = create_multi_level_snapshot(
-        ts=2000,
+        ts=1500,  # 500ms interval
         bids=bid_levels,  # 保持相同档位
         asks=ask_levels,
         last_vol_split=[
@@ -2488,24 +2519,14 @@ def test_multiple_orders_at_same_price():
     
     # 构建tape并输出路径
     tape = builder.build(prev, curr)
-    print(f"\n  Tape路径 (共{len(tape)}个段):")
-    for seg in tape:
-        print(f"    段{seg.index}: t=[{seg.t_start}, {seg.t_end}], bid={seg.bid_price}, ask={seg.ask_price}")
-        if seg.trades:
-            print(f"      trades: {dict(seg.trades)}")
-        if seg.cancels:
-            print(f"      cancels: {dict(seg.cancels)}")
-        if seg.net_flow:
-            print(f"      net_flow: {dict(seg.net_flow)}")
-        print(f"      activation_bid: {seg.activation_bid}")
-        print(f"      activation_ask: {seg.activation_ask}")
-    print()
+    
+    print_tape_path(tape)
     
     exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
     oms = OrderManager()
     
     # 创建策略：在第一个快照后提交3个订单
-    # 订单时间均匀分布：1000, 1333, 1666
+    # 订单时间均匀分布
     class MultiOrderStrategy:
         def __init__(self):
             self.orders_created = False
@@ -2607,11 +2628,11 @@ def test_crossing_blocked_by_existing_shadow():
     
     from quant_framework.core.types import TapeSegment
     
-    # 手动创建一个segment
+    # 手动创建一个segment (500ms interval)
     seg = TapeSegment(
         index=1,
         t_start=1000,
-        t_end=2000,
+        t_end=1500,
         bid_price=100.0,
         ask_price=101.0,
         trades={(Side.BUY, 100.0): 30, (Side.BUY, 99.0): 20},
@@ -2621,9 +2642,11 @@ def test_crossing_blocked_by_existing_shadow():
         activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
     )
     
+    print_tape_path([seg])
+    
     # 创建交易所模拟器
     exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange.set_tape([seg], 1000, 2000)
+    exchange.set_tape([seg], 1000, 1500)
     
     # 初始化对手方（bid侧）的市场队列深度
     bid_level_100 = exchange._get_level(Side.BUY, 100.0)
@@ -2730,11 +2753,11 @@ def test_post_crossing_fill_with_net_increment():
     # 测试场景1: 净增量N > 剩余数量 (N=80 > remaining=50)
     print("\n场景1: 净增量N=80 > 剩余数量50，应该全部成交...")
     
-    # 手动创建一个segment，设置bid@100的净增量为80
+    # 手动创建一个segment，设置bid@100的净增量为80 (500ms interval)
     seg1 = TapeSegment(
         index=1,
         t_start=1000,
-        t_end=2000,
+        t_end=1500,
         bid_price=100.0,
         ask_price=101.0,
         trades={(Side.BUY, 100.0): 30},
@@ -2744,8 +2767,10 @@ def test_post_crossing_fill_with_net_increment():
         activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
     )
     
+    print_tape_path([seg1])
+    
     exchange1 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange1.set_tape([seg1], 1000, 2000)
+    exchange1.set_tape([seg1], 1000, 1500)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
     bid_level1 = exchange1._get_level(Side.BUY, 100.0)
@@ -2780,7 +2805,7 @@ def test_post_crossing_fill_with_net_increment():
     print(f"  Crossed prices: {shadow1.crossed_prices}")
     
     # 推进时间，应该根据净增量成交
-    receipts1 = exchange1.advance(1050, 2000, seg1)
+    receipts1 = exchange1.advance(1050, 1500, seg1)
     print(f"  Advance生成的回执: {receipts1}")
     
     # post-crossing fill应该基于聚合净增量N=80
@@ -2799,7 +2824,7 @@ def test_post_crossing_fill_with_net_increment():
     seg2 = TapeSegment(
         index=1,
         t_start=1000,
-        t_end=2000,
+        t_end=1500,
         bid_price=100.0,
         ask_price=101.0,
         trades={(Side.BUY, 100.0): 30},
@@ -2809,8 +2834,10 @@ def test_post_crossing_fill_with_net_increment():
         activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
     )
     
+    print_tape_path([seg2])
+    
     exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange2.set_tape([seg2], 1000, 2000)
+    exchange2.set_tape([seg2], 1000, 1500)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
     bid_level2 = exchange2._get_level(Side.BUY, 100.0)
@@ -2830,7 +2857,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill2 = receipt2.fill_qty
     expected_remaining2 = 150 - crossing_fill2
     
-    receipts2 = exchange2.advance(1050, 2000, seg2)
+    receipts2 = exchange2.advance(1050, 1500, seg2)
     print(f"  Advance生成的回执: {receipts2}")
     
     # post-crossing fill应该基于聚合净增量N=30
@@ -2849,7 +2876,7 @@ def test_post_crossing_fill_with_net_increment():
     seg3 = TapeSegment(
         index=1,
         t_start=1000,
-        t_end=2000,
+        t_end=1500,
         bid_price=100.0,
         ask_price=101.0,
         trades={(Side.BUY, 100.0): 30},
@@ -2859,8 +2886,10 @@ def test_post_crossing_fill_with_net_increment():
         activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
     )
     
+    print_tape_path([seg3])
+    
     exchange3 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange3.set_tape([seg3], 1000, 2000)
+    exchange3.set_tape([seg3], 1000, 1500)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
     bid_level3 = exchange3._get_level(Side.BUY, 100.0)
@@ -2880,7 +2909,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill3 = receipt3.fill_qty
     expected_remaining3 = 150 - crossing_fill3
     
-    receipts3 = exchange3.advance(1050, 2000, seg3)
+    receipts3 = exchange3.advance(1050, 1500, seg3)
     print(f"  Advance生成的回执: {receipts3}")
     
     # 净增量N=-10 < 0，post-crossing订单不应该成交
@@ -2894,7 +2923,7 @@ def test_post_crossing_fill_with_net_increment():
     seg4 = TapeSegment(
         index=1,
         t_start=1000,
-        t_end=2000,
+        t_end=1500,
         bid_price=100.0,
         ask_price=101.0,
         trades={(Side.BUY, 100.0): 30},
@@ -2904,8 +2933,10 @@ def test_post_crossing_fill_with_net_increment():
         activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
     )
     
+    print_tape_path([seg4])
+    
     exchange4 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
-    exchange4.set_tape([seg4], 1000, 2000)
+    exchange4.set_tape([seg4], 1000, 1500)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
     bid_level4 = exchange4._get_level(Side.BUY, 100.0)
@@ -2925,7 +2956,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill4 = receipt4.fill_qty
     expected_remaining4 = 150 - crossing_fill4
     
-    receipts4 = exchange4.advance(1050, 2000, seg4)
+    receipts4 = exchange4.advance(1050, 1500, seg4)
     print(f"  Advance生成的回执: {receipts4}")
     
     # 净增量N=0，post-crossing订单不应该成交
@@ -2934,6 +2965,213 @@ def test_post_crossing_fill_with_net_increment():
         print(f"  ✓ 净增量N=0，正确不成交（剩余{expected_remaining4}手）")
     
     print("✓ Post-crossing fill with net increment test passed")
+
+
+def test_snapshot_duplication():
+    """测试快照复制功能。
+    
+    当两个快照之间的间隔超过500ms时，前一个快照会被复制以填充间隔。
+    复制的快照的last_vol_split为空。
+    
+    时间单位：tick（每tick=100ns）。500ms = 5_000_000 ticks。
+    """
+    print("\n--- Test 38: Snapshot Duplication ---")
+    
+    from quant_framework.core.data_loader import SnapshotDuplicatingFeed
+    from quant_framework.core.types import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
+    
+    # 创建简单的mock feed
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 测试1: 间隔1000ms，应该生成1个复制快照
+    print("\n测试1: 间隔1000ms (需要1个复制快照)...")
+    t1 = 1000 * TICK_PER_MS
+    t2 = 2000 * TICK_PER_MS
+    snapshots1 = [
+        create_test_snapshot(t1, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t2, 100.0, 101.0, last_vol_split=[(100.0, 20)]),
+    ]
+    
+    feed1 = SnapshotDuplicatingFeed(MockFeed(snapshots1))
+    
+    result1 = []
+    while True:
+        snap = feed1.next()
+        if snap is None:
+            break
+        result1.append(snap)
+    
+    print(f"  输入: 2个快照 (t={t1}, {t2})")
+    print(f"  输出: {len(result1)}个快照")
+    for i, snap in enumerate(result1):
+        print(f"    {i+1}: t={snap.ts_recv}, last_vol_split={snap.last_vol_split}")
+    
+    assert len(result1) == 3, f"应生成3个快照(A, A', B)，实际{len(result1)}"
+    assert result1[0].ts_recv == t1, f"第1个快照时间应为{t1}"
+    assert result1[1].ts_recv == t1 + SNAPSHOT_MIN_INTERVAL_TICK, f"第2个快照时间应为{t1 + SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result1[2].ts_recv == t2, f"第3个快照时间应为{t2}"
+    assert result1[1].last_vol_split == [], "复制快照的last_vol_split应为空"
+    print("  ✓ 1000ms间隔正确生成1个复制快照")
+    
+    # 测试2: 间隔2000ms，应该生成3个复制快照
+    print("\n测试2: 间隔2000ms (需要3个复制快照)...")
+    t3 = 1000 * TICK_PER_MS
+    t4 = 3000 * TICK_PER_MS
+    snapshots2 = [
+        create_test_snapshot(t3, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t4, 100.0, 101.0, last_vol_split=[(100.0, 30)]),
+    ]
+    
+    feed2 = SnapshotDuplicatingFeed(MockFeed(snapshots2))
+    
+    result2 = []
+    while True:
+        snap = feed2.next()
+        if snap is None:
+            break
+        result2.append(snap)
+    
+    print(f"  输入: 2个快照 (t={t3}, {t4})")
+    print(f"  输出: {len(result2)}个快照")
+    for i, snap in enumerate(result2):
+        print(f"    {i+1}: t={snap.ts_recv}, last_vol_split={snap.last_vol_split}")
+    
+    assert len(result2) == 5, f"应生成5个快照(A, A', A'', A''', B)，实际{len(result2)}"
+    assert result2[0].ts_recv == t3, f"第1个快照时间应为{t3}"
+    assert result2[1].ts_recv == t3 + SNAPSHOT_MIN_INTERVAL_TICK, f"第2个快照时间应为{t3 + SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result2[2].ts_recv == t3 + 2 * SNAPSHOT_MIN_INTERVAL_TICK, f"第3个快照时间应为{t3 + 2 * SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result2[3].ts_recv == t3 + 3 * SNAPSHOT_MIN_INTERVAL_TICK, f"第4个快照时间应为{t3 + 3 * SNAPSHOT_MIN_INTERVAL_TICK}"
+    assert result2[4].ts_recv == t4, f"第5个快照时间应为{t4}"
+    
+    # 验证所有复制快照的last_vol_split为空
+    for i in range(1, 4):
+        assert result2[i].last_vol_split == [], f"复制快照{i+1}的last_vol_split应为空"
+    print("  ✓ 2000ms间隔正确生成3个复制快照")
+    
+    # 测试3: 间隔500ms，不需要复制
+    print("\n测试3: 间隔500ms (不需要复制)...")
+    t5 = 1000 * TICK_PER_MS
+    t6 = 1500 * TICK_PER_MS
+    snapshots3 = [
+        create_test_snapshot(t5, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t6, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    feed3 = SnapshotDuplicatingFeed(MockFeed(snapshots3))
+    
+    result3 = []
+    while True:
+        snap = feed3.next()
+        if snap is None:
+            break
+        result3.append(snap)
+    
+    print(f"  输入: 2个快照 (t={t5}, {t6})")
+    print(f"  输出: {len(result3)}个快照")
+    
+    assert len(result3) == 2, f"应生成2个快照（无复制），实际{len(result3)}"
+    assert result3[0].ts_recv == t5
+    assert result3[1].ts_recv == t6
+    print("  ✓ 500ms间隔不需要复制")
+    
+    # 测试4: 重置功能
+    print("\n测试4: 重置功能...")
+    feed3.reset()
+    result4 = []
+    while True:
+        snap = feed3.next()
+        if snap is None:
+            break
+        result4.append(snap)
+    
+    assert len(result4) == 2, f"重置后应能再次获取2个快照"
+    print("  ✓ 重置功能正常")
+    
+    # 测试5: 容差（tolerance）功能
+    print("\n测试5: 容差功能...")
+    from quant_framework.core.types import DEFAULT_SNAPSHOT_TOLERANCE_TICK
+    
+    # 间隔510ms（在默认10ms容差范围内），不应该复制
+    t7 = 1000 * TICK_PER_MS
+    t8 = 1510 * TICK_PER_MS  # 510ms间隔
+    snapshots5 = [
+        create_test_snapshot(t7, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t8, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    feed5 = SnapshotDuplicatingFeed(MockFeed(snapshots5))  # 使用默认10ms容差
+    
+    result5 = []
+    while True:
+        snap = feed5.next()
+        if snap is None:
+            break
+        result5.append(snap)
+    
+    print(f"  间隔510ms（默认容差10ms内），输出: {len(result5)}个快照")
+    assert len(result5) == 2, f"510ms间隔在容差范围内，应生成2个快照，实际{len(result5)}"
+    print("  ✓ 510ms间隔在默认容差范围内，不复制")
+    
+    # 测试6: 自定义容差
+    print("\n测试6: 自定义容差...")
+    # 间隔520ms，使用5ms容差，应该复制1个
+    t9 = 1000 * TICK_PER_MS
+    t10 = 1520 * TICK_PER_MS  # 520ms间隔
+    snapshots6 = [
+        create_test_snapshot(t9, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t10, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    # 使用5ms容差（50000 ticks）
+    feed6 = SnapshotDuplicatingFeed(MockFeed(snapshots6), tolerance_tick=5 * TICK_PER_MS)
+    
+    result6 = []
+    while True:
+        snap = feed6.next()
+        if snap is None:
+            break
+        result6.append(snap)
+    
+    print(f"  间隔520ms（5ms容差），输出: {len(result6)}个快照")
+    assert len(result6) == 3, f"520ms间隔超出5ms容差，应生成3个快照，实际{len(result6)}"
+    print("  ✓ 520ms间隔超出5ms容差，正确复制")
+    
+    # 测试7: 0容差（严格500ms）
+    print("\n测试7: 0容差（严格500ms）...")
+    t11 = 1000 * TICK_PER_MS
+    t12 = 1501 * TICK_PER_MS  # 501ms间隔
+    snapshots7 = [
+        create_test_snapshot(t11, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t12, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    feed7 = SnapshotDuplicatingFeed(MockFeed(snapshots7), tolerance_tick=0)
+    
+    result7 = []
+    while True:
+        snap = feed7.next()
+        if snap is None:
+            break
+        result7.append(snap)
+    
+    print(f"  间隔501ms（0容差），输出: {len(result7)}个快照")
+    assert len(result7) == 3, f"501ms间隔超出0容差，应生成3个快照，实际{len(result7)}"
+    print("  ✓ 501ms间隔超出0容差，正确复制")
+    
+    print("✓ Snapshot duplication test passed")
 
 
 def run_all_tests():
@@ -2980,6 +3218,7 @@ def run_all_tests():
         test_multiple_orders_at_same_price,
         test_crossing_blocked_by_existing_shadow,
         test_post_crossing_fill_with_net_increment,
+        test_snapshot_duplication,
     ]
     
     passed = 0
