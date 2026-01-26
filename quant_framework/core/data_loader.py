@@ -87,6 +87,11 @@ class PickleMarketDataFeed(IMarketDataFeed):
         try:
             ts_exch = _to_int(row.get('ExchTick')) or 0
             ts_recv = _to_int(row.get('RecvTick'))
+            
+            # RecvTick is mandatory - error if missing
+            if ts_recv is None:
+                raise ValueError("RecvTick field is required but missing or invalid")
+            
             bids = _parse_levels("Bid")
             asks = _parse_levels("Ask")
 
@@ -109,15 +114,18 @@ class PickleMarketDataFeed(IMarketDataFeed):
                         continue
 
             return NormalizedSnapshot(
-                ts_exch=ts_exch,
+                ts_recv=ts_recv,  # 主时间线（必填）
                 bids=bids,
                 asks=asks,
                 last_vol_split=lvs,
-                ts_recv=ts_recv,
+                ts_exch=ts_exch,  # 可选（仅记录）
                 last=last,
                 volume=volume,
                 turnover=turnover,
                 average_price=avg_px,
             )
-        except Exception:
+        except Exception as e:
+            # Re-raise ValueError for mandatory field errors
+            if isinstance(e, ValueError):
+                raise
             return None

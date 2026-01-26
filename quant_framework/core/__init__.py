@@ -5,7 +5,7 @@
 
 from .types import (
     Price, Qty, OrderId, Timestamp,
-    SNAPSHOT_MIN_INTERVAL_MS,
+    TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK,
     Side, OrderStatus, TimeInForce, RequestType, ReceiptType,
     Level, NormalizedSnapshot, Order, CancelRequest, Fill,
     TapeSegment, OrderReceipt, FillDetail, OrderDiagnostics,

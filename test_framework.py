@@ -22,11 +22,14 @@ from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, Tim
 def create_test_snapshot(ts: int, bid: float, ask: float,
                          bid_qty: int = 100, ask_qty: int = 100,
                          last_vol_split=None) -> NormalizedSnapshot:
-    """创建测试快照。"""
+    """创建测试快照。
+    
+    时间单位为tick（每tick=100ns）。
+    """
     if last_vol_split is None:
         last_vol_split = [(bid, 10), (ask, 10)]
     return NormalizedSnapshot(
-        ts_exch=ts,
+        ts_recv=ts,  # 主时间线
         bids=[Level(bid, bid_qty)],
         asks=[Level(ask, ask_qty)],
         last_vol_split=last_vol_split,
@@ -35,11 +38,14 @@ def create_test_snapshot(ts: int, bid: float, ask: float,
 
 def create_multi_level_snapshot(ts: int, bids: list, asks: list,
                                  last_vol_split=None) -> NormalizedSnapshot:
-    """创建多档位快照。"""
+    """创建多档位快照。
+    
+    时间单位为tick（每tick=100ns）。
+    """
     bid_levels = [Level(p, q) for p, q in bids]
     ask_levels = [Level(p, q) for p, q in asks]
     return NormalizedSnapshot(
-        ts_exch=ts,
+        ts_recv=ts,  # 主时间线
         bids=bid_levels,
         asks=ask_levels,
         last_vol_split=last_vol_split or [],
@@ -366,29 +372,30 @@ def test_strategy():
 
 
 def test_two_timeline():
-    """Test two-timeline support."""
-    print("\n--- Test 10: Two Timeline ---")
+    """Test timeline config (deprecated - now uses single timeline).
     
-    config = TimelineConfig(a=1.0, b=100)  # recvtime = exchtime + 100
+    TimelineConfig is kept for backward compatibility but now always returns
+    identity transformations (no conversion needed with single recv timeline).
+    """
+    print("\n--- Test 10: Timeline Config (Single Timeline) ---")
     
-    # Test conversions
-    exchtime = 1000
-    recvtime = config.exchtime_to_recvtime(exchtime)
-    print(f"exchtime {exchtime} -> recvtime {recvtime}")
-    assert recvtime == 1100, f"Expected 1100, got {recvtime}"
+    config = TimelineConfig(a=1.0, b=100)  # 已弃用参数，不再影响转换
     
-    # Reverse conversion
-    back_to_exch = config.recvtime_to_exchtime(recvtime)
-    print(f"recvtime {recvtime} -> exchtime {back_to_exch}")
-    assert back_to_exch == exchtime, f"Expected {exchtime}, got {back_to_exch}"
+    # Test conversions - now identity (no conversion with single timeline)
+    time = 1000
+    result = config.exchtime_to_recvtime(time)
+    print(f"time {time} -> result {result}")
+    assert result == time, f"Expected {time}, got {result}"
     
-    # Test with scaling
-    config2 = TimelineConfig(a=2.0, b=50)  # recvtime = 2 * exchtime + 50
-    recvtime2 = config2.exchtime_to_recvtime(1000)
-    print(f"With a=2.0, b=50: exchtime 1000 -> recvtime {recvtime2}")
-    assert recvtime2 == 2050, f"Expected 2050, got {recvtime2}"
+    # Reverse conversion - also identity
+    back = config.recvtime_to_exchtime(result)
+    print(f"result {result} -> back {back}")
+    assert back == time, f"Expected {time}, got {back}"
     
-    print("✓ Two timeline test passed")
+    # All times should pass through unchanged (single timeline)
+    print("Note: TimelineConfig is deprecated - all times use ts_recv directly")
+    
+    print("✓ Timeline config test passed")
 
 
 def test_integration_basic():
@@ -608,10 +615,10 @@ def test_dto_snapshot():
     dto = to_snapshot_dto(snapshot)
     
     print(f"DTO类型: {type(dto).__name__}")
-    print(f"DTO是否为frozen: {dto.__class__.__dataclass_fields__['ts_exch'].default is None}")
+    print(f"DTO是否为frozen: True")  # dataclass frozen=True
     
-    # 验证数据正确转换
-    assert dto.ts_exch == 1000, f"时间戳应为1000，实际为{dto.ts_exch}"
+    # 验证数据正确转换 - ts_recv是主时间线
+    assert dto.ts_recv == 1000, f"时间戳应为1000，实际为{dto.ts_recv}"
     assert len(dto.bids) == 1, f"买盘档位应为1，实际为{len(dto.bids)}"
     assert len(dto.asks) == 1, f"卖盘档位应为1，实际为{len(dto.asks)}"
     
@@ -623,7 +630,7 @@ def test_dto_snapshot():
     
     # 验证DTO不可变（尝试修改应抛出异常）
     try:
-        dto.ts_exch = 2000
+        dto.ts_recv = 2000
         assert False, "DTO应该是不可变的"
     except Exception:
         pass  # 预期的行为
@@ -1841,56 +1848,67 @@ def test_nonuniform_snapshot_timing():
     1. A快照的时间被视为T_B - 500ms
     2. 所有变化都在[T_B-500ms, T_B]区间内
     3. 当间隔小于500ms时，使用原始T_A
+    
+    注意：时间单位为tick（每tick=100ns），500ms = 5_000_000 ticks
     """
     print("\n--- Test 29: Non-uniform Snapshot Timing ---")
     
+    from quant_framework.core.types import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
+    
     # 使用默认配置（非均匀快照时间处理默认启用）
-    tape_config = TapeConfig(snapshot_min_interval_ms=500)
+    # 使用tick单位
+    tape_config = TapeConfig(snapshot_min_interval_tick=SNAPSHOT_MIN_INTERVAL_TICK)
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
     
     # 测试1: 间隔为1500ms的快照（超过500ms阈值）
-    # T_A=1000, T_B=2500, effective_t_a = 2500-500 = 2000
-    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=60,
+    # 转换为tick单位
+    t_a = 1000 * TICK_PER_MS
+    t_b = 2500 * TICK_PER_MS
+    effective_t_a = t_b - SNAPSHOT_MIN_INTERVAL_TICK  # 2000ms in ticks
+    
+    prev = create_test_snapshot(t_a, 100.0, 101.0, bid_qty=50, ask_qty=60,
                                 last_vol_split=[])
-    curr = create_test_snapshot(2500, 100.5, 101.5, bid_qty=40, ask_qty=50,
+    curr = create_test_snapshot(t_b, 100.5, 101.5, bid_qty=40, ask_qty=50,
                                 last_vol_split=[(100.5, 20)])  # 有成交
     
     tape = builder.build(prev, curr)
     
     print(f"快照间隔: 1500ms (超过500ms阈值)")
-    print(f"T_A=1000, T_B=2500, effective_t_a=2000")
+    print(f"T_A={t_a}, T_B={t_b}, effective_t_a={effective_t_a}")
     print(f"生成了{len(tape)}个段")
     
     for seg in tape:
         print(f"  段{seg.index}: t=[{seg.t_start}, {seg.t_end}], "
-              f"duration={seg.t_end - seg.t_start}ms, "
+              f"duration={(seg.t_end - seg.t_start) / TICK_PER_MS}ms, "
               f"bid={seg.bid_price}, ask={seg.ask_price}")
         if seg.trades:
             print(f"    trades: {dict(seg.trades)}")
     
-    # 验证：所有段都应该从effective_t_a(2000)开始
+    # 验证：所有段都应该从effective_t_a开始
     first_seg = tape[0]
-    assert first_seg.t_start == 2000, f"第一段应从2000开始，实际{first_seg.t_start}"
-    print(f"  ✓ 第一段正确从effective_t_a=2000开始")
+    assert first_seg.t_start == effective_t_a, f"第一段应从{effective_t_a}开始，实际{first_seg.t_start}"
+    print(f"  ✓ 第一段正确从effective_t_a={effective_t_a}开始")
     
-    # 最后一段应该到T_B=2500结束
+    # 最后一段应该到T_B结束
     last_seg = tape[-1]
-    assert last_seg.t_end == 2500, f"最后一段应到2500结束，实际{last_seg.t_end}"
-    print(f"  ✓ 最后一段正确到T_B=2500结束")
+    assert last_seg.t_end == t_b, f"最后一段应到{t_b}结束，实际{last_seg.t_end}"
+    print(f"  ✓ 最后一段正确到T_B={t_b}结束")
     
     # 测试2: 间隔小于500ms时，使用原始T_A
     print("\n测试短间隔快照...")
-    prev2 = create_test_snapshot(3000, 100.0, 101.0)
-    curr2 = create_test_snapshot(3400, 100.5, 101.5, last_vol_split=[(100.5, 10)])
+    t_a2 = 3000 * TICK_PER_MS
+    t_b2 = 3400 * TICK_PER_MS
+    prev2 = create_test_snapshot(t_a2, 100.0, 101.0)
+    curr2 = create_test_snapshot(t_b2, 100.5, 101.5, last_vol_split=[(100.5, 10)])
     
     tape2 = builder.build(prev2, curr2)
     print(f"快照间隔: 400ms (小于500ms阈值)")
-    print(f"T_A=3000, T_B=3400, effective_t_a=max(3000, 3400-500)=3000")
+    print(f"T_A={t_a2}, T_B={t_b2}, effective_t_a=max({t_a2}, {t_b2 - SNAPSHOT_MIN_INTERVAL_TICK})={t_a2}")
     print(f"生成了{len(tape2)}个段")
     
-    # 间隔小于500ms时，effective_t_a = max(T_A, T_B-500) = max(3000, 2900) = 3000
+    # 间隔小于500ms时，effective_t_a = max(T_A, T_B-500ms) = T_A
     first_seg_start = tape2[0].t_start
-    assert first_seg_start == 3000, f"第一段应从3000开始，实际{first_seg_start}"
+    assert first_seg_start == t_a2, f"第一段应从{t_a2}开始，实际{first_seg_start}"
     print(f"  ✓ 短间隔正确处理，从{first_seg_start}开始")
     
     print("✓ Non-uniform snapshot timing test passed")
@@ -2024,10 +2042,10 @@ def test_replay_strategy():
             def get_portfolio(self):
                 return None
         
-        # 创建mock snapshot
+        # 创建mock snapshot - 使用ts_recv作为主时间线
         from quant_framework.core.dto import SnapshotDTO, LevelDTO
         snapshot = SnapshotDTO(
-            ts_exch=1000,
+            ts_recv=1000,  # 主时间线
             bids=(LevelDTO(100.0, 100),),
             asks=(LevelDTO(101.0, 100),),
         )
@@ -2208,16 +2226,16 @@ def test_replay_integration():
             f.write("OrderId,CancelSentTime\n")
             f.write("1,1500\n")
         
-        # 创建快照数据
+        # 创建快照数据 - 使用ts_recv作为主时间线
         snapshots = [
             NormalizedSnapshot(
-                ts_exch=1000,
+                ts_recv=1000,  # 主时间线
                 bids=[Level(100.0, 100)],
                 asks=[Level(101.0, 100)],
                 last_vol_split=[(100.0, 50)],
             ),
             NormalizedSnapshot(
-                ts_exch=2000,
+                ts_recv=2000,  # 主时间线
                 bids=[Level(100.0, 80)],
                 asks=[Level(101.0, 90)],
                 last_vol_split=[(100.0, 30)],
