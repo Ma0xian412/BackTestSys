@@ -435,24 +435,20 @@ class UnifiedTapeBuilder(ITapeBuilder):
         确保bid_path和ask_path具有完全相同的长度，使得每个segment中bid和ask的
         成交价格和成交数量能够正确对齐。
         
-        核心思想（基于用户的洞察）：
-        - 两条路径应该以meeting序列为基准构建
-        - 路径从第一个meeting价位开始，而不是从各自的起点开始
-        - 这样做的原因是：在meeting价位之前的价格变化不涉及实际交易
+        核心思想：
+        - 两条路径都保留起点和终点
+        - 中间经过meeting序列（成交价位）
+        - 通过padding确保两条路径长度相同
         - 当ask价格高于meeting价位时，ask在该价位的队列深度为0（taker）
         
         示例：
-        - prev: bid1=3318, ask1=3319
-        - curr: bid1=3317, ask1=3319
+        - prev: bid1=3317, ask1=3319
+        - curr: bid1=3317, ask1=3318
         - meeting_seq: [3318]
         
         结果：
-        - bid_path: [3318, 3317]  -- 从meeting到终点
-        - ask_path: [3318, 3319]  -- 从meeting到终点
-        
-        在segment 1 (价格=3318)：
-        - bid侧是maker，有正常队列
-        - ask侧是taker（crossing down），队列深度为0
+        - bid_path: [3317, 3318, 3317]  -- 起点 -> meeting -> 终点
+        - ask_path: [3319, 3318, 3318]  -- 起点 -> meeting -> 终点
         
         Args:
             bid_a: A快照的最优买价
@@ -475,31 +471,29 @@ class UnifiedTapeBuilder(ITapeBuilder):
             # 确保路径长度相同
             return self._pad_paths_to_same_length(bid_path, ask_path, bid_b, ask_b)
         
-        # 构建以meeting序列为基准的统一路径
-        # 路径结构：[meeting_1] -> [meeting_2] -> ... -> [meeting_n] -> [end]
+        # 构建保留起点和终点的统一路径
+        # 路径结构：[start] -> [meeting_1] -> [meeting_2] -> ... -> [meeting_n] -> [end]
         
-        bid_path = []
-        ask_path = []
+        bid_path = [round(bid_a, 8)]
+        ask_path = [round(ask_a, 8)]
         
         # 添加所有meeting价位到两条路径
         # 注意：meeting序列对bid和ask都是相同的
         for meeting_price in meeting_seq:
             rounded_price = round(meeting_price, 8)
             # 避免连续重复
-            if not bid_path or abs(bid_path[-1] - rounded_price) > EPSILON:
+            if abs(bid_path[-1] - rounded_price) > EPSILON:
                 bid_path.append(rounded_price)
-            if not ask_path or abs(ask_path[-1] - rounded_price) > EPSILON:
+            if abs(ask_path[-1] - rounded_price) > EPSILON:
                 ask_path.append(rounded_price)
         
-        # 添加终点（如果与最后一个meeting价位不同）
-        last_meeting = meeting_seq[-1]
-        
+        # 添加终点（如果与最后一个价位不同）
         # Bid终点
-        if abs(last_meeting - bid_b) > EPSILON:
+        if abs(bid_path[-1] - bid_b) > EPSILON:
             bid_path.append(round(bid_b, 8))
         
         # Ask终点
-        if abs(last_meeting - ask_b) > EPSILON:
+        if abs(ask_path[-1] - ask_b) > EPSILON:
             ask_path.append(round(ask_b, 8))
         
         # 确保路径长度相同（通过填充最后一个价格）
