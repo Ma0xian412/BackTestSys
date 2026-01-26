@@ -479,10 +479,12 @@ class UnifiedTapeBuilder(ITapeBuilder):
         are well-defined within each segment.
         """
         # Build change events (normalized progress u in [0,1])
+        # Use len(path) as divisor so N path points generate N segments
+        # (each point starts a segment that ends at the next point's u or at u=1)
         events: List[Tuple[float, str, Price]] = []
         
-        bid_n = max(1, len(bid_path) - 1)
-        ask_n = max(1, len(ask_path) - 1)
+        bid_n = max(1, len(bid_path))
+        ask_n = max(1, len(ask_path))
         
         for i, p in enumerate(bid_path):
             u = i / bid_n if bid_n > 0 else 0.0
