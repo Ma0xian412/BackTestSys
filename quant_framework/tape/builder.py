@@ -183,80 +183,50 @@ class UnifiedTapeBuilder(ITapeBuilder):
         levels = snap.bids if side == Side.BUY else snap.asks
         if not levels:
             return None
-        if side == Side.BUY:
-            return float(max(l.price for l in levels))
-        return float(min(l.price for l in levels))
+        price_fn = max if side == Side.BUY else min
+        return float(price_fn(l.price for l in levels))
     
-    def _compute_activation_set(self, best_price: float, side: Side) -> Set[Price]:
-        """计算激活集（从最优价起的top-K档位）。
-
-        这是基本的激活集计算，不考虑AB快照的交集。
-        用于无快照信息时的回退情况。
-        """
-        if best_price <= 0:
-            return set()
-
-        result = set()
-        for k in range(self.config.top_k):
-            if side == Side.BUY:
-                # Bid: best - k * tick_size
-                p = best_price - k * self.tick_size
-            else:
-                # Ask: best + k * tick_size
-                p = best_price + k * self.tick_size
-            if p > 0:
-                result.add(round(p, 8))  # Round to avoid floating point issues
-        return result
-
-    def _compute_activation_set_with_snapshots(
+    def _compute_activation_set(
         self,
         best_price: float,
         side: Side,
-        prev_snapshot: NormalizedSnapshot,
-        curr_snapshot: NormalizedSnapshot
+        prev_snapshot: NormalizedSnapshot = None,
+        curr_snapshot: NormalizedSnapshot = None
     ) -> Set[Price]:
-        """计算激活集（考虑AB快照的交集）。
+        """计算激活集（从最优价起的top-K档位，可选考虑AB快照的交集）。
 
         激活集包含满足以下条件的价位：
         1. 在最优价之下（买方）或之上（卖方）的top-K档位
-        2. 同时在A快照和B快照中都存在的价位
-
-        这样可以避免某些激进档位突然从有效变为无效的情况。
+        2. 如果提供了快照，还包括同时在A快照和B快照中都存在的价位
         """
         if best_price <= 0:
             return set()
 
-        # 获取A和B快照中的价位集合
-        prev_levels = prev_snapshot.bids if side == Side.BUY else prev_snapshot.asks
-        curr_levels = curr_snapshot.bids if side == Side.BUY else curr_snapshot.asks
-
-        prev_prices = {round(float(lvl.price), 8) for lvl in prev_levels}
-        curr_prices = {round(float(lvl.price), 8) for lvl in curr_levels}
-
-        # AB快照中都出现的价位
-        common_prices = prev_prices & curr_prices
-
         result = set()
+        price_direction = -1 if side == Side.BUY else 1
 
-        # 首先添加标准的top-K档位
+        # 添加标准的top-K档位
         for k in range(self.config.top_k):
-            if side == Side.BUY:
-                p = best_price - k * self.tick_size
-            else:
-                p = best_price + k * self.tick_size
+            p = best_price + price_direction * k * self.tick_size
             if p > 0:
                 result.add(round(p, 8))
 
-        # 然后添加在最优价之下（买方）或之上（卖方）且在AB都出现的价位
-        for price in common_prices:
-            if side == Side.BUY:
-                # 买方：价位应该在最优价之下或等于最优价
-                if price <= best_price + EPSILON:
-                    result.add(round(price, 8))
-            else:
-                # 卖方：价位应该在最优价之上或等于最优价
-                if price >= best_price - EPSILON:
-                    result.add(round(price, 8))
+        # 如果提供了快照，添加在AB都出现的价位
+        if prev_snapshot is not None and curr_snapshot is not None:
+            prev_levels = prev_snapshot.bids if side == Side.BUY else prev_snapshot.asks
+            curr_levels = curr_snapshot.bids if side == Side.BUY else curr_snapshot.asks
+
+            prev_prices = {round(float(lvl.price), 8) for lvl in prev_levels}
+            curr_prices = {round(float(lvl.price), 8) for lvl in curr_levels}
+            common_prices = prev_prices & curr_prices
+
+            for price in common_prices:
+                if side == Side.BUY:
+                    if price <= best_price + EPSILON:
+                        result.add(round(price, 8))
+                else:
+                    if price >= best_price - EPSILON:
+                        result.add(round(price, 8))
 
         return result
     
@@ -386,44 +356,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         return result
     
-    def _build_path_with_meeting_sequence(self, p_start: Price, p_end: Price, 
-                                           meeting_seq: List[Price]) -> List[Price]:
-        """使用公共meeting序列构建完整的价格路径。
-        
-        构建规则：
-        - bid_path = [bidA] + meeting_seq + [bidB]
-        - ask_path = [askA] + meeting_seq + [askB]
-        
-        这样可以确保bid和ask路径的中间部分完全一致，只有起点和终点不同。
-        
-        注意：当价格从一个点移动到下一个点时，会包含中间的所有价位（按tick_size）。
-        例如：从3318到3316会包含3317作为中间步骤。
-        
-        Args:
-            p_start: 起始价格（bidA或askA）
-            p_end: 结束价格（bidB或askB）
-            meeting_seq: 公共相遇价位序列
-            
-        Returns:
-            完整的价格路径
-        """
-        result = [p_start]
-        
-        # 添加meeting序列，包含中间价位
-        for p in meeting_seq:
-            # 只添加与上一个价位不同的点
-            if abs(result[-1] - p) > EPSILON:
-                # 插入中间价位
-                self._add_intermediate_prices(result, result[-1], p)
-                result.append(round(p, 8))
-        
-        # 添加终点，包含中间价位
-        if abs(result[-1] - p_end) > EPSILON:
-            self._add_intermediate_prices(result, result[-1], p_end)
-            result.append(round(p_end, 8))
-        
-        return result
-    
     def _build_aligned_paths(
         self, 
         bid_a: Price, bid_b: Price,
@@ -528,118 +460,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         return bid_path, ask_path
     
-    def _add_intermediate_prices(self, result: List[Price], p_from: Price, p_to: Price) -> None:
-        """在result中添加从p_from到p_to之间的中间价位（不包含p_from和p_to本身）。
-        
-        例如：p_from=3318, p_to=3316, tick_size=1.0
-        则添加 3317 到result中
-        
-        Args:
-            result: 价格路径列表，会被修改
-            p_from: 起始价格
-            p_to: 目标价格
-        """
-        if abs(p_to - p_from) <= self.tick_size + EPSILON:
-            # 相邻价位，无需添加中间点
-            return
-        
-        if p_to > p_from:
-            # 向上移动：从p_from + tick_size到p_to - tick_size
-            current = p_from + self.tick_size
-            while current < p_to - EPSILON:
-                result.append(round(current, 8))
-                current += self.tick_size
-        else:
-            # 向下移动：从p_from - tick_size到p_to + tick_size
-            current = p_from - self.tick_size
-            while current > p_to + EPSILON:
-                result.append(round(current, 8))
-                current -= self.tick_size
-    
-    def _build_price_path(self, p_start: Price, p_end: Price, p_min: Price, p_max: Price, 
-                          price_set: Set[Price] = None) -> List[Price]:
-        """构建完整的价格路径（包含lastvolsplit中所有价位）。
-
-        候选路径方向:
-        - A: p_start -> 向下到p_min -> 向上到p_max -> p_end
-        - B: p_start -> 向上到p_max -> 向下到p_min -> p_end
-
-        选择总位移较小的路径方向，并确保路径包含lastvolsplit中的所有价位。
-        """
-        # 尝试两条候选路径方向
-        path_a = [p_start, p_min, p_max, p_end]
-        path_b = [p_start, p_max, p_min, p_end]
-
-        # 计算总位移，选择较小的
-        disp_a = sum(abs(path_a[i+1] - path_a[i]) for i in range(len(path_a)-1))
-        disp_b = sum(abs(path_b[i+1] - path_b[i]) for i in range(len(path_b)-1))
-
-        # 选择路径方向
-        if disp_a <= disp_b:
-            # 路径A: start -> min -> max -> end
-            direction_down_first = True
-        else:
-            # 路径B: start -> max -> min -> end
-            direction_down_first = False
-
-        # 如果没有price_set，使用简单路径
-        if not price_set:
-            chosen = path_a if direction_down_first else path_b
-            result = []
-            for p in chosen:
-                if not result or abs(result[-1] - p) > EPSILON:
-                    result.append(p)
-            return result if result else [p_start]
-
-        # 将所有需要访问的价位收集起来
-        all_prices = set(price_set)
-        all_prices.add(p_start)
-        all_prices.add(p_end)
-
-        # 按价格排序
-        sorted_prices = sorted(all_prices)
-
-        # 根据选择的方向构建完整路径
-        result = [p_start]
-
-        if direction_down_first:
-            # 路径: start -> 向下到min -> 向上到max -> end
-            # 第一段: start -> min (向下)
-            prices_below_start = [p for p in sorted_prices if p < p_start - EPSILON]
-            for p in reversed(prices_below_start):  # 从高到低
-                if abs(result[-1] - p) > EPSILON:
-                    result.append(p)
-
-            # 第二段: min -> max (向上，包含所有中间价位)
-            for p in sorted_prices:
-                if p > result[-1] + EPSILON:
-                    result.append(p)
-
-        else:
-            # 路径: start -> 向上到max -> 向下到min -> end
-            # 第一段: start -> max (向上)
-            prices_above_start = [p for p in sorted_prices if p > p_start + EPSILON]
-            for p in prices_above_start:  # 从低到高
-                if abs(result[-1] - p) > EPSILON:
-                    result.append(p)
-
-            # 第二段: max -> min (向下，包含所有中间价位)
-            for p in reversed(sorted_prices):
-                if p < result[-1] - EPSILON:
-                    result.append(p)
-
-        # 确保终点在路径中
-        if abs(result[-1] - p_end) > EPSILON:
-            result.append(p_end)
-
-        # 移除连续重复点
-        final_result = []
-        for p in result:
-            if not final_result or abs(final_result[-1] - p) > EPSILON:
-                final_result.append(round(p, 8))
-
-        return final_result if final_result else [p_start]
-    
     def _merge_paths_to_segments(self, bid_path: List[Price], ask_path: List[Price], 
                                   t_a: int, t_b: int) -> List[TapeSegment]:
         """Merge bid/ask paths into global segments.
@@ -711,18 +531,12 @@ class UnifiedTapeBuilder(ITapeBuilder):
         """
         result = []
         for seg in segments:
-            if prev is not None and curr is not None:
-                # 使用考虑AB快照交集的方法
-                activation_bid = self._compute_activation_set_with_snapshots(
-                    seg.bid_price, Side.BUY, prev, curr
-                )
-                activation_ask = self._compute_activation_set_with_snapshots(
-                    seg.ask_price, Side.SELL, prev, curr
-                )
-            else:
-                # 回退到基本方法
-                activation_bid = self._compute_activation_set(seg.bid_price, Side.BUY)
-                activation_ask = self._compute_activation_set(seg.ask_price, Side.SELL)
+            activation_bid = self._compute_activation_set(
+                seg.bid_price, Side.BUY, prev, curr
+            )
+            activation_ask = self._compute_activation_set(
+                seg.ask_price, Side.SELL, prev, curr
+            )
             
             new_seg = replace(
                 seg,
@@ -857,6 +671,168 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         return result
     
+    def _get_activation_set_for_side(self, seg: TapeSegment, side: Side) -> Set[Price]:
+        """获取指定方向的激活集。"""
+        return seg.activation_bid if side == Side.BUY else seg.activation_ask
+
+    def _get_best_price_for_side(self, seg: TapeSegment, side: Side) -> Price:
+        """获取指定方向的最优价格。"""
+        return seg.bid_price if side == Side.BUY else seg.ask_price
+
+    def _find_price_transition_segments(
+        self, segments: List[TapeSegment], side: Side
+    ) -> Dict[Price, List[Tuple[int, int, bool]]]:
+        """找出每个价位作为best price的连续段范围。
+        
+        返回: {price: [(start_idx, end_idx, ends_with_transition), ...]}
+        ends_with_transition: True表示该段组结束时价格转换（队列清空），False表示保持或最终段
+        """
+        result: Dict[Price, List[Tuple[int, int, bool]]] = {}
+        n = len(segments)
+        if not segments:
+            return result
+        
+        # 获取每段的best price
+        best_prices = [self._get_best_price_for_side(seg, side) for seg in segments]
+        
+        # 找出连续段组
+        i = 0
+        while i < n:
+            price = best_prices[i]
+            start = i
+            # 找到该价位的连续段结束位置
+            while i < n and abs(best_prices[i] - price) < EPSILON:
+                i += 1
+            end = i - 1  # 包含的最后一个段索引
+            
+            # 判断是否是价格转换（bid下降或ask上升表示队列清空）
+            ends_with_transition = False
+            if i < n:  # 还有后续段
+                next_price = best_prices[i]
+                if side == Side.BUY and next_price < price - EPSILON:
+                    ends_with_transition = True
+                elif side == Side.SELL and next_price > price + EPSILON:
+                    ends_with_transition = True
+            
+            if price not in result:
+                result[price] = []
+            result[price].append((start, end, ends_with_transition))
+        
+        return result
+
+    def _process_side_transitions(
+        self,
+        side: Side,
+        segments: List[TapeSegment],
+        transitions: Dict[Price, List[Tuple[int, int, bool]]],
+        prev: NormalizedSnapshot,
+        curr: NormalizedSnapshot,
+        cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]],
+        net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]],
+    ) -> None:
+        """处理指定方向的价格转换和流量分配。"""
+        def get_qty_at_price(snap: NormalizedSnapshot, price: Price) -> int:
+            levels = snap.bids if side == Side.BUY else snap.asks
+            for lvl in levels:
+                if abs(float(lvl.price) - price) < EPSILON:
+                    return int(lvl.qty)
+            return 0
+
+        for price, groups in transitions.items():
+            q_a = get_qty_at_price(prev, price)
+            q_b = get_qty_at_price(curr, price)
+            
+            for group_idx, (start_idx, end_idx, ends_with_transition) in enumerate(groups):
+                m_group = sum(
+                    segments[i].trades.get((side, price), 0)
+                    for i in range(start_idx, end_idx + 1)
+                )
+                
+                is_first_visit = (group_idx == 0)
+                initial_queue = q_a if is_first_visit else 0
+                
+                if ends_with_transition:
+                    n_group = m_group - initial_queue
+                else:
+                    m_total_at_price = sum(
+                        seg.trades.get((side, price), 0) for seg in segments
+                    )
+                    delta_q = q_b - q_a
+                    n_total = delta_q + m_total_at_price
+                    
+                    all_active_segs = [
+                        i for i, seg in enumerate(segments)
+                        if price in self._get_activation_set_for_side(seg, side)
+                    ]
+                    group_segs = list(range(start_idx, end_idx + 1))
+                    
+                    group_dur = sum(segments[i].t_end - segments[i].t_start for i in group_segs)
+                    total_dur = sum(segments[i].t_end - segments[i].t_start for i in all_active_segs) or 1
+                    
+                    n_group = n_total * group_dur / total_dur
+                
+                group_segs = list(range(start_idx, end_idx + 1))
+                durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
+                total_dur = sum(durations) or 1
+                
+                for j, seg_idx in enumerate(group_segs):
+                    if price in self._get_activation_set_for_side(segments[seg_idx], side):
+                        alloc = n_group * durations[j] / total_dur
+                        net_flow_per_seg[seg_idx][(side, price)] = int(round(alloc))
+                        
+                        if alloc < 0:
+                            cancels_per_seg[seg_idx][(side, price)] = int(round(abs(alloc)))
+
+    def _process_non_best_prices(
+        self,
+        side: Side,
+        price_universe: Set[Price],
+        segments: List[TapeSegment],
+        transitions: Dict[Price, List[Tuple[int, int, bool]]],
+        prev: NormalizedSnapshot,
+        curr: NormalizedSnapshot,
+        cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]],
+        net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]],
+    ) -> None:
+        """处理非best-price但在activation中的价位。"""
+        def get_qty_at_price(snap: NormalizedSnapshot, price: Price) -> int:
+            levels = snap.bids if side == Side.BUY else snap.asks
+            for lvl in levels:
+                if abs(float(lvl.price) - price) < EPSILON:
+                    return int(lvl.qty)
+            return 0
+
+        for price in price_universe:
+            if price in transitions:
+                continue
+            
+            q_a = get_qty_at_price(prev, price)
+            q_b = get_qty_at_price(curr, price)
+            
+            m_total = sum(seg.trades.get((side, price), 0) for seg in segments)
+            delta_q = q_b - q_a
+            n_total = delta_q + m_total
+            
+            active_segs = [
+                i for i, seg in enumerate(segments)
+                if price in self._get_activation_set_for_side(seg, side)
+            ]
+            if not active_segs:
+                continue
+            
+            durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
+            total_dur = sum(durations) or 1
+            
+            for j, i in enumerate(active_segs):
+                alloc_net = n_total * durations[j] / total_dur
+                if (side, price) not in net_flow_per_seg[i]:
+                    net_flow_per_seg[i][(side, price)] = int(round(alloc_net))
+                
+                if alloc_net < 0:
+                    alloc_cancel = int(round(abs(alloc_net)))
+                    if alloc_cancel > 0 and (side, price) not in cancels_per_seg[i]:
+                        cancels_per_seg[i][(side, price)] = alloc_cancel
+
     def _derive_cancellations_and_net_flow(
         self,
         segments: List[TapeSegment],
@@ -886,205 +862,31 @@ class UnifiedTapeBuilder(ITapeBuilder):
             price_universe_bid.update(seg.activation_bid)
             price_universe_ask.update(seg.activation_ask)
 
-        def get_qty_at_price(snap: NormalizedSnapshot, side: Side, price: Price) -> int:
-            levels = snap.bids if side == Side.BUY else snap.asks
-            for lvl in levels:
-                if abs(float(lvl.price) - price) < EPSILON:
-                    return int(lvl.qty)
-            return 0
-
         cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
         net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
 
-        # 找出价格转换点
-        def find_price_transition_segments(side: Side) -> Dict[Price, List[Tuple[int, int, bool]]]:
-            """找出每个价位作为best price的连续段范围。
-            
-            返回: {price: [(start_idx, end_idx, ends_with_transition), ...]}
-            ends_with_transition: True表示该段组结束时价格转换（队列清空），False表示保持或最终段
-            """
-            result: Dict[Price, List[Tuple[int, int, bool]]] = {}
-            
-            if not segments:
-                return result
-            
-            # 获取每段的best price
-            best_prices = []
-            for seg in segments:
-                if side == Side.BUY:
-                    best_prices.append(seg.bid_price)
-                else:
-                    best_prices.append(seg.ask_price)
-            
-            # 找出连续段组
-            i = 0
-            while i < n:
-                price = best_prices[i]
-                start = i
-                # 找到该价位的连续段结束位置
-                while i < n and abs(best_prices[i] - price) < EPSILON:
-                    i += 1
-                end = i - 1  # 包含的最后一个段索引
-                
-                # 判断是否是价格转换（bid下降或ask上升表示队列清空）
-                ends_with_transition = False
-                if i < n:  # 还有后续段
-                    next_price = best_prices[i]
-                    if side == Side.BUY and next_price < price - EPSILON:
-                        # bid价格下降，说明当前价位队列清空
-                        ends_with_transition = True
-                    elif side == Side.SELL and next_price > price + EPSILON:
-                        # ask价格上升，说明当前价位队列清空
-                        ends_with_transition = True
-                
-                if price not in result:
-                    result[price] = []
-                result[price].append((start, end, ends_with_transition))
-            
-            return result
+        # 找出价格转换点并处理bid和ask侧
+        bid_transitions = self._find_price_transition_segments(segments, Side.BUY)
+        ask_transitions = self._find_price_transition_segments(segments, Side.SELL)
         
-        # 处理bid侧
-        bid_transitions = find_price_transition_segments(Side.BUY)
-        for price, groups in bid_transitions.items():
-            q_a = get_qty_at_price(prev, Side.BUY, price)
-            q_b = get_qty_at_price(curr, Side.BUY, price)
-            
-            for group_idx, (start_idx, end_idx, ends_with_transition) in enumerate(groups):
-                # 计算这组段中在该价位的总成交量
-                m_group = sum(
-                    segments[i].trades.get((Side.BUY, price), 0)
-                    for i in range(start_idx, end_idx + 1)
-                )
-                
-                # 判断是否是首次访问该价位
-                # 首次访问：使用Q_A作为初始队列
-                # 重访：初始队列为0（因为之前离开时已归零）
-                is_first_visit = (group_idx == 0)
-                initial_queue = q_a if is_first_visit else 0
-                
-                # 计算净流入总量
-                if ends_with_transition:
-                    # 队列清空约束：Q_initial + N - M = 0 => N = M - Q_initial
-                    n_group = m_group - initial_queue
-                else:
-                    # 使用守恒方程：N = delta_Q + M
-                    # 但这只适用于最后一组（价位在区间结束时仍为best price）
-                    # 对于中间不转换的组，暂时按比例分配
-                    m_total_at_price = sum(
-                        seg.trades.get((Side.BUY, price), 0) for seg in segments
-                    )
-                    delta_q = q_b - q_a
-                    n_total = delta_q + m_total_at_price
-                    
-                    # 按这组段在总激活时长中的比例分配
-                    all_active_segs = [
-                        i for i, seg in enumerate(segments)
-                        if price in seg.activation_bid
-                    ]
-                    group_segs = list(range(start_idx, end_idx + 1))
-                    
-                    group_dur = sum(segments[i].t_end - segments[i].t_start for i in group_segs)
-                    total_dur = sum(segments[i].t_end - segments[i].t_start for i in all_active_segs) or 1
-                    
-                    n_group = n_total * group_dur / total_dur
-                
-                # 在组内按段时长比例分配
-                group_segs = list(range(start_idx, end_idx + 1))
-                durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
-                total_dur = sum(durations) or 1
-                
-                for j, seg_idx in enumerate(group_segs):
-                    if price in segments[seg_idx].activation_bid:
-                        alloc = n_group * durations[j] / total_dur
-                        net_flow_per_seg[seg_idx][(Side.BUY, price)] = int(round(alloc))
-                        
-                        if alloc < 0:
-                            cancels_per_seg[seg_idx][(Side.BUY, price)] = int(round(abs(alloc)))
+        self._process_side_transitions(
+            Side.BUY, segments, bid_transitions, prev, curr,
+            cancels_per_seg, net_flow_per_seg
+        )
+        self._process_side_transitions(
+            Side.SELL, segments, ask_transitions, prev, curr,
+            cancels_per_seg, net_flow_per_seg
+        )
         
-        # 处理ask侧（类似逻辑）
-        ask_transitions = find_price_transition_segments(Side.SELL)
-        for price, groups in ask_transitions.items():
-            q_a = get_qty_at_price(prev, Side.SELL, price)
-            q_b = get_qty_at_price(curr, Side.SELL, price)
-            
-            for group_idx, (start_idx, end_idx, ends_with_transition) in enumerate(groups):
-                m_group = sum(
-                    segments[i].trades.get((Side.SELL, price), 0)
-                    for i in range(start_idx, end_idx + 1)
-                )
-                
-                # 判断是否是首次访问该价位
-                is_first_visit = (group_idx == 0)
-                initial_queue = q_a if is_first_visit else 0
-                
-                if ends_with_transition:
-                    # 队列清空约束：Q_initial + N - M = 0 => N = M - Q_initial
-                    n_group = m_group - initial_queue
-                else:
-                    m_total_at_price = sum(
-                        seg.trades.get((Side.SELL, price), 0) for seg in segments
-                    )
-                    delta_q = q_b - q_a
-                    n_total = delta_q + m_total_at_price
-                    
-                    all_active_segs = [
-                        i for i, seg in enumerate(segments)
-                        if price in seg.activation_ask
-                    ]
-                    group_segs = list(range(start_idx, end_idx + 1))
-                    
-                    group_dur = sum(segments[i].t_end - segments[i].t_start for i in group_segs)
-                    total_dur = sum(segments[i].t_end - segments[i].t_start for i in all_active_segs) or 1
-                    
-                    n_group = n_total * group_dur / total_dur
-                
-                group_segs = list(range(start_idx, end_idx + 1))
-                durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
-                total_dur = sum(durations) or 1
-                
-                for j, seg_idx in enumerate(group_segs):
-                    if price in segments[seg_idx].activation_ask:
-                        alloc = n_group * durations[j] / total_dur
-                        net_flow_per_seg[seg_idx][(Side.SELL, price)] = int(round(alloc))
-                        
-                        if alloc < 0:
-                            cancels_per_seg[seg_idx][(Side.SELL, price)] = int(round(abs(alloc)))
-        
-        # 处理非best-price但在activation中的价位（使用原始守恒方程）
-        for side, price_universe in [(Side.BUY, price_universe_bid), (Side.SELL, price_universe_ask)]:
-            transitions = bid_transitions if side == Side.BUY else ask_transitions
-            
-            for price in price_universe:
-                # 跳过已处理的best-price价位
-                if price in transitions:
-                    continue
-                
-                q_a = get_qty_at_price(prev, side, price)
-                q_b = get_qty_at_price(curr, side, price)
-                
-                m_total = sum(seg.trades.get((side, price), 0) for seg in segments)
-                delta_q = q_b - q_a
-                n_total = delta_q + m_total
-                
-                active_segs = [
-                    i for i, seg in enumerate(segments)
-                    if price in (seg.activation_bid if side == Side.BUY else seg.activation_ask)
-                ]
-                if not active_segs:
-                    continue
-                
-                durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
-                total_dur = sum(durations) or 1
-                
-                for j, i in enumerate(active_segs):
-                    alloc_net = n_total * durations[j] / total_dur
-                    if (side, price) not in net_flow_per_seg[i]:
-                        net_flow_per_seg[i][(side, price)] = int(round(alloc_net))
-                    
-                    if alloc_net < 0:
-                        alloc_cancel = int(round(abs(alloc_net)))
-                        if alloc_cancel > 0 and (side, price) not in cancels_per_seg[i]:
-                            cancels_per_seg[i][(side, price)] = alloc_cancel
+        # 处理非best-price但在activation中的价位
+        self._process_non_best_prices(
+            Side.BUY, price_universe_bid, segments, bid_transitions, prev, curr,
+            cancels_per_seg, net_flow_per_seg
+        )
+        self._process_non_best_prices(
+            Side.SELL, price_universe_ask, segments, ask_transitions, prev, curr,
+            cancels_per_seg, net_flow_per_seg
+        )
 
         result = []
         for i, seg in enumerate(segments):
