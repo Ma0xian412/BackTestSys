@@ -44,7 +44,7 @@ class ShadowOrder:
     original_qty: Qty
     remaining_qty: Qty
     arrival_time: int
-    pos: float  # Position on X coordinate axis
+    pos: int  # Position on X coordinate axis (integer: number of lots ahead in queue)
     status: str = "ACTIVE"  # ACTIVE, FILLED, CANCELED
     filled_qty: Qty = 0
     tif: TimeInForce = TimeInForce.GTC

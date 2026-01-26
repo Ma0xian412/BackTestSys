@@ -27,7 +27,7 @@ LAMBDA_THRESHOLD = 1e-6
 def _largest_remainder_round(values: List[float], total: int) -> List[int]:
     """使用最大余数法将浮点数列表取整，同时保证总和不变。
     
-    该方法首先将每个值向下取整，然后按照余数从大到小分配剩余的单位，
+    该方法首先将每个值向0取整，然后按照余数从大到小分配剩余的单位，
     确保取整后的总和等于指定的总数。
     
     Args:
@@ -40,8 +40,8 @@ def _largest_remainder_round(values: List[float], total: int) -> List[int]:
     if not values:
         return []
     
-    # 向下取整并计算余数
-    floored = [int(v) if v >= 0 else -int(-v) for v in values]  # 向0取整
+    # 向0取整并计算余数
+    floored = [math.trunc(v) for v in values]
     remainders = [v - f for v, f in zip(values, floored)]
     
     # 计算需要分配的剩余单位
