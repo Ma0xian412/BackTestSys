@@ -398,6 +398,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         这样可以确保bid和ask路径的中间部分完全一致，只有起点和终点不同。
         
+        注意：当价格从一个点移动到下一个点时，会包含中间的所有价位（按tick_size）。
+        例如：从3318到3316会包含3317作为中间步骤。
+        
         Args:
             p_start: 起始价格（bidA或askA）
             p_end: 结束价格（bidB或askB）
@@ -408,17 +411,48 @@ class UnifiedTapeBuilder(ITapeBuilder):
         """
         result = [p_start]
         
-        # 添加meeting序列
+        # 添加meeting序列，包含中间价位
         for p in meeting_seq:
             # 只添加与上一个价位不同的点
             if abs(result[-1] - p) > EPSILON:
+                # 插入中间价位
+                self._add_intermediate_prices(result, result[-1], p)
                 result.append(round(p, 8))
         
-        # 添加终点
+        # 添加终点，包含中间价位
         if abs(result[-1] - p_end) > EPSILON:
+            self._add_intermediate_prices(result, result[-1], p_end)
             result.append(round(p_end, 8))
         
         return result
+    
+    def _add_intermediate_prices(self, result: List[Price], p_from: Price, p_to: Price) -> None:
+        """在result中添加从p_from到p_to之间的中间价位（不包含p_from和p_to本身）。
+        
+        例如：p_from=3318, p_to=3316, tick_size=1.0
+        则添加 3317 到result中
+        
+        Args:
+            result: 价格路径列表，会被修改
+            p_from: 起始价格
+            p_to: 目标价格
+        """
+        if abs(p_to - p_from) <= self.tick_size + EPSILON:
+            # 相邻价位，无需添加中间点
+            return
+        
+        if p_to > p_from:
+            # 向上移动：从p_from + tick_size到p_to - tick_size
+            current = p_from + self.tick_size
+            while current < p_to - EPSILON:
+                result.append(round(current, 8))
+                current += self.tick_size
+        else:
+            # 向下移动：从p_from - tick_size到p_to + tick_size
+            current = p_from - self.tick_size
+            while current > p_to + EPSILON:
+                result.append(round(current, 8))
+                current -= self.tick_size
     
     def _build_price_path(self, p_start: Price, p_end: Price, p_min: Price, p_max: Price, 
                           price_set: Set[Price] = None) -> List[Price]:

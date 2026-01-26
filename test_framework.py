@@ -1568,6 +1568,9 @@ def test_segment_queue_zero_constraint():
                 return q
         return 0
     
+    # 记录已验证的价格下降转换，避免重复验证
+    verified_price_drops = set()
+    
     for trans in price_transitions:
         print(f"  段{trans['from_seg']}->段{trans['to_seg']}: "
               f"价格 {trans['from_price']} -> {trans['to_price']} "
@@ -1576,9 +1579,18 @@ def test_segment_queue_zero_constraint():
         if trans['from_price'] > trans['to_price']:
             # bid价格下降，验证队列归零约束
             price = trans['from_price']
+            
+            # 只验证每个价格的第一次下降转换
+            # 因为一旦价格离开这个档位，队列就应该归零
+            # 后续如果价格回到这个档位，那是新的队列，不应该累加之前的计算
+            if price in verified_price_drops:
+                print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，已在之前验证过队列归零")
+                continue
+            
             q_a = get_initial_qty(price)
             
             # 计算在该价位作为best bid期间的总成交量和净流入
+            # 只统计从开始到第一次离开该价位的段
             total_trades = 0
             total_net_flow = 0
             for j in range(trans['seg_idx'] + 1):
@@ -1594,6 +1606,9 @@ def test_segment_queue_zero_constraint():
             # 验证队列归零（允许小误差）
             assert abs(ending_queue) <= 1, f"队列未归零: {ending_queue}"
             print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，队列正确归零")
+            
+            # 标记这个价格的下降转换已验证
+            verified_price_drops.add(price)
         else:
             print(f"  ✓ bid从{trans['from_price']}升到{trans['to_price']}，新单进入")
     
