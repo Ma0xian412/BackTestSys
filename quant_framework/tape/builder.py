@@ -149,11 +149,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # 确保bid和ask的中间路径完全一致（bid=ask同步的相遇价位）
         meeting_seq = self._build_meeting_sequence(price_set, p_min, p_max)
         
-        # 用公共meeting序列构建bid和ask路径
-        # bid_path = [bidA] + meeting_seq + [bidB]
-        # ask_path = [askA] + meeting_seq + [askB]
-        bid_path = self._build_path_with_meeting_sequence(bid_a, bid_b, meeting_seq)
-        ask_path = self._build_path_with_meeting_sequence(ask_a, ask_b, meeting_seq)
+        # 用公共meeting序列构建对齐的bid和ask路径
+        # 确保bid_path和ask_path长度相同，segment数量一致
+        bid_path, ask_path = self._build_aligned_paths(bid_a, bid_b, ask_a, ask_b, meeting_seq)
         
         # 合并路径为全局段 - 使用effective_t_a作为开始时间
         segments = self._merge_paths_to_segments(bid_path, ask_path, effective_t_a, t_b)
@@ -425,6 +423,126 @@ class UnifiedTapeBuilder(ITapeBuilder):
             result.append(round(p_end, 8))
         
         return result
+    
+    def _build_aligned_paths(
+        self, 
+        bid_a: Price, bid_b: Price,
+        ask_a: Price, ask_b: Price,
+        meeting_seq: List[Price]
+    ) -> Tuple[List[Price], List[Price]]:
+        """构建对齐的bid和ask价格路径。
+        
+        确保bid_path和ask_path具有完全相同的长度，使得每个segment中bid和ask的
+        成交价格和成交数量能够正确对齐。
+        
+        核心思想（基于用户的洞察）：
+        - 两条路径应该以meeting序列为基准构建
+        - 路径从第一个meeting价位开始，而不是从各自的起点开始
+        - 这样做的原因是：在meeting价位之前的价格变化不涉及实际交易
+        - 当ask价格高于meeting价位时，ask在该价位的队列深度为0（taker）
+        
+        示例：
+        - prev: bid1=3318, ask1=3319
+        - curr: bid1=3317, ask1=3319
+        - meeting_seq: [3318]
+        
+        结果：
+        - bid_path: [3318, 3317]  -- 从meeting到终点
+        - ask_path: [3318, 3319]  -- 从meeting到终点
+        
+        在segment 1 (价格=3318)：
+        - bid侧是maker，有正常队列
+        - ask侧是taker（crossing down），队列深度为0
+        
+        Args:
+            bid_a: A快照的最优买价
+            bid_b: B快照的最优买价
+            ask_a: A快照的最优卖价
+            ask_b: B快照的最优卖价
+            meeting_seq: 公共相遇价位序列（成交价位）
+            
+        Returns:
+            (bid_path, ask_path) 两条对齐的价格路径，长度相同
+        """
+        if not meeting_seq:
+            # 没有成交，返回简单的两点路径
+            bid_path = [round(bid_a, 8)]
+            ask_path = [round(ask_a, 8)]
+            if abs(bid_a - bid_b) > EPSILON:
+                bid_path.append(round(bid_b, 8))
+            if abs(ask_a - ask_b) > EPSILON:
+                ask_path.append(round(ask_b, 8))
+            # 确保路径长度相同
+            return self._pad_paths_to_same_length(bid_path, ask_path, bid_b, ask_b)
+        
+        # 构建以meeting序列为基准的统一路径
+        # 路径结构：[meeting_1] -> [meeting_2] -> ... -> [meeting_n] -> [end]
+        
+        bid_path = []
+        ask_path = []
+        
+        # 添加所有meeting价位到两条路径
+        # 注意：meeting序列对bid和ask都是相同的
+        for meeting_price in meeting_seq:
+            rounded_price = round(meeting_price, 8)
+            # 避免连续重复
+            if not bid_path or abs(bid_path[-1] - rounded_price) > EPSILON:
+                bid_path.append(rounded_price)
+            if not ask_path or abs(ask_path[-1] - rounded_price) > EPSILON:
+                ask_path.append(rounded_price)
+        
+        # 添加终点（如果与最后一个meeting价位不同）
+        last_meeting = meeting_seq[-1]
+        
+        # Bid终点
+        if abs(last_meeting - bid_b) > EPSILON:
+            bid_path.append(round(bid_b, 8))
+        
+        # Ask终点
+        if abs(last_meeting - ask_b) > EPSILON:
+            ask_path.append(round(ask_b, 8))
+        
+        # 确保路径长度相同（通过填充最后一个价格）
+        return self._pad_paths_to_same_length(bid_path, ask_path, bid_b, ask_b)
+    
+    def _pad_paths_to_same_length(
+        self, 
+        bid_path: List[Price], 
+        ask_path: List[Price],
+        bid_end: Price,
+        ask_end: Price
+    ) -> Tuple[List[Price], List[Price]]:
+        """将两条路径填充到相同长度。
+        
+        如果路径长度不同，用最后一个价格填充较短的路径。
+        
+        Args:
+            bid_path: bid价格路径
+            ask_path: ask价格路径
+            bid_end: bid终点价格（用于填充）
+            ask_end: ask终点价格（用于填充）
+            
+        Returns:
+            (bid_path, ask_path) 长度相同的两条路径
+        """
+        len_bid = len(bid_path)
+        len_ask = len(ask_path)
+        
+        if len_bid == len_ask:
+            return bid_path, ask_path
+        
+        if len_bid > len_ask:
+            # 填充ask_path
+            padding_value = ask_path[-1] if ask_path else round(ask_end, 8)
+            while len(ask_path) < len_bid:
+                ask_path.append(padding_value)
+        else:
+            # 填充bid_path
+            padding_value = bid_path[-1] if bid_path else round(bid_end, 8)
+            while len(bid_path) < len_ask:
+                bid_path.append(padding_value)
+        
+        return bid_path, ask_path
     
     def _add_intermediate_prices(self, result: List[Price], p_from: Price, p_to: Price) -> None:
         """在result中添加从p_from到p_to之间的中间价位（不包含p_from和p_to本身）。
