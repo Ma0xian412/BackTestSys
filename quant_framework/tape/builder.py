@@ -149,11 +149,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # 确保bid和ask的中间路径完全一致（bid=ask同步的相遇价位）
         meeting_seq = self._build_meeting_sequence(price_set, p_min, p_max)
         
-        # 用公共meeting序列构建bid和ask路径
-        # bid_path = [bidA] + meeting_seq + [bidB]
-        # ask_path = [askA] + meeting_seq + [askB]
-        bid_path = self._build_path_with_meeting_sequence(bid_a, bid_b, meeting_seq)
-        ask_path = self._build_path_with_meeting_sequence(ask_a, ask_b, meeting_seq)
+        # 用公共meeting序列构建对齐的bid和ask路径
+        # 确保bid_path和ask_path长度相同，segment数量一致
+        bid_path, ask_path = self._build_aligned_paths(bid_a, bid_b, ask_a, ask_b, meeting_seq)
         
         # 合并路径为全局段 - 使用effective_t_a作为开始时间
         segments = self._merge_paths_to_segments(bid_path, ask_path, effective_t_a, t_b)
@@ -426,6 +424,110 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         return result
     
+    def _build_aligned_paths(
+        self, 
+        bid_a: Price, bid_b: Price,
+        ask_a: Price, ask_b: Price,
+        meeting_seq: List[Price]
+    ) -> Tuple[List[Price], List[Price]]:
+        """构建对齐的bid和ask价格路径。
+        
+        确保bid_path和ask_path具有完全相同的长度，并且在meeting价位处对齐，
+        使得每个segment中如果有成交，bid和ask都能参与（双边成交）。
+        
+        核心思想：
+        - 两条路径都保留起点和终点
+        - 中间经过meeting序列（成交价位），且两条路径在meeting价位处同步
+        - 这确保了在meeting价位对应的segment中，bid_price == ask_price == meeting_price
+        
+        路径结构：
+        [start] -> [meeting_1, meeting_1] -> [meeting_2, meeting_2] -> ... -> [end]
+        
+        其中每个meeting价位在两条路径中都出现在相同位置，确保双边成交。
+        
+        Args:
+            bid_a: A快照的最优买价
+            bid_b: B快照的最优买价
+            ask_a: A快照的最优卖价
+            ask_b: B快照的最优卖价
+            meeting_seq: 公共相遇价位序列（成交价位）
+            
+        Returns:
+            (bid_path, ask_path) 两条对齐的价格路径，长度相同
+        """
+        if not meeting_seq:
+            # 没有成交，返回简单的两点路径
+            bid_path = [round(bid_a, 8)]
+            ask_path = [round(ask_a, 8)]
+            if abs(bid_a - bid_b) > EPSILON:
+                bid_path.append(round(bid_b, 8))
+            if abs(ask_a - ask_b) > EPSILON:
+                ask_path.append(round(ask_b, 8))
+            # 确保路径长度相同
+            return self._pad_paths_to_same_length(bid_path, ask_path, bid_b, ask_b)
+        
+        # 构建对齐的路径，确保meeting价位在两条路径中同步出现
+        # 路径结构：[start] -> [meeting prices aligned] -> [end]
+        
+        bid_path = [round(bid_a, 8)]
+        ask_path = [round(ask_a, 8)]
+        
+        # 所有meeting价位都必须在两条路径中同步出现
+        # 这确保了在对应的segment中 bid_price == ask_price == meeting_price
+        for meeting_price in meeting_seq:
+            rounded_price = round(meeting_price, 8)
+            # 总是添加meeting价位到两条路径，即使与前一个相同也要添加
+            # 这确保两条路径在meeting价位处同步
+            bid_path.append(rounded_price)
+            ask_path.append(rounded_price)
+        
+        # 添加终点
+        bid_path.append(round(bid_b, 8))
+        ask_path.append(round(ask_b, 8))
+        
+        # 此时两条路径应该已经长度相同（start + meetings + end）
+        # 但为了安全，还是调用padding
+        return self._pad_paths_to_same_length(bid_path, ask_path, bid_b, ask_b)
+    
+    def _pad_paths_to_same_length(
+        self, 
+        bid_path: List[Price], 
+        ask_path: List[Price],
+        bid_end: Price,
+        ask_end: Price
+    ) -> Tuple[List[Price], List[Price]]:
+        """将两条路径填充到相同长度。
+        
+        如果路径长度不同，用最后一个价格填充较短的路径。
+        
+        Args:
+            bid_path: bid价格路径
+            ask_path: ask价格路径
+            bid_end: bid终点价格（用于填充）
+            ask_end: ask终点价格（用于填充）
+            
+        Returns:
+            (bid_path, ask_path) 长度相同的两条路径
+        """
+        len_bid = len(bid_path)
+        len_ask = len(ask_path)
+        
+        if len_bid == len_ask:
+            return bid_path, ask_path
+        
+        if len_bid > len_ask:
+            # 填充ask_path
+            padding_value = ask_path[-1] if ask_path else round(ask_end, 8)
+            while len(ask_path) < len_bid:
+                ask_path.append(padding_value)
+        else:
+            # 填充bid_path
+            padding_value = bid_path[-1] if bid_path else round(bid_end, 8)
+            while len(bid_path) < len_ask:
+                bid_path.append(padding_value)
+        
+        return bid_path, ask_path
+    
     def _add_intermediate_prices(self, result: List[Price], p_from: Price, p_to: Price) -> None:
         """在result中添加从p_from到p_to之间的中间价位（不包含p_from和p_to本身）。
         
@@ -663,10 +765,14 @@ class UnifiedTapeBuilder(ITapeBuilder):
         Algorithm:
         1. Initialize uniform segment widths in u' space
         2. For each iteration:
-           a. Compute visiting sets V_s(p) for each price/side
-           b. Allocate E_s(p) to segments proportionally by width
+           a. Find segments where BOTH bid and ask are at the trade price (bilateral matching)
+           b. Allocate volumes to these bilateral segments proportionally by width
            c. Update segment widths based on total allocated volume
         3. Map u' boundaries back to real time
+        
+        重要约束：成交必须是双边的
+        - 只有当segment的bid_price == ask_price == 成交价时，才能分配成交量
+        - 确保每个segment中如果有BUY成交，就必须有对应的SELL成交
         """
         n = len(segments)
         if n == 0:
@@ -678,56 +784,42 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # Initialize uniform widths in u' space
         delta_u_prime = [1.0 / n] * n
         
-        # Track allocated volumes per segment
-        m_bid_seg = [0.0] * n  # M_{bid,i} (at best bid)
-        m_ask_seg = [0.0] * n  # M_{ask,i} (at best ask)
+        # Track allocated volumes per segment (bilateral - same for both sides)
+        m_seg = [0.0] * n  # M_i (bilateral trade volume at price)
         
         for iteration in range(num_iter):
             # Reset allocations
-            m_bid_seg = [0.0] * n
-            m_ask_seg = [0.0] * n
+            m_seg = [0.0] * n
             
-            # Allocate bid volumes
+            # Allocate volumes only to segments where bid_price == ask_price == trade_price
+            # This ensures bilateral matching - a trade requires both buyer and seller
             for price, total_vol in e_bid.items():
                 if total_vol <= 0:
                     continue
-                # V_bid(p) = {i | P_bid[i] == p}
-                visiting = [i for i, seg in enumerate(segments) 
-                           if abs(seg.bid_price - price) < EPSILON]
-                if not visiting:
+                
+                # 找到双边匹配的segments：bid_price == ask_price == price
+                # 这确保了成交是双边的，不会出现单边成交
+                bilateral_segments = [
+                    i for i, seg in enumerate(segments) 
+                    if abs(seg.bid_price - price) < EPSILON and abs(seg.ask_price - price) < EPSILON
+                ]
+                
+                if not bilateral_segments:
                     continue
                 
                 # Weight by segment width
-                weights = [delta_u_prime[i] for i in visiting]
+                weights = [delta_u_prime[i] for i in bilateral_segments]
                 total_weight = sum(weights)
                 if total_weight < EPSILON:
-                    weights = [1.0 / len(visiting)] * len(visiting)
+                    weights = [1.0 / len(bilateral_segments)] * len(bilateral_segments)
                     total_weight = 1.0
                 
-                for j, i in enumerate(visiting):
-                    m_bid_seg[i] += total_vol * weights[j] / total_weight
-            
-            # Allocate ask volumes
-            for price, total_vol in e_ask.items():
-                if total_vol <= 0:
-                    continue
-                # V_ask(p) = {i | P_ask[i] == p}
-                visiting = [i for i, seg in enumerate(segments) 
-                           if abs(seg.ask_price - price) < EPSILON]
-                if not visiting:
-                    continue
-                
-                weights = [delta_u_prime[i] for i in visiting]
-                total_weight = sum(weights)
-                if total_weight < EPSILON:
-                    weights = [1.0 / len(visiting)] * len(visiting)
-                    total_weight = 1.0
-                
-                for j, i in enumerate(visiting):
-                    m_ask_seg[i] += total_vol * weights[j] / total_weight
+                for j, i in enumerate(bilateral_segments):
+                    m_seg[i] += total_vol * weights[j] / total_weight
             
             # Update segment widths based on total volume
-            e_total = [m_bid_seg[i] + m_ask_seg[i] for i in range(n)]
+            # 双边成交量计算两次（买卖各一次）
+            e_total = [2 * m_seg[i] for i in range(n)]
             w = [eps + e for e in e_total]
             total_w = sum(w)
             delta_u_prime = [wi / total_w for wi in w]
@@ -747,12 +839,13 @@ class UnifiedTapeBuilder(ITapeBuilder):
             new_t_start = int(t_a + u_cumsum[i] * dt)
             new_t_end = int(t_a + u_cumsum[i+1] * dt)
             
-            # Build trades dict: only at best price
+            # Build trades dict: bilateral trades at the matching price
             trades: Dict[Tuple[Side, Price], Qty] = {}
-            if m_bid_seg[i] > 0:
-                trades[(Side.BUY, seg.bid_price)] = int(round(m_bid_seg[i]))
-            if m_ask_seg[i] > 0:
-                trades[(Side.SELL, seg.ask_price)] = int(round(m_ask_seg[i]))
+            if m_seg[i] > 0:
+                trade_price = seg.bid_price  # bid_price == ask_price in bilateral segments
+                trade_qty = int(round(m_seg[i]))
+                trades[(Side.BUY, trade_price)] = trade_qty
+                trades[(Side.SELL, trade_price)] = trade_qty
             
             new_seg = replace(
                 seg,
