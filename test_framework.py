@@ -2773,7 +2773,7 @@ def test_post_crossing_fill_with_net_increment():
     # 获取shadow订单
     shadows1 = exchange1.get_shadow_orders()
     shadow1 = shadows1[0]
-    assert shadow1.is_post_crossing == True
+    assert shadow1.is_post_crossing
     expected_remaining = 150 - crossing_fill
     assert shadow1.remaining_qty == expected_remaining, f"剩余应该是{expected_remaining}手，实际: {shadow1.remaining_qty}"
     print(f"  Shadow订单: remaining={shadow1.remaining_qty}, is_post_crossing={shadow1.is_post_crossing}")
