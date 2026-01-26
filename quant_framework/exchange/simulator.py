@@ -211,17 +211,38 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         return x
     
     def _get_q_mkt(self, side: Side, price: Price, t: int) -> float:
-        """Get market queue depth Q_mkt at time t.
+        """根据segment进度计算时刻t的市场队列深度Q_mkt。
         
-        Q_mkt(t) = Q_mkt(t_{i-1}) + N_{s,i}(p) * z - M_{s,i}(p) * z
-        where z = (t - t_{i-1}) / delta_t_i
+        根据零约束和激活窗口，净增量(net_flow)在各segment的分配是已知的。
+        如果该价位是segment中的最优档位，则交易量(trades/消耗量)也是已知的。
+        根据时刻t所处segment的进度和初始状态，计算队列长度。
+        
+        计算公式:
+        Q_mkt(t) = Q_mkt(T_A) + Σ(N_{s,i}(p) - M_{s,i}(p)) * z_i
+        
+        其中:
+        - Q_mkt(T_A): level.q_mkt，区间起点的队列深度（基础值）
+        - N_{s,i}(p): segment i 在价位p的净增量(net_flow)
+        - M_{s,i}(p): segment i 在价位p的交易量(trades/消耗量)
+        - z_i: segment i 的进度，z = (t - seg.t_start) / (seg.t_end - seg.t_start)
+        
+        例如：arrival_time=4，位于segment[2,5]中
+        进度 z = (4-2)/(5-2) = 2/3
+        
+        Args:
+            side: 买卖方向
+            price: 价格档位
+            t: 目标时刻
+            
+        Returns:
+            时刻t的市场队列深度
         """
         level = self._get_level(side, price)
         
         if not self._current_tape or t <= self._interval_start:
             return max(0.0, level.q_mkt)
         
-        q = level.q_mkt
+        q = level.q_mkt  # 基础值：区间起点T_A的队列深度
         
         for seg_idx, seg in enumerate(self._current_tape):
             if t <= seg.t_start:
@@ -241,17 +262,18 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if seg_end <= seg_start:
                 continue
             
-            # Segment progress
+            # Segment progress: z = (t - seg.t_start) / (seg.t_end - seg.t_start)
+            # 例如：t=4在segment[2,5]中，z = (4-2)/(5-2) = 2/3
             z = (seg_end - seg.t_start) / seg_duration
             z = min(1.0, max(0.0, z))
             
-            # N_{s,i}(p): net flow
+            # N_{s,i}(p): 净增量(net flow)
             n_si = seg.net_flow.get((side, price), 0)
             
-            # M_{s,i}(p): trades
+            # M_{s,i}(p): 交易量(trades/消耗量)
             m_si = seg.trades.get((side, price), 0)
             
-            # Q changes by (N - M) * z over the segment slice
+            # Q变化量 = (净增量 - 交易量) * 进度
             q += (n_si - m_si) * z
             
             if t <= seg.t_end:
@@ -499,10 +521,16 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         使用坐标轴FIFO模型初始化队列位置。
         
+        队列深度计算说明：
+        - market_qty是快照在区间起点T_A时的队列深度（基础值）
+        - 根据arrival_time所在segment的进度，结合净增量和交易量，计算当前队列深度
+        - 例如：arrival_time=4，位于segment[2,5]中，进度=(4-2)/(5-2)=2/3
+        - 当前队列深度 = 基础值 + Σ(net_flow - trades) * segment_progress
+        
         Args:
             order: 原始订单
             arrival_time: 到达时间
-            market_qty: 市场队列深度
+            market_qty: 区间起点T_A时的市场队列深度（作为插值计算的基础值）
             remaining_qty: 需要排队的剩余数量
             already_filled: 已经立即成交的数量
             
@@ -529,15 +557,19 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             pos = 0
         else:
             # 没有crossing，使用坐标轴模型计算位置
-            # Initialize Q_mkt if first order at this level
+            # Initialize Q_mkt with base value at interval start T_A
+            # This serves as the starting point for interpolation
             if not level.queue and level.q_mkt == 0:
                 level.q_mkt = float(market_qty)
             
             # Calculate position using coordinate-axis model
+            # 根据arrival_time所在segment的进度计算当前队列深度
+            # q_mkt_t = 基础值 + Σ(net_flow - trades) * segment_progress
             x_t = self._get_x_coord(side, price, arrival_time)
-            q_mkt_t = self._get_q_mkt(side, price, arrival_time)
+            q_mkt_t = self._get_q_mkt(side, price, arrival_time)  # 插值计算的当前队列深度
             s_shadow = level.shadow_qty_at_time(arrival_time)
             
+            # pos = X坐标 + 当前队列深度 + 之前的shadow订单
             pos = x_t + q_mkt_t + s_shadow
         
         # Create shadow order with remaining qty
