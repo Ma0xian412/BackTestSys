@@ -29,6 +29,14 @@ class ShadowOrder:
     - pos: Starting position on X coordinate axis
     - Order occupies interval [pos, pos + qty)
     - Filled when X(t) >= pos + qty
+    
+    Post-crossing orders:
+    - is_post_crossing: True if this order is a remainder after crossing
+    - crossed_prices: List of (side, price) tuples that were crossed
+    - Post-crossing orders are filled based on the SUM of net increments N
+      across all crossed price levels:
+      - If N >= 0: fill min(remaining_qty, N) over the segment
+      - If N < 0: no fill
     """
     order_id: str
     side: Side
@@ -40,6 +48,8 @@ class ShadowOrder:
     status: str = "ACTIVE"  # ACTIVE, FILLED, CANCELED
     filled_qty: Qty = 0
     tif: TimeInForce = TimeInForce.GTC
+    is_post_crossing: bool = False  # True if this is remainder after crossing
+    crossed_prices: List[Tuple[Side, Price]] = field(default_factory=list)  # Prices that were crossed
 
 
 @dataclass
@@ -316,13 +326,24 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         immediate_fill_qty = 0
         immediate_fill_price = 0.0
+        crossed_prices: List[Tuple[Side, Price]] = []  # 记录被crossed的价格
         
         if is_crossing and remaining_qty > 0:
-            # Execute immediately against opposite side liquidity
-            immediate_fill_qty, immediate_fill_price = self._execute_crossing(
-                side, price, remaining_qty, arrival_time, seg_idx
-            )
-            remaining_qty -= immediate_fill_qty
+            # 新增检查：如果本方有优先级更高的未成交shadow订单，则不能crossing
+            # BUY: 检查是否有价格更高的BUY订单（更高价买单优先匹配）
+            # SELL: 检查是否有价格更低的SELL订单（更低价卖单优先匹配）
+            has_blocking_shadow = self._has_active_shadow_blocking_crossing(side, price)
+            
+            if has_blocking_shadow:
+                # 有优先级更高的shadow订单，不能crossing，直接入队
+                is_crossing = False
+            else:
+                # 没有阻止crossing的shadow订单，可以执行crossing
+                # Execute immediately against opposite side liquidity
+                immediate_fill_qty, immediate_fill_price, crossed_prices = self._execute_crossing(
+                    side, price, remaining_qty, arrival_time, seg_idx
+                )
+                remaining_qty -= immediate_fill_qty
         
         # Handle based on TIF and remaining quantity
         if order.tif == TimeInForce.IOC:
@@ -362,7 +383,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Non-IOC (GTC): Queue remaining if any
         if remaining_qty > 0:
             # Queue the remaining order using coordinate-axis model
-            receipt = self._queue_order(order, arrival_time, market_qty, remaining_qty, immediate_fill_qty)
+            # Pass crossed_prices for post-crossing fill calculation
+            receipt = self._queue_order(
+                order, arrival_time, market_qty, remaining_qty, immediate_fill_qty, crossed_prices
+            )
             
             # If there was an immediate fill, return that receipt
             if immediate_fill_qty > 0:
@@ -388,6 +412,46 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 )
         
         return None
+    
+    def _has_active_shadow_blocking_crossing(self, side: Side, price: Price) -> bool:
+        """检查本方是否有阻止crossing的未成交shadow订单。
+        
+        用于crossing检查：
+        - BUY订单在价格P: 检查是否有本方BUY订单在价格 > P（更高价的买单优先）
+        - SELL订单在价格P: 检查是否有本方SELL订单在价格 < P（更低价的卖单优先）
+        
+        如果存在这样的订单，新订单不能crossing，因为市场会先匹配已有的更优订单。
+        
+        Args:
+            side: 订单方向（本方方向）
+            price: 订单价格
+            
+        Returns:
+            True如果有阻止crossing的活跃shadow订单，否则False
+        """
+        price = round(float(price), 8)
+        
+        # 遍历所有本方的价格档位
+        for (level_side, level_price), level in self._levels.items():
+            if level_side != side:
+                continue
+            
+            level_price = round(float(level_price), 8)
+            
+            # BUY: 检查价格 > P 的档位
+            # SELL: 检查价格 < P 的档位
+            should_check = False
+            if side == Side.BUY and level_price > price:
+                should_check = True
+            elif side == Side.SELL and level_price < price:
+                should_check = True
+            
+            if should_check:
+                for shadow in level.queue:
+                    if shadow.status == "ACTIVE" and shadow.remaining_qty > 0:
+                        return True
+        
+        return False
     
     def _get_opposite_best_price(self, side: Side, seg_idx: int) -> Optional[Price]:
         """获取对手方最优价格。
@@ -442,7 +506,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         order_qty: Qty, 
         arrival_time: int,
         seg_idx: int
-    ) -> Tuple[Qty, Price]:
+    ) -> Tuple[Qty, Price, List[Tuple[Side, Price]]]:
         """执行crossing（立即成交）。
         
         按对手方从最优档开始逐档吃掉流动性，直到：
@@ -458,17 +522,20 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             seg_idx: 当前段索引
             
         Returns:
-            (成交数量, 加权平均成交价)
+            (成交数量, 加权平均成交价, 被crossed的价格列表[(side, price)...])
         """
         if seg_idx < 0 or seg_idx >= len(self._current_tape):
-            return 0, 0.0
+            return 0, 0.0, []
         
         seg = self._current_tape[seg_idx]
         remaining = order_qty
         total_fill_qty = 0
         total_fill_value = 0.0
+        crossed_prices: List[Tuple[Side, Price]] = []  # 记录被crossed的价格
         
         # 确定对手方档位（从activation set中按价格排序）
+        opposite_side = Side.SELL if side == Side.BUY else Side.BUY
+        
         if side == Side.BUY:
             # BUY吃ask，从最低ask开始
             opposite_activation = seg.activation_ask
@@ -486,7 +553,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 break
             
             # 获取该档位可用的流动性（使用Q_mkt）
-            opposite_side = Side.SELL if side == Side.BUY else Side.BUY
             available_qty = self._get_q_mkt(opposite_side, cross_price, arrival_time)
             
             if available_qty <= 0:
@@ -499,6 +565,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 total_fill_value += fill_qty * cross_price
                 remaining -= fill_qty
                 
+                # 记录被crossed的价格（对手方侧）
+                crossed_prices.append((opposite_side, cross_price))
+                
                 # 更新对手方档位的X坐标（消耗了流动性）
                 # 注：这里简化处理，实际可能需要更复杂的状态更新
                 opposite_level = self._get_level(opposite_side, cross_price)
@@ -507,7 +576,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # 计算加权平均价格
         avg_price = total_fill_value / total_fill_qty if total_fill_qty > 0 else 0.0
         
-        return total_fill_qty, avg_price
+        return total_fill_qty, avg_price, crossed_prices
     
     def _queue_order(
         self, 
@@ -515,7 +584,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         arrival_time: int, 
         market_qty: Qty,
         remaining_qty: Qty,
-        already_filled: Qty
+        already_filled: Qty,
+        crossed_prices: Optional[List[Tuple[Side, Price]]] = None
     ) -> Optional[OrderReceipt]:
         """将订单（剩余部分）排队到本方队列。
         
@@ -533,6 +603,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             market_qty: 区间起点T_A时的市场队列深度（作为插值计算的基础值）
             remaining_qty: 需要排队的剩余数量
             already_filled: 已经立即成交的数量
+            crossed_prices: 被crossed的价格列表（用于post-crossing fill计算）
             
         Returns:
             可选的回执（通常为None，表示已入队）
@@ -573,6 +644,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             pos = x_t + q_mkt_t + s_shadow
         
         # Create shadow order with remaining qty
+        # Mark as post-crossing if there was an immediate fill (crossing occurred)
         shadow = ShadowOrder(
             order_id=order.order_id,
             side=side,
@@ -583,6 +655,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             pos=pos,
             tif=order.tif,
             filled_qty=0,  # Already filled part is tracked separately
+            is_post_crossing=(already_filled > 0),  # True if this is remainder after crossing
+            crossed_prices=crossed_prices or [],  # Store crossed prices for post-crossing fill
         )
         
         level.queue.append(shadow)
@@ -716,6 +790,98 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         return None
     
+    def _compute_post_crossing_fill(
+        self, 
+        shadow: ShadowOrder, 
+        seg: TapeSegment, 
+        t_from: int, 
+        t_to: int
+    ) -> Tuple[Qty, Optional[int]]:
+        """计算post-crossing订单的成交量和成交时间。
+        
+        Post-crossing订单的成交逻辑：
+        - 获取所有被crossed的对手方价位的净增量之和N
+        - 如果N >= 0：成交量 = min(剩余数量, N)
+        - 如果N < 0：不成交
+        - 成交时间是消耗完剩余数量或消耗完N的时刻
+        
+        Args:
+            shadow: post-crossing的shadow订单
+            seg: 当前segment
+            t_from: segment开始时间
+            t_to: segment结束时间
+            
+        Returns:
+            (成交数量, 成交时间)，如果不成交则返回(0, None)
+        """
+        # 获取聚合净增量N（所有crossed价位的净增量之和）
+        n = self._compute_aggregated_net_increment(shadow, seg)
+        
+        # 如果N < 0，不成交
+        if n < 0:
+            return 0, None
+        
+        # 成交量 = min(剩余数量, N)
+        fill_qty = min(shadow.remaining_qty, n)
+        
+        if fill_qty <= 0:
+            return 0, None
+        
+        # 计算成交时间
+        # 假设净增量在segment内均匀分布
+        # 成交时间是消耗完fill_qty的时刻
+        seg_duration = t_to - t_from
+        if seg_duration <= 0:
+            return fill_qty, t_to
+        
+        # 如果remaining_qty <= N，则成交时间是消耗完remaining_qty的时刻
+        # 如果remaining_qty > N，则成交时间是消耗完N的时刻（即segment结束）
+        if shadow.remaining_qty <= n:
+            # 消耗完remaining_qty的时刻
+            # 进度 = remaining_qty / N
+            progress = shadow.remaining_qty / n if n > 0 else 1.0
+            fill_time = int(t_from + seg_duration * progress)
+        else:
+            # 消耗完N的时刻（即segment结束）
+            fill_time = t_to
+        
+        # 确保fill_time在有效范围内
+        fill_time = max(t_from, min(t_to, fill_time))
+        
+        # 确保fill_time晚于订单到达时间
+        fill_time = max(fill_time, shadow.arrival_time)
+        
+        return fill_qty, fill_time
+    
+    def _compute_aggregated_net_increment(
+        self,
+        shadow: ShadowOrder,
+        seg: TapeSegment
+    ) -> int:
+        """计算所有crossed价位的聚合净增量N。
+        
+        对于post-crossing订单，N应该是所有被crossed的对手方价位的净增量之和。
+        
+        Args:
+            shadow: post-crossing的shadow订单
+            seg: 当前segment
+            
+        Returns:
+            聚合净增量N（所有crossed价位的净增量之和）
+        """
+        if not shadow.crossed_prices:
+            # 如果没有记录crossed_prices，回退到单价位逻辑
+            opposite_side = Side.SELL if shadow.side == Side.BUY else Side.BUY
+            return seg.net_flow.get((opposite_side, shadow.price), 0)
+        
+        # 汇总所有crossed价位的净增量
+        total_n = 0
+        for crossed_side, crossed_price in shadow.crossed_prices:
+            n = seg.net_flow.get((crossed_side, crossed_price), 0)
+            total_n += n
+        
+        return total_n
+    
     def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
         """Advance simulation from t_from to t_to using tape segment.
         
@@ -744,18 +910,59 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if not level.queue:
                 continue
             
-            # Check activation
-            if seg_idx >= 0 and not self._is_in_activation_window(side, price, seg_idx):
-                continue
+            # Check activation for this level
+            # Note: Post-crossing orders may need processing even if not in activation window
+            in_activation = seg_idx < 0 or self._is_in_activation_window(side, price, seg_idx)
             
-            # Get X at t_to
-            x_t_to = self._get_x_coord(side, price, t_to)
+            # Get X at t_to (only if in activation)
+            x_t_to = self._get_x_coord(side, price, t_to) if in_activation else 0
             
             # Check each shadow order
             for shadow in level.queue:
                 if shadow.status != "ACTIVE":
                     continue
                 if shadow.arrival_time > t_to:
+                    continue
+                
+                # Handle post-crossing orders differently
+                # Post-crossing orders are filled based on opposite-side net increment
+                # They don't require the price to be in activation window
+                if shadow.is_post_crossing:
+                    fill_qty, fill_time = self._compute_post_crossing_fill(
+                        shadow, segment, t_from, t_to
+                    )
+                    
+                    if fill_qty > 0 and fill_time is not None:
+                        # Update cache before changing
+                        level._active_shadow_qty -= fill_qty
+                        
+                        shadow.filled_qty += fill_qty
+                        shadow.remaining_qty -= fill_qty
+                        
+                        if shadow.remaining_qty <= 0:
+                            shadow.status = "FILLED"
+                            receipts.append(OrderReceipt(
+                                order_id=shadow.order_id,
+                                receipt_type="FILL",
+                                timestamp=fill_time,
+                                fill_qty=fill_qty,
+                                fill_price=shadow.price,
+                                remaining_qty=0,
+                            ))
+                        else:
+                            receipts.append(OrderReceipt(
+                                order_id=shadow.order_id,
+                                receipt_type="PARTIAL",
+                                timestamp=fill_time,
+                                fill_qty=fill_qty,
+                                fill_price=shadow.price,
+                                remaining_qty=shadow.remaining_qty,
+                            ))
+                    continue
+                
+                # Normal fill logic for non-post-crossing orders
+                # Skip if not in activation window
+                if not in_activation:
                     continue
                 
                 # Fill threshold
