@@ -641,7 +641,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             s_shadow = level.shadow_qty_at_time(arrival_time)
             
             # pos = X坐标 + 当前队列深度 + 之前的shadow订单
-            pos = x_t + q_mkt_t + s_shadow
+            # 手数必须是整数，所以需要取整
+            pos = int(round(x_t + q_mkt_t + s_shadow))
         
         # Create shadow order with remaining qty
         # Mark as post-crossing if there was an immediate fill (crossing occurred)
