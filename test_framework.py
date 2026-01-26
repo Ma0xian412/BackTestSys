@@ -3100,6 +3100,77 @@ def test_snapshot_duplication():
     assert len(result4) == 2, f"重置后应能再次获取2个快照"
     print("  ✓ 重置功能正常")
     
+    # 测试5: 容差（tolerance）功能
+    print("\n测试5: 容差功能...")
+    from quant_framework.core.types import DEFAULT_SNAPSHOT_TOLERANCE_TICK
+    
+    # 间隔510ms（在默认10ms容差范围内），不应该复制
+    t7 = 1000 * TICK_PER_MS
+    t8 = 1510 * TICK_PER_MS  # 510ms间隔
+    snapshots5 = [
+        create_test_snapshot(t7, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t8, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    feed5 = SnapshotDuplicatingFeed(MockFeed(snapshots5))  # 使用默认10ms容差
+    
+    result5 = []
+    while True:
+        snap = feed5.next()
+        if snap is None:
+            break
+        result5.append(snap)
+    
+    print(f"  间隔510ms（默认容差10ms内），输出: {len(result5)}个快照")
+    assert len(result5) == 2, f"510ms间隔在容差范围内，应生成2个快照，实际{len(result5)}"
+    print("  ✓ 510ms间隔在默认容差范围内，不复制")
+    
+    # 测试6: 自定义容差
+    print("\n测试6: 自定义容差...")
+    # 间隔520ms，使用5ms容差，应该复制1个
+    t9 = 1000 * TICK_PER_MS
+    t10 = 1520 * TICK_PER_MS  # 520ms间隔
+    snapshots6 = [
+        create_test_snapshot(t9, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t10, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    # 使用5ms容差（50000 ticks）
+    feed6 = SnapshotDuplicatingFeed(MockFeed(snapshots6), tolerance_tick=5 * TICK_PER_MS)
+    
+    result6 = []
+    while True:
+        snap = feed6.next()
+        if snap is None:
+            break
+        result6.append(snap)
+    
+    print(f"  间隔520ms（5ms容差），输出: {len(result6)}个快照")
+    assert len(result6) == 3, f"520ms间隔超出5ms容差，应生成3个快照，实际{len(result6)}"
+    print("  ✓ 520ms间隔超出5ms容差，正确复制")
+    
+    # 测试7: 0容差（严格500ms）
+    print("\n测试7: 0容差（严格500ms）...")
+    t11 = 1000 * TICK_PER_MS
+    t12 = 1501 * TICK_PER_MS  # 501ms间隔
+    snapshots7 = [
+        create_test_snapshot(t11, 100.0, 101.0, last_vol_split=[(100.0, 10)]),
+        create_test_snapshot(t12, 100.0, 101.0, last_vol_split=[(100.0, 15)]),
+    ]
+    
+    feed7 = SnapshotDuplicatingFeed(MockFeed(snapshots7), tolerance_tick=0)
+    
+    result7 = []
+    while True:
+        snap = feed7.next()
+        if snap is None:
+            break
+        result7.append(snap)
+    
+    print(f"  间隔501ms（0容差），输出: {len(result7)}个快照")
+    assert len(result7) == 3, f"501ms间隔超出0容差，应生成3个快照，实际{len(result7)}"
+    print("  ✓ 501ms间隔超出0容差，正确复制")
+    
     print("✓ Snapshot duplication test passed")
 
 

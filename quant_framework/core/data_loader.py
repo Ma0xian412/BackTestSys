@@ -137,27 +137,35 @@ class PickleMarketDataFeed(IMarketDataFeed):
 class SnapshotDuplicatingFeed(IMarketDataFeed):
     """包装feed，实现快照复制逻辑。
     
-    当两个快照之间的间隔超过500ms(SNAPSHOT_MIN_INTERVAL_TICK)时，
+    当两个快照之间的间隔超过500ms(SNAPSHOT_MIN_INTERVAL_TICK) + tolerance时，
     将前一个快照向右复制以填充间隔，每个复制快照间隔500ms。
     复制的快照的last_vol_split为空（因为没有新成交）。
     
-    例如：
-    - 如果A(1000ms)和B(2000ms)间隔1000ms，会生成A(1000ms), A'(1500ms), B(2000ms)
-    - 如果A(1000ms)和B(3000ms)间隔2000ms，会生成A(1000ms), A'(1500ms), A''(2000ms), A'''(2500ms), B(3000ms)
+    由于RecvTick可能存在误差，相邻快照间隔不一定刚好是500ms，
+    因此支持tolerance参数来处理这种时间抖动。
+    
+    例如（假设tolerance=10ms）：
+    - 间隔510ms: 在tolerance范围内，不复制
+    - 间隔1000ms: 超过500ms+tolerance，生成1个复制快照
+    - 间隔2000ms: 超过500ms+tolerance，生成3个复制快照
     
     时间单位：tick（每tick=100ns）。500ms = 5_000_000 ticks。
     """
     
-    def __init__(self, inner_feed: IMarketDataFeed):
+    def __init__(self, inner_feed: IMarketDataFeed, tolerance_tick: int = None):
         """初始化包装feed。
         
         Args:
             inner_feed: 被包装的原始feed
+            tolerance_tick: 时间容差（tick单位），默认为10ms。
+                           如果间隔在 min_interval ± tolerance 范围内，
+                           认为是正常的500ms间隔，不进行复制。
         """
-        from .types import SNAPSHOT_MIN_INTERVAL_TICK
+        from .types import SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
         
         self.inner_feed = inner_feed
         self.min_interval = SNAPSHOT_MIN_INTERVAL_TICK
+        self.tolerance = tolerance_tick if tolerance_tick is not None else DEFAULT_SNAPSHOT_TOLERANCE_TICK
         
         # 内部状态
         self._buffer: List[NormalizedSnapshot] = []
@@ -191,19 +199,26 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
         t_curr = curr.ts_recv
         gap = t_curr - t_prev
         
-        # 如果间隔小于等于500ms，直接返回当前快照
-        if gap <= self.min_interval:
+        # 如果间隔在 min_interval + tolerance 范围内，直接返回当前快照
+        # 这处理了RecvTick的时间抖动
+        threshold = self.min_interval + self.tolerance
+        if gap <= threshold:
             self._prev_snapshot = curr
             return curr
         
-        # 间隔超过500ms，需要插入复制的快照
+        # 间隔超过阈值，需要插入复制的快照
         # 计算需要插入的复制快照数量
-        # 使用 (gap - 1) 而不是 gap 是为了确保边界正确处理：
-        # - gap = 500ms: (500-1)//500 = 0 个复制
-        # - gap = 501ms: (501-1)//500 = 1 个复制
-        # - gap = 1000ms: (1000-1)//500 = 1 个复制
-        # - gap = 1001ms: (1001-1)//500 = 2 个复制
-        num_copies = int((gap - 1) // self.min_interval)
+        # 使用 (gap - tolerance - 1) 来考虑容差，确保边界正确处理：
+        # 例如：min_interval=500ms, tolerance=10ms
+        # - gap = 510ms: (510-10-1)//500 = 0 个复制（在容差范围内）
+        # - gap = 520ms: (520-10-1)//500 = 1 个复制
+        # - gap = 1000ms: (1000-10-1)//500 = 1 个复制
+        # - gap = 1010ms: (1010-10-1)//500 = 1 个复制
+        # - gap = 1020ms: (1020-10-1)//500 = 2 个复制
+        num_copies = int((gap - self.tolerance - 1) // self.min_interval)
+        
+        # 确保至少复制0个（防止负数）
+        num_copies = max(0, num_copies)
         
         # 生成复制的快照
         for i in range(num_copies):

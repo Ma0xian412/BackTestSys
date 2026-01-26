@@ -21,6 +21,11 @@ Timestamp = int    # 时间戳类型（单位：tick，每tick=100ns，从0000-0
 TICK_PER_MS = 10_000
 SNAPSHOT_MIN_INTERVAL_TICK = 500 * TICK_PER_MS  # 500ms in ticks
 
+# 快照时间容差（tick单位）
+# 由于RecvTick可能存在误差，相邻快照间隔不一定刚好是500ms
+# 默认容差为10ms = 100_000 ticks
+DEFAULT_SNAPSHOT_TOLERANCE_TICK = 10 * TICK_PER_MS  # 10ms in ticks
+
 
 class Side(Enum):
     """买卖方向枚举。"""
