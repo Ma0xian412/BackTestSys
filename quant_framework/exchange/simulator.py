@@ -522,10 +522,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Calculate position based on whether crossing occurred
         if already_filled > 0:
             # 订单发生了crossing（吃掉了对手方流动性）
-            # 剩余部分应该在队首，因为它已经消耗了对手方的流动性
-            # 此时在本方队列中排在最前面，position为0加上之前的shadow订单
-            s_shadow = level.shadow_qty_at_time(arrival_time)
-            pos = s_shadow  # 队首位置，只需要排在其他shadow订单后面
+            # 剩余部分应该在队首，position为0
+            # 逻辑：如果我的订单在px上发生crossing，说明ask方在≤px有流动性
+            # 如果ask@px有流动性，那么bid@px不可能有订单（否则早就撮合了）
+            # 因此bid@px上不可能有之前的shadow订单，position直接为0
+            pos = 0
         else:
             # 没有crossing，使用坐标轴模型计算位置
             # Initialize Q_mkt if first order at this level

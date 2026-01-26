@@ -2262,6 +2262,125 @@ def test_replay_integration():
     print("✓ Replay strategy integration test passed")
 
 
+def test_crossing_partial_fill_position_zero():
+    """测试crossing部分成交后剩余订单的队列位置。
+    
+    验证场景：
+    当订单发生crossing并部分成交后，剩余部分的队列位置应该为0。
+    
+    逻辑：
+    - 如果我的订单在px上发生crossing，说明ask方在≤px有流动性
+    - 如果ask@px有流动性，那么bid@px不可能有订单（否则早就撮合了）
+    - 因此bid@px上不可能有之前的shadow订单，position直接为0
+    
+    本测试直接测试_queue_order函数的already_filled参数对position的影响。
+    """
+    print("\n--- Test 34: Crossing Partial Fill Position Zero ---")
+    
+    # 创建测试tape
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 创建快照：bid@100, ask@101
+    prev = create_test_snapshot(1000, 100.0, 101.0, bid_qty=50, ask_qty=100)
+    curr = create_test_snapshot(2000, 100.0, 101.0, bid_qty=50, ask_qty=100,
+                                last_vol_split=[(100.0, 10), (101.0, 10)])
+    
+    tape = builder.build(prev, curr)
+    print(f"生成了{len(tape)}个段")
+    
+    # 创建交易所模拟器
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange.set_tape(tape, 1000, 2000)
+    
+    # 测试1: 直接测试_queue_order函数，模拟crossing后剩余订单入队
+    print("\n测试1: 模拟crossing后剩余订单入队（already_filled > 0）...")
+    
+    # 创建一个订单
+    order_after_crossing = Order(
+        order_id="order-after-crossing",
+        side=Side.BUY,
+        price=101.0,  
+        qty=150,  # 原始订单数量
+        tif=TimeInForce.GTC,
+    )
+    
+    # 直接调用_queue_order，模拟已经部分成交100后剩余50入队
+    # already_filled=100 表示已经有crossing成交
+    exchange._queue_order(
+        order=order_after_crossing,
+        arrival_time=1100,
+        market_qty=50,  # 市场队列深度（这个在crossing后不重要）
+        remaining_qty=50,  # 剩余需要排队的数量
+        already_filled=100  # 已经通过crossing成交的数量
+    )
+    
+    # 验证订单在队列中
+    shadow_orders = exchange.get_shadow_orders()
+    order_in_queue = None
+    for so in shadow_orders:
+        if so.order_id == "order-after-crossing":
+            order_in_queue = so
+            break
+    
+    assert order_in_queue is not None, "订单应该在队列中"
+    print(f"  订单在队列中: pos={order_in_queue.pos}, remaining_qty={order_in_queue.remaining_qty}")
+    
+    # 关键断言：crossing后剩余订单的位置应该是0
+    assert order_in_queue.pos == 0, f"crossing后剩余订单位置应该为0，实际为{order_in_queue.pos}"
+    print(f"  ✓ crossing后队列位置正确为0")
+    
+    # 测试2: 对比没有crossing的订单
+    print("\n测试2: 没有crossing的被动订单入队（already_filled = 0）...")
+    
+    # 创建另一个交易所模拟器用于对比测试
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2.set_tape(tape, 1000, 2000)
+    
+    passive_order = Order(
+        order_id="passive-order",
+        side=Side.BUY,
+        price=99.0,  # 低于ask，不会crossing
+        qty=50,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 初始化该价位的market队列深度
+    level = exchange2._get_level(Side.BUY, 99.0)
+    level.q_mkt = 30.0  # 设置市场队列深度
+    
+    # 直接调用_queue_order，没有crossing成交
+    exchange2._queue_order(
+        order=passive_order,
+        arrival_time=1100,
+        market_qty=30,  # 市场队列深度
+        remaining_qty=50,  # 全部订单量
+        already_filled=0  # 没有crossing成交
+    )
+    
+    # 验证被动订单在队列中
+    shadow_orders2 = exchange2.get_shadow_orders()
+    passive_in_queue = None
+    for so in shadow_orders2:
+        if so.order_id == "passive-order":
+            passive_in_queue = so
+            break
+    
+    assert passive_in_queue is not None, "被动订单应该在队列中"
+    print(f"  被动订单在队列中: pos={passive_in_queue.pos}, remaining_qty={passive_in_queue.remaining_qty}")
+    
+    # 被动订单的位置应该 > 0（排在市场队列后面）
+    # pos = x_t + q_mkt_t + s_shadow, 其中q_mkt_t >= 30
+    assert passive_in_queue.pos >= 30, f"被动订单位置应该>=30（市场队列深度），实际为{passive_in_queue.pos}"
+    print(f"  ✓ 被动订单队列位置正确 >= 30")
+    
+    print("✓ Crossing partial fill position zero test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -2302,6 +2421,7 @@ def run_all_tests():
         test_replay_strategy,
         test_receipt_logger,
         test_replay_integration,
+        test_crossing_partial_fill_position_zero,
     ]
     
     passed = 0
