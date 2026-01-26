@@ -1561,56 +1561,60 @@ def test_segment_queue_zero_constraint():
     
     print(f"\n价格转换点: {len(price_transitions)}个")
     
-    # 验证队列归零约束：对于bid价格下降的转换，检查净流入是否满足约束
+    # 初始队列深度（来自A快照）
+    initial_qty = {3318: 50, 3317: 40, 3316: 30}
+    
     def get_initial_qty(price):
-        for p, q in [(3318, 50), (3317, 40), (3316, 30)]:
-            if abs(p - price) < 0.01:
-                return q
-        return 0
+        return initial_qty.get(int(round(price)), 0)
     
-    # 记录已验证的价格下降转换，避免重复验证
-    verified_price_drops = set()
+    # 队列归零约束验证：
+    # - bid下降时：离开的价位队列归零
+    # - ask上升时：离开的价位队列归零
+    # 
+    # 关键：当价格回到某个档位时，队列从0重新开始（因为之前离开时已归零）
     
+    # 验证每次bid下降转换时的队列归零约束
     for trans in price_transitions:
-        print(f"  段{trans['from_seg']}->段{trans['to_seg']}: "
-              f"价格 {trans['from_price']} -> {trans['to_price']} "
-              f"(时刻 {trans['transition_time']})")
+        from_price = trans['from_price']
+        to_price = trans['to_price']
+        seg_idx = trans['seg_idx']
         
-        if trans['from_price'] > trans['to_price']:
-            # bid价格下降，验证队列归零约束
-            price = trans['from_price']
+        print(f"  段{trans['from_seg']}->段{trans['to_seg']}: "
+              f"bid {from_price} -> {to_price}")
+        
+        if from_price > to_price:
+            # bid下降：from_price的队列应该归零
+            # 
+            # 计算方法：从该价位的最近一次"进入"开始累计
+            # - 如果这是首次在该价位，初始队列=A快照中的值
+            # - 如果是重访该价位，初始队列=0（因为之前离开时归零）
             
-            # 只验证每个价格的第一次下降转换
-            # 因为一旦价格离开这个档位，队列就应该归零
-            # 后续如果价格回到这个档位，那是新的队列，不应该累加之前的计算
-            if price in verified_price_drops:
-                print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，已在之前验证过队列归零")
-                continue
+            # 找到该价位当前连续段的起点（向前找到价格变化点）
+            run_start = seg_idx
+            while run_start > 0 and abs(tape[run_start - 1].bid_price - from_price) < 0.01:
+                run_start -= 1
             
-            q_a = get_initial_qty(price)
+            # 判断是否为首次访问：检查run_start之前是否有该价位
+            is_first_visit = not any(
+                abs(tape[j].bid_price - from_price) < 0.01 
+                for j in range(run_start)
+            )
             
-            # 计算在该价位作为best bid期间的总成交量和净流入
-            # 只统计从开始到第一次离开该价位的段
-            total_trades = 0
-            total_net_flow = 0
-            for j in range(trans['seg_idx'] + 1):
+            # 初始队列
+            q = get_initial_qty(from_price) if is_first_visit else 0
+            
+            # 累计当前连续段的变化
+            for j in range(run_start, seg_idx + 1):
                 seg = tape[j]
-                if abs(seg.bid_price - price) < 0.01:
-                    total_trades += seg.trades.get((Side.BUY, price), 0)
-                    total_net_flow += seg.net_flow.get((Side.BUY, price), 0)
+                q += seg.net_flow.get((Side.BUY, from_price), 0)
+                q -= seg.trades.get((Side.BUY, from_price), 0)
             
-            # 队列结束深度 = Q_A + N - M
-            ending_queue = q_a + total_net_flow - total_trades
-            print(f"    价格{price}: Q_A={q_a}, N={total_net_flow}, M={total_trades}, 结束队列={ending_queue}")
-            
-            # 验证队列归零（允许小误差）
-            assert abs(ending_queue) <= 1, f"队列未归零: {ending_queue}"
-            print(f"  ✓ bid从{trans['from_price']}降到{trans['to_price']}，队列正确归零")
-            
-            # 标记这个价格的下降转换已验证
-            verified_price_drops.add(price)
+            print(f"    bid@{from_price} 队列={q} (应归零, 首次={is_first_visit})")
+            assert abs(q) <= 1, f"bid下降时队列未归零: {q}"
+            print(f"  ✓ bid下降，队列正确归零")
         else:
-            print(f"  ✓ bid从{trans['from_price']}升到{trans['to_price']}，新单进入")
+            # bid上升：新单进入，无归零约束
+            print(f"  ✓ bid上升，新单进入")
     
     print("✓ Segment queue zero constraint test passed")
 

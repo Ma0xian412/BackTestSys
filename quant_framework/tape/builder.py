@@ -856,17 +856,23 @@ class UnifiedTapeBuilder(ITapeBuilder):
             q_a = get_qty_at_price(prev, Side.BUY, price)
             q_b = get_qty_at_price(curr, Side.BUY, price)
             
-            for start_idx, end_idx, ends_with_transition in groups:
+            for group_idx, (start_idx, end_idx, ends_with_transition) in enumerate(groups):
                 # 计算这组段中在该价位的总成交量
                 m_group = sum(
                     segments[i].trades.get((Side.BUY, price), 0)
                     for i in range(start_idx, end_idx + 1)
                 )
                 
+                # 判断是否是首次访问该价位
+                # 首次访问：使用Q_A作为初始队列
+                # 重访：初始队列为0（因为之前离开时已归零）
+                is_first_visit = (group_idx == 0)
+                initial_queue = q_a if is_first_visit else 0
+                
                 # 计算净流入总量
                 if ends_with_transition:
-                    # 队列清空约束：Q_A + N - M = 0 => N = M - Q_A
-                    n_group = m_group - q_a
+                    # 队列清空约束：Q_initial + N - M = 0 => N = M - Q_initial
+                    n_group = m_group - initial_queue
                 else:
                     # 使用守恒方程：N = delta_Q + M
                     # 但这只适用于最后一组（价位在区间结束时仍为best price）
@@ -908,14 +914,19 @@ class UnifiedTapeBuilder(ITapeBuilder):
             q_a = get_qty_at_price(prev, Side.SELL, price)
             q_b = get_qty_at_price(curr, Side.SELL, price)
             
-            for start_idx, end_idx, ends_with_transition in groups:
+            for group_idx, (start_idx, end_idx, ends_with_transition) in enumerate(groups):
                 m_group = sum(
                     segments[i].trades.get((Side.SELL, price), 0)
                     for i in range(start_idx, end_idx + 1)
                 )
                 
+                # 判断是否是首次访问该价位
+                is_first_visit = (group_idx == 0)
+                initial_queue = q_a if is_first_visit else 0
+                
                 if ends_with_transition:
-                    n_group = m_group - q_a
+                    # 队列清空约束：Q_initial + N - M = 0 => N = M - Q_initial
+                    n_group = m_group - initial_queue
                 else:
                     m_total_at_price = sum(
                         seg.trades.get((Side.SELL, price), 0) for seg in segments
