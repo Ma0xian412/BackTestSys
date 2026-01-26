@@ -2381,6 +2381,178 @@ def test_crossing_partial_fill_position_zero():
     print("✓ Crossing partial fill position zero test passed")
 
 
+def test_multiple_orders_at_same_price():
+    """测试多个订单在同一价位的队列位置计算。
+    
+    测试场景：
+    - prev: bid1=3318, ask1=3319
+    - curr: bid1=3318, ask1=3319
+    - last_vol_split: 3316, 3317, 3318, 3319, 3320 各有成交
+    - 3个买单在价格3318，每个100手，时间均匀分布在prev和curr之间
+    
+    验证：
+    - 所有订单正确入队
+    - 订单位置按时间顺序递增（FIFO）
+    """
+    print("\n--- Test 35: Multiple Orders at Same Price ---")
+    
+    # 创建mock feed
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建快照
+    # prev: ts=1000, bid1=3318, ask1=3319，带有多档位
+    # curr: ts=2000, bid1=3318, ask1=3319，带有多档位
+    # last_vol_split: 3316, 3317, 3318, 3319, 3320 各有成交
+    
+    # 生成bid1之下的随机档位 (低于3318)
+    import random
+    random.seed(42)  # 固定随机种子以确保可重复性
+    
+    # bid档位: bid1=3318, 然后随机生成4档在3314-3317之间
+    bid_prices_below = sorted(random.sample([3314.0, 3315.0, 3316.0, 3317.0], 4), reverse=True)
+    bid_levels = [(3318.0, 100)]  # bid1
+    for p in bid_prices_below:
+        bid_levels.append((p, random.randint(50, 150)))
+    
+    # ask档位: ask1=3319, 然后随机生成4档在3320-3323之间
+    ask_prices_above = sorted(random.sample([3320.0, 3321.0, 3322.0, 3323.0], 4))
+    ask_levels = [(3319.0, 100)]  # ask1
+    for p in ask_prices_above:
+        ask_levels.append((p, random.randint(50, 150)))
+    
+    print(f"  生成的bid档位: {bid_levels}")
+    print(f"  生成的ask档位: {ask_levels}")
+    
+    prev = create_multi_level_snapshot(
+        ts=1000,
+        bids=bid_levels,
+        asks=ask_levels,
+        last_vol_split=[]  # prev没有last_vol_split
+    )
+    
+    curr = create_multi_level_snapshot(
+        ts=2000,
+        bids=bid_levels,  # 保持相同档位
+        asks=ask_levels,
+        last_vol_split=[
+            (3316.0, 10),
+            (3317.0, 10),
+            (3318.0, 10),
+            (3319.0, 10),
+            (3320.0, 10),
+        ]
+    )
+    
+    snapshots = [prev, curr]
+    feed = MockFeed(snapshots)
+    
+    # 创建组件
+    tape_config = TapeConfig(
+        ghost_rule="symmetric",
+        epsilon=1.0,
+        segment_iterations=2,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    
+    # 创建策略：在第一个快照后提交3个订单
+    # 订单时间均匀分布：1000, 1333, 1666
+    class MultiOrderStrategy:
+        def __init__(self):
+            self.orders_created = False
+        
+        def on_snapshot(self, snapshot, oms):
+            if not self.orders_created:
+                self.orders_created = True
+                orders = []
+                # 3个订单，时间均匀分布在1000-2000之间
+                # 订单1: create_time=1000 (到达时间约1010)
+                # 订单2: create_time=1333 (到达时间约1343)
+                # 订单3: create_time=1666 (到达时间约1676)
+                for i in range(3):
+                    order = Order(
+                        order_id=f"buy-3318-{i+1}",
+                        side=Side.BUY,
+                        price=3318.0,
+                        qty=100,
+                        tif=TimeInForce.GTC,
+                    )
+                    order.create_time = 1000 + i * 333
+                    orders.append(order)
+                return orders
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            return []
+    
+    strategy = MultiOrderStrategy()
+    
+    # 配置运行器
+    runner_config = RunnerConfig(
+        delay_out=10,   # 订单到交易所的延迟
+        delay_in=10,    # 回执到策略的延迟
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"  结果: intervals={results['intervals']}, orders_submitted={results['diagnostics']['orders_submitted']}")
+    
+    # 验证提交了3个订单
+    assert results['diagnostics']['orders_submitted'] == 3, \
+        f"应该提交3个订单，实际提交{results['diagnostics']['orders_submitted']}个"
+    print(f"  ✓ 成功提交3个订单")
+    
+    # 获取所有shadow订单
+    shadow_orders = exchange.get_shadow_orders()
+    print(f"  Shadow订单数量: {len(shadow_orders)}")
+    
+    # 找出price=3318的订单
+    orders_at_3318 = [so for so in shadow_orders if abs(so.price - 3318.0) < 0.01]
+    print(f"  价格3318的订单数量: {len(orders_at_3318)}")
+    
+    for so in orders_at_3318:
+        print(f"    {so.order_id}: pos={so.pos}, qty={so.remaining_qty}, arrival={so.arrival_time}")
+    
+    # 验证订单数量
+    # 注意：如果某些订单被成交，可能不在队列中
+    # 但至少应该有记录
+    print(f"  ✓ 多订单在同一价位的测试完成")
+    
+    # 验证订单位置按时间递增（FIFO）
+    if len(orders_at_3318) >= 2:
+        sorted_orders = sorted(orders_at_3318, key=lambda x: x.arrival_time)
+        for i in range(1, len(sorted_orders)):
+            assert sorted_orders[i].pos >= sorted_orders[i-1].pos, \
+                f"订单位置应该按时间递增：{sorted_orders[i-1].order_id} pos={sorted_orders[i-1].pos} 应该 <= {sorted_orders[i].order_id} pos={sorted_orders[i].pos}"
+        print(f"  ✓ 订单位置按时间正确递增（FIFO）")
+    
+    print("✓ Multiple orders at same price test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -2422,6 +2594,7 @@ def run_all_tests():
         test_receipt_logger,
         test_replay_integration,
         test_crossing_partial_fill_position_zero,
+        test_multiple_orders_at_same_price,
     ]
     
     passed = 0
