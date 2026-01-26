@@ -193,11 +193,22 @@ class UnifiedTapeBuilder(ITapeBuilder):
         prev_snapshot: NormalizedSnapshot = None,
         curr_snapshot: NormalizedSnapshot = None
     ) -> Set[Price]:
-        """计算激活集（从最优价起的top-K档位，可选考虑AB快照的交集）。
+        """计算激活集（从最优价起的top-K档位）。
 
-        激活集包含满足以下条件的价位：
-        1. 在最优价之下（买方）或之上（卖方）的top-K档位
-        2. 如果提供了快照，还包括同时在A快照和B快照中都存在的价位
+        Args:
+            best_price: 当前最优价格
+            side: 买卖方向（Side.BUY 或 Side.SELL）
+            prev_snapshot: 前一个快照（可选），用于计算AB交集
+            curr_snapshot: 当前快照（可选），用于计算AB交集
+
+        Returns:
+            激活价位集合
+
+        行为说明：
+        - 总是包含从最优价起的top-K档位（由config.top_k控制）
+        - 如果同时提供prev_snapshot和curr_snapshot，还会包含在两个快照中
+          都出现的价位（且满足方向约束：买方价位<=最优价，卖方价位>=最优价）
+        - 如果不提供快照参数，则只返回标准的top-K档位
         """
         if best_price <= 0:
             return set()
@@ -730,7 +741,21 @@ class UnifiedTapeBuilder(ITapeBuilder):
         cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]],
         net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]],
     ) -> None:
-        """处理指定方向的价格转换和流量分配。"""
+        """处理指定方向的价格转换和流量分配（best-price价位）。
+        
+        对于每个曾作为best-price的价位，根据价格转换情况应用不同的约束：
+        - 如果价格转换（队列清空），使用约束：N = M - Q_initial
+        - 否则使用守恒方程按时长比例分配
+        
+        Args:
+            side: 买卖方向
+            segments: 所有TapeSegment列表
+            transitions: 价格转换信息，由_find_price_transition_segments生成
+            prev: 前一个快照（用于获取初始队列深度Q_A）
+            curr: 当前快照（用于获取最终队列深度Q_B）
+            cancels_per_seg: 撤单量输出字典列表（会被修改）
+            net_flow_per_seg: 净流入量输出字典列表（会被修改）
+        """
         def get_qty_at_price(snap: NormalizedSnapshot, price: Price) -> int:
             levels = snap.bids if side == Side.BUY else snap.asks
             for lvl in levels:
@@ -794,7 +819,21 @@ class UnifiedTapeBuilder(ITapeBuilder):
         cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]],
         net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]],
     ) -> None:
-        """处理非best-price但在activation中的价位。"""
+        """处理非best-price但在activation中的价位（使用守恒方程）。
+        
+        对于那些从未作为best-price但在某些段的activation集中出现的价位，
+        使用守恒方程 N = delta_Q + M 计算净流入量，并按段时长比例分配。
+        
+        Args:
+            side: 买卖方向
+            price_universe: 所有在activation集中出现过的价位
+            segments: 所有TapeSegment列表
+            transitions: 已处理的best-price价位（需要跳过）
+            prev: 前一个快照（用于获取初始队列深度Q_A）
+            curr: 当前快照（用于获取最终队列深度Q_B）
+            cancels_per_seg: 撤单量输出字典列表（会被修改）
+            net_flow_per_seg: 净流入量输出字典列表（会被修改）
+        """
         def get_qty_at_price(snap: NormalizedSnapshot, price: Price) -> int:
             levels = snap.bids if side == Side.BUY else snap.asks
             for lvl in levels:
