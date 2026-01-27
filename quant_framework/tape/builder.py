@@ -593,8 +593,10 @@ class UnifiedTapeBuilder(ITapeBuilder):
         - delta_Q = Q^B(p) - Q^A(p)
         - M(p) = sum of trades at p across all segments
         - N(p) = delta_Q + M(p)  (conservation: Q_B = Q_A + N - M)
-        - If N < 0: there are net cancels at this price
-        - Distribute N and cancels across segments where price is activated
+        - Distribute N sequentially across active segments based on duration
+          while ensuring queue depth never goes negative. If a segment is the
+          last active one before the price deactivates (bid down / ask up),
+          force the queue to zero at the end of that segment.
         """
         n = len(segments)
         if n == 0:
@@ -633,19 +635,73 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 if not active_segs:
                     continue
 
-                durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
-                total_dur = sum(durations) or 1
+                durations = [
+                    max(0, segments[i].t_end - segments[i].t_start) for i in active_segs
+                ]
+                if sum(durations) <= 0:
+                    durations = [1 for _ in active_segs]
+
+                n_remaining = int(n_total)
+                q_start = int(q_a)
+                net_flow_allocations: List[Tuple[int, int]] = []
 
                 for j, i in enumerate(active_segs):
-                    alloc_net = n_total * durations[j] / total_dur
-                    net_flow_per_seg[i][(side, price)] = int(round(alloc_net))
+                    remaining_dur = sum(durations[j:])
+                    if remaining_dur <= 0:
+                        remaining_dur = len(durations) - j or 1
 
-                if n_total < 0:
-                    total_cancels = abs(n_total)
-                    for j, i in enumerate(active_segs):
-                        alloc_cancel = int(round(total_cancels * durations[j] / total_dur))
-                        if alloc_cancel > 0:
-                            cancels_per_seg[i][(side, price)] = alloc_cancel
+                    if j == len(active_segs) - 1:
+                        alloc_net = float(n_remaining)
+                    else:
+                        alloc_net = n_remaining * durations[j] / remaining_dur
+
+                    seg = segments[i]
+                    m_seg = int(seg.trades.get((side, price), 0))
+
+                    next_active = False
+                    if i < n - 1:
+                        next_seg = segments[i + 1]
+                        next_set = next_seg.activation_bid if side == Side.BUY else next_seg.activation_ask
+                        next_active = price in next_set
+
+                    is_zeroing = (i < n - 1) and (not next_active)
+
+                    if is_zeroing:
+                        n_seg = m_seg - q_start
+                    else:
+                        min_needed = m_seg - q_start
+                        n_seg = max(alloc_net, min_needed)
+
+                    n_seg_int = int(round(n_seg))
+                    if not is_zeroing:
+                        min_needed = m_seg - q_start
+                        if n_seg_int < min_needed:
+                            n_seg_int = min_needed
+
+                    net_flow_per_seg[i][(side, price)] = n_seg_int
+
+                    if n_seg_int < 0:
+                        cancels_per_seg[i][(side, price)] = abs(n_seg_int)
+
+                    net_flow_allocations.append((i, n_seg_int))
+
+                    n_remaining -= n_seg_int
+                    q_start = q_start + n_seg_int - m_seg
+
+                if net_flow_allocations:
+                    netflow_sum = sum(
+                        net_flow_per_seg[idx].get((side, price), 0)
+                        for idx, _ in net_flow_allocations
+                    )
+                    if netflow_sum != n_total:
+                        adjust_idx, adjust_value = net_flow_allocations[-1]
+                        delta = n_total - netflow_sum
+                        adjusted = adjust_value + delta
+                        net_flow_per_seg[adjust_idx][(side, price)] = adjusted
+                        if adjusted < 0:
+                            cancels_per_seg[adjust_idx][(side, price)] = abs(adjusted)
+                        else:
+                            cancels_per_seg[adjust_idx].pop((side, price), None)
 
         result = []
         for i, seg in enumerate(segments):
