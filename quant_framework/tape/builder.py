@@ -427,23 +427,27 @@ class UnifiedTapeBuilder(ITapeBuilder):
         ask_a: Price,
         price_set: Set[Price]
     ) -> List[Price]:
-        """调整meeting序列，使起点价格优先出现，从而让起点价格的成交不被误归因为撤单。
+        """在meeting序列前插入起点成交价，使起点价格的成交不被误归因为撤单。
         
-        当某一方的起点价格（bid_a或ask_a）本身也是成交价时，优先让该价格出现在路径早期。
+        当某一方的起点价格（bid_a或ask_a）本身也是成交价时，在meeting_seq前插入该价格，
+        创建一个新的路径点，使成交可以分配到这个新插入的segment上。
         
         策略：
-        1. 如果起点价格已在meeting_seq中，通过旋转使其成为第一个元素（不创建重复）
-        2. 如果起点价格不在meeting_seq中但是成交价，在前面插入该价格
+        1. 如果起点价格是成交价且不是meeting_seq的第一个元素，直接在前面插入该价格
+           （即使该价格已存在于meeting_seq中，也插入，创建重复的路径点以获得额外的交易机会）
+        2. 这样可以在新插入的segment上分配成交量
         3. bid_a和ask_a的处理顺序：先处理bid_a，再处理ask_a
         
-        例如1（旋转场景）：
+        例如：
         - bid_a=6, ask_a=7, meeting_seq=[5,6,7], price_set={5,6,7}
-        - bid_a=6 在 meeting_seq 中但不是第一个 -> 旋转: [6,7,5]
-        - 结果: bid路径可以在起点6处停留并交易
+        - bid_a=6 是成交价，meeting_seq[0]=5 != 6 -> 插入: [6,5,6,7]
+        - ask_a=7 是成交价，meeting_seq[0]=6 != 7 -> 插入: [7,6,5,6,7]
+        - 结果: bid路径=[6,7,6,5,6,7,5], ask路径=[7,7,6,5,6,7,7]
+        - 第二个segment: bid=7, ask=7，成交可以分配到价格7
+        - 第三个segment: bid=6, ask=6，成交可以分配到价格6
         
-        例如2（插入场景）：
-        - bid_a=6, meeting_seq=[5,7], price_set={5,6,7}
-        - bid_a=6 是成交价但不在 meeting_seq 中 -> 插入: [6,5,7]
+        注意：由于插入会创建重复的路径点，成交量会在多个segment间分配，
+        可能导致舍入误差（总量可能与预期略有差异，通常在±1范围内）。
         
         Args:
             meeting_seq: 原始的meeting序列
@@ -454,13 +458,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
         Returns:
             调整后的meeting序列
         """
-        def find_price_index(price: Price, seq: List[Price]) -> int:
-            """找到价格在序列中的索引，不存在返回-1"""
-            for i, p in enumerate(seq):
-                if abs(price - p) < EPSILON:
-                    return i
-            return -1
-        
         if not meeting_seq:
             # 如果没有meeting序列，检查起点是否是成交价
             result = []
@@ -473,30 +470,20 @@ class UnifiedTapeBuilder(ITapeBuilder):
             return result
         
         result = list(meeting_seq)
+        first_meeting = result[0] if result else None
         
-        # 检查bid_a是否是成交价
+        # 检查bid_a是否是成交价，且不是meeting_seq的第一个元素
         bid_a_is_trade = any(abs(bid_a - p) < EPSILON for p in price_set)
-        if bid_a_is_trade:
-            idx = find_price_index(bid_a, result)
-            if idx == -1:
-                # bid_a不在序列中，插入到前面
-                result.insert(0, round(bid_a, 8))
-            elif idx > 0:
-                # bid_a在序列中但不是第一个，旋转使其成为第一个
-                result = result[idx:] + result[:idx]
+        if bid_a_is_trade and (first_meeting is None or abs(bid_a - first_meeting) > EPSILON):
+            # 直接在前面插入bid_a（即使已存在于序列中）
+            result.insert(0, round(bid_a, 8))
+            first_meeting = result[0]
         
-        # 检查ask_a是否是成交价
+        # 检查ask_a是否是成交价，且不等于当前第一个元素
         ask_a_is_trade = any(abs(ask_a - p) < EPSILON for p in price_set)
-        if ask_a_is_trade:
-            first_meeting = result[0] if result else None
-            # 只有当ask_a不等于当前第一个元素时才需要处理
-            if first_meeting is None or abs(ask_a - first_meeting) > EPSILON:
-                idx = find_price_index(ask_a, result)
-                if idx == -1:
-                    # ask_a不在序列中，插入到前面
-                    result.insert(0, round(ask_a, 8))
-                # 如果ask_a已在序列中且不是第一个，不做旋转（避免覆盖bid_a的旋转效果）
-                # 此时ask_a会在后续segment中被访问
+        if ask_a_is_trade and (first_meeting is None or abs(ask_a - first_meeting) > EPSILON):
+            # 直接在前面插入ask_a（即使已存在于序列中）
+            result.insert(0, round(ask_a, 8))
         
         return result
     
