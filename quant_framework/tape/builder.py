@@ -946,9 +946,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
                         # 为了支撑成交M，需要的最小净增量
                         min_needed = max(0.0, m_group - q_start)
                         
-                        # 分配量：取min_needed和n_remaining的较小值，但至少要能支撑成交
+                        # 分配量：取min_needed和n_remaining的较小值
                         # 如果n_remaining不够支撑，也只能分配这么多（队列会变负但守恒正确）
-                        n_group = min(m_group, max(min_needed, 0.0))
+                        n_group = min(m_group, min_needed)
                         if n_remaining > 0:
                             n_group = min(n_group, n_remaining)
                         
@@ -983,10 +983,8 @@ class UnifiedTapeBuilder(ITapeBuilder):
                         # 更新剩余待分配量
                         n_remaining -= n_group
                         
-                        # 更新当前队列深度
+                        # 更新当前队列深度（由于n_group >= -q_start，q_current >= 0）
                         q_current = q_start + n_group
-                        if q_current < 0:
-                            q_current = 0.0
                 
                 group_segs = list(range(start_idx, end_idx + 1))
                 durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
