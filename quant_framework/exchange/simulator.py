@@ -368,14 +368,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # 有优先级更高的shadow订单，不能crossing，直接入队
                 is_crossing = False
             else:
-                # 新增检查：如果本方挂单队列仍有长度，则不能立即成交
+                # New check: if same-side queue still has depth, cannot execute immediately
                 self._ensure_base_q_mkt(side, price, market_qty)
                 queue_depth = self._get_total_queue_depth(side, price, arrival_time)
                 
                 if queue_depth > 0:
                     is_crossing = False
                 else:
-                    # 没有阻止成交的shadow订单，可以执行crossing
+                    # No blocking shadow orders, can execute crossing
                     # Execute immediately against opposite side liquidity
                     immediate_fill_qty, immediate_fill_price, crossed_prices = self._execute_crossing(
                         side, price, remaining_qty, arrival_time, seg_idx
