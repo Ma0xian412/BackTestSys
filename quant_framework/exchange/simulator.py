@@ -375,7 +375,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 if queue_depth > 0:
                     is_crossing = False
                 else:
-                    # No blocking shadow orders, can execute crossing
+                    # No blocking shadow orders or same-side depth, can execute crossing
                     # Execute immediately against opposite side liquidity
                     immediate_fill_qty, immediate_fill_price, crossed_prices = self._execute_crossing(
                         side, price, remaining_qty, arrival_time, seg_idx

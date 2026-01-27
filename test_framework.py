@@ -2830,7 +2830,7 @@ def test_crossing_blocked_by_queue_depth():
     order = Order(
         order_id="buy-cross-queue",
         side=Side.BUY,
-        price=101.0,  # Equal to ask, should cross without the queue check
+        price=101.0,  # Equal to ask, but queue depth should block crossing
         qty=10,
         tif=TimeInForce.GTC,
     )
