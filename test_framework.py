@@ -167,8 +167,10 @@ def test_tape_builder_netflow_distribution():
     # Bid 100 should distribute across activated segments
     assert len(tape) >= 3, "Expected at least 3 segments for distribution test"
     total_bid_net = sum(net_flow_bid_100)
+    prev_bid_qty = next(lvl.qty for lvl in prev.bids if abs(lvl.price - 100.0) < 1e-8)
+    curr_bid_qty = next(lvl.qty for lvl in curr.bids if abs(lvl.price - 100.0) < 1e-8)
     expected_bid_net = (
-        curr.bids[1].qty - prev.bids[0].qty + sum(seg.trades.get((Side.BUY, 100.0), 0) for seg in tape)
+        curr_bid_qty - prev_bid_qty + sum(seg.trades.get((Side.BUY, 100.0), 0) for seg in tape)
     )
     assert total_bid_net == expected_bid_net, (
         f"Expected total netflow {expected_bid_net} for bid 100, got {total_bid_net}"
@@ -179,8 +181,10 @@ def test_tape_builder_netflow_distribution():
     
     # Ask 101 should have netflow on segments where it is active
     total_ask_net = sum(net_flow_ask_101)
+    prev_ask_qty = next(lvl.qty for lvl in prev.asks if abs(lvl.price - 101.0) < 1e-8)
+    curr_ask_qty = next(lvl.qty for lvl in curr.asks if abs(lvl.price - 101.0) < 1e-8)
     expected_ask_net = (
-        curr.asks[1].qty - prev.asks[0].qty + sum(seg.trades.get((Side.SELL, 101.0), 0) for seg in tape)
+        curr_ask_qty - prev_ask_qty + sum(seg.trades.get((Side.SELL, 101.0), 0) for seg in tape)
     )
     assert total_ask_net == expected_ask_net, (
         f"Expected total netflow {expected_ask_net} for ask 101, got {total_ask_net}"

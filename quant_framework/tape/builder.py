@@ -648,7 +648,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 for j, i in enumerate(active_segs):
                     remaining_dur = sum(durations[j:])
                     if remaining_dur <= 0:
-                        remaining_dur = len(durations) - j or 1
+                        remaining_dur = max(1, len(durations) - j)
 
                     if j == len(active_segs) - 1:
                         alloc_net = float(n_remaining)
@@ -666,17 +666,15 @@ class UnifiedTapeBuilder(ITapeBuilder):
 
                     is_zeroing = (i < n - 1) and (not next_active)
 
+                    min_needed = m_seg - q_start
                     if is_zeroing:
-                        n_seg = m_seg - q_start
+                        n_seg = min_needed
                     else:
-                        min_needed = m_seg - q_start
                         n_seg = max(alloc_net, min_needed)
 
                     n_seg_int = int(round(n_seg))
-                    if not is_zeroing:
-                        min_needed = m_seg - q_start
-                        if n_seg_int < min_needed:
-                            n_seg_int = min_needed
+                    if not is_zeroing and n_seg_int < min_needed:
+                        n_seg_int = min_needed
 
                     net_flow_per_seg[i][(side, price)] = n_seg_int
 
