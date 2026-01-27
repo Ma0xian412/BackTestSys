@@ -198,6 +198,10 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # 确保bid和ask的中间路径完全一致（bid=ask同步的相遇价位）
         meeting_seq = self._build_meeting_sequence(price_set, p_min, p_max)
         
+        # 如果起点价格（bid_a或ask_a）是成交价，但不在meeting_seq开头，
+        # 则在meeting_seq前插入该起点价格，使得起点价格的成交不被误归因为撤单
+        meeting_seq = self._prepend_starting_trade_prices(meeting_seq, bid_a, ask_a, price_set)
+        
         # 用公共meeting序列构建对齐的bid和ask路径
         # 确保bid_path和ask_path长度相同，segment数量一致
         bid_path, ask_path = self._build_aligned_paths(bid_a, bid_b, ask_a, ask_b, meeting_seq)
@@ -413,6 +417,90 @@ class UnifiedTapeBuilder(ITapeBuilder):
         for p in meeting_seq:
             if not result or abs(result[-1] - p) > EPSILON:
                 result.append(round(p, 8))
+        
+        return result
+    
+    def _prepend_starting_trade_prices(
+        self,
+        meeting_seq: List[Price],
+        bid_a: Price,
+        ask_a: Price,
+        price_set: Set[Price]
+    ) -> List[Price]:
+        """调整meeting序列，使起点价格优先出现，从而让起点价格的成交不被误归因为撤单。
+        
+        当某一方的起点价格（bid_a或ask_a）本身也是成交价时，优先让该价格出现在路径早期。
+        
+        策略：
+        1. 如果起点价格已在meeting_seq中，通过旋转使其成为第一个元素（不创建重复）
+        2. 如果起点价格不在meeting_seq中但是成交价，在前面插入该价格
+        3. bid_a和ask_a的处理顺序：先处理bid_a，再处理ask_a
+        
+        例如1（旋转场景）：
+        - bid_a=6, ask_a=7, meeting_seq=[5,6,7], price_set={5,6,7}
+        - bid_a=6 在 meeting_seq 中但不是第一个 -> 旋转: [6,7,5]
+        - 结果: bid路径可以在起点6处停留并交易
+        
+        例如2（插入场景）：
+        - bid_a=6, meeting_seq=[5,7], price_set={5,6,7}
+        - bid_a=6 是成交价但不在 meeting_seq 中 -> 插入: [6,5,7]
+        
+        Args:
+            meeting_seq: 原始的meeting序列
+            bid_a: bid侧起点价格
+            ask_a: ask侧起点价格
+            price_set: 所有成交价位集合
+            
+        Returns:
+            调整后的meeting序列
+        """
+        def price_in_seq(price: Price, seq: List[Price]) -> bool:
+            """检查价格是否已在序列中"""
+            return any(abs(price - p) < EPSILON for p in seq)
+        
+        def find_price_index(price: Price, seq: List[Price]) -> int:
+            """找到价格在序列中的索引，不存在返回-1"""
+            for i, p in enumerate(seq):
+                if abs(price - p) < EPSILON:
+                    return i
+            return -1
+        
+        if not meeting_seq:
+            # 如果没有meeting序列，检查起点是否是成交价
+            result = []
+            # 先检查bid_a
+            if any(abs(bid_a - p) < EPSILON for p in price_set):
+                result.append(round(bid_a, 8))
+            # 再检查ask_a（如果与bid_a不同）
+            if abs(ask_a - bid_a) > EPSILON and any(abs(ask_a - p) < EPSILON for p in price_set):
+                result.append(round(ask_a, 8))
+            return result
+        
+        result = list(meeting_seq)
+        
+        # 检查bid_a是否是成交价
+        bid_a_is_trade = any(abs(bid_a - p) < EPSILON for p in price_set)
+        if bid_a_is_trade:
+            idx = find_price_index(bid_a, result)
+            if idx == -1:
+                # bid_a不在序列中，插入到前面
+                result.insert(0, round(bid_a, 8))
+            elif idx > 0:
+                # bid_a在序列中但不是第一个，旋转使其成为第一个
+                result = result[idx:] + result[:idx]
+        
+        # 检查ask_a是否是成交价
+        ask_a_is_trade = any(abs(ask_a - p) < EPSILON for p in price_set)
+        if ask_a_is_trade:
+            first_meeting = result[0] if result else None
+            # 只有当ask_a不等于当前第一个元素时才需要处理
+            if first_meeting is None or abs(ask_a - first_meeting) > EPSILON:
+                idx = find_price_index(ask_a, result)
+                if idx == -1:
+                    # ask_a不在序列中，插入到前面
+                    result.insert(0, round(ask_a, 8))
+                # 如果ask_a已在序列中且不是第一个，不做旋转（避免覆盖bid_a的旋转效果）
+                # 此时ask_a会在后续segment中被访问
         
         return result
     
