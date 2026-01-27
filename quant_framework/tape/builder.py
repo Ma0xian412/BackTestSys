@@ -1132,6 +1132,13 @@ class UnifiedTapeBuilder(ITapeBuilder):
         cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
         net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
 
+        def get_qty_at_price(snapshot: NormalizedSnapshot, side: Side, price: Price) -> int:
+            levels = snapshot.bids if side == Side.BUY else snapshot.asks
+            for level in levels:
+                if abs(float(level.price) - price) < EPSILON:
+                    return int(level.qty)
+            return 0
+
         for side, price_universe in [(Side.BUY, price_universe_bid), (Side.SELL, price_universe_ask)]:
             for price in price_universe:
                 q_a = get_qty_at_price(prev, side, price)
@@ -1158,6 +1165,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 n_remaining = int(n_total)
                 q_start = int(q_a)
                 net_flow_allocations: List[Tuple[int, int]] = []
+                min_needed_by_idx: Dict[int, int] = {}
 
                 for j, i in enumerate(active_segs):
                     remaining_dur = sum(durations[j:])
@@ -1181,6 +1189,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
                     is_zeroing = (i < n - 1) and (not next_active)
 
                     min_needed = m_seg - q_start
+                    min_needed_by_idx[i] = min_needed
                     if is_zeroing:
                         n_seg = min_needed
                     else:
@@ -1214,6 +1223,23 @@ class UnifiedTapeBuilder(ITapeBuilder):
                             cancels_per_seg[adjust_idx][(side, price)] = abs(adjusted)
                         else:
                             cancels_per_seg[adjust_idx].pop((side, price), None)
+
+                    first_idx, first_alloc = net_flow_allocations[0]
+                    if n_total > 0 and len(net_flow_allocations) > 1:
+                        if net_flow_per_seg[first_idx].get((side, price), 0) == 0:
+                            for donor_idx, donor_alloc in reversed(net_flow_allocations):
+                                if donor_idx == first_idx or donor_alloc <= 0:
+                                    continue
+                                min_needed = min_needed_by_idx.get(donor_idx)
+                                if min_needed is not None and donor_alloc - 1 >= min_needed:
+                                    net_flow_per_seg[first_idx][(side, price)] = 1
+                                    net_flow_per_seg[donor_idx][(side, price)] = donor_alloc - 1
+                                    cancels_per_seg[first_idx].pop((side, price), None)
+                                    if donor_alloc - 1 < 0:
+                                        cancels_per_seg[donor_idx][(side, price)] = abs(donor_alloc - 1)
+                                    else:
+                                        cancels_per_seg[donor_idx].pop((side, price), None)
+                                    break
 
         result = []
         for i, seg in enumerate(segments):
