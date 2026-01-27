@@ -1108,18 +1108,16 @@ class UnifiedTapeBuilder(ITapeBuilder):
         prev: NormalizedSnapshot,
         curr: NormalizedSnapshot,
     ) -> List[TapeSegment]:
-        """使用队列清空约束来分配净流入量和撤单量。
+        """Derive cancellations and net flow from snapshot conservation.
 
-        核心约束：当价格从P1变化到P2时（bid下降或ask上升），
-        P1在变化时刻的队列深度必须为0。
-
-        算法：
-        1. 识别每个价位作为best price的连续段组
-        2. 对于价格转换点，应用约束：Q_A + N_total - M_total = 0
-           即 N_total = M_total - Q_A（在该价位作为best price期间）
-        3. 对于最后仍是best price的价位，使用守恒方程：N = delta_Q + M
-        4. 按段时长比例分配N到各段
-        5. 如果N < 0，计算撤单量
+        For each price p in the activated universe:
+        - delta_Q = Q^B(p) - Q^A(p)
+        - M(p) = sum of trades at p across all segments
+        - N(p) = delta_Q + M(p)  (conservation: Q_B = Q_A + N - M)
+        - Distribute N sequentially across active segments based on duration
+          while ensuring queue depth never goes negative. If a segment is the
+          last active one before the price deactivates (bid down / ask up),
+          force the queue to zero at the end of that segment.
         """
         n = len(segments)
         if n == 0:
@@ -1134,28 +1132,88 @@ class UnifiedTapeBuilder(ITapeBuilder):
         cancels_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
         net_flow_per_seg: List[Dict[Tuple[Side, Price], Qty]] = [{} for _ in range(n)]
 
-        # 找出价格转换点并处理bid和ask侧
-        bid_transitions = self._find_price_transition_segments(segments, Side.BUY)
-        ask_transitions = self._find_price_transition_segments(segments, Side.SELL)
-        
-        self._process_side_transitions(
-            Side.BUY, segments, bid_transitions, prev, curr,
-            cancels_per_seg, net_flow_per_seg
-        )
-        self._process_side_transitions(
-            Side.SELL, segments, ask_transitions, prev, curr,
-            cancels_per_seg, net_flow_per_seg
-        )
-        
-        # 处理非best-price但在activation中的价位
-        self._process_non_best_prices(
-            Side.BUY, price_universe_bid, segments, bid_transitions, prev, curr,
-            cancels_per_seg, net_flow_per_seg
-        )
-        self._process_non_best_prices(
-            Side.SELL, price_universe_ask, segments, ask_transitions, prev, curr,
-            cancels_per_seg, net_flow_per_seg
-        )
+        for side, price_universe in [(Side.BUY, price_universe_bid), (Side.SELL, price_universe_ask)]:
+            for price in price_universe:
+                q_a = get_qty_at_price(prev, side, price)
+                q_b = get_qty_at_price(curr, side, price)
+
+                m_total = sum(seg.trades.get((side, price), 0) for seg in segments)
+                delta_q = q_b - q_a
+                n_total = delta_q + m_total
+
+                active_segs = [
+                    i
+                    for i, seg in enumerate(segments)
+                    if price in (seg.activation_bid if side == Side.BUY else seg.activation_ask)
+                ]
+                if not active_segs:
+                    continue
+
+                durations = [
+                    max(0, segments[i].t_end - segments[i].t_start) for i in active_segs
+                ]
+                if sum(durations) <= 0:
+                    durations = [1 for _ in active_segs]
+
+                n_remaining = int(n_total)
+                q_start = int(q_a)
+                net_flow_allocations: List[Tuple[int, int]] = []
+
+                for j, i in enumerate(active_segs):
+                    remaining_dur = sum(durations[j:])
+                    if remaining_dur <= 0:
+                        remaining_dur = max(1, len(durations) - j)
+
+                    if j == len(active_segs) - 1:
+                        alloc_net = float(n_remaining)
+                    else:
+                        alloc_net = n_remaining * durations[j] / remaining_dur
+
+                    seg = segments[i]
+                    m_seg = int(seg.trades.get((side, price), 0))
+
+                    next_active = False
+                    if i < n - 1:
+                        next_seg = segments[i + 1]
+                        next_set = next_seg.activation_bid if side == Side.BUY else next_seg.activation_ask
+                        next_active = price in next_set
+
+                    is_zeroing = (i < n - 1) and (not next_active)
+
+                    min_needed = m_seg - q_start
+                    if is_zeroing:
+                        n_seg = min_needed
+                    else:
+                        n_seg = max(alloc_net, min_needed)
+
+                    n_seg_int = int(round(n_seg))
+                    if not is_zeroing and n_seg_int < min_needed:
+                        n_seg_int = min_needed
+
+                    net_flow_per_seg[i][(side, price)] = n_seg_int
+
+                    if n_seg_int < 0:
+                        cancels_per_seg[i][(side, price)] = abs(n_seg_int)
+
+                    net_flow_allocations.append((i, n_seg_int))
+
+                    n_remaining -= n_seg_int
+                    q_start = q_start + n_seg_int - m_seg
+
+                if net_flow_allocations:
+                    netflow_sum = sum(
+                        net_flow_per_seg[idx].get((side, price), 0)
+                        for idx, _ in net_flow_allocations
+                    )
+                    if netflow_sum != n_total:
+                        adjust_idx, adjust_value = net_flow_allocations[-1]
+                        delta = n_total - netflow_sum
+                        adjusted = adjust_value + delta
+                        net_flow_per_seg[adjust_idx][(side, price)] = adjusted
+                        if adjusted < 0:
+                            cancels_per_seg[adjust_idx][(side, price)] = abs(adjusted)
+                        else:
+                            cancels_per_seg[adjust_idx].pop((side, price), None)
 
         result = []
         for i, seg in enumerate(segments):

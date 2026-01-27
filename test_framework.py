@@ -156,6 +156,67 @@ def test_tape_builder_conservation():
     print("✓ Tape builder conservation test passed")
 
 
+def test_tape_builder_netflow_distribution():
+    """Test netflow distribution for active segments and zeroing."""
+    print("\n--- Test 3b: Tape Builder Netflow Distribution ---")
+    
+    config = TapeConfig(epsilon=1.0, segment_iterations=2)
+    builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
+    
+    prev = create_multi_level_snapshot(
+        1000,
+        bids=[(100.0, 40), (99.0, 30), (98.0, 20)],
+        asks=[(101.0, 40), (102.0, 20), (103.0, 10)],
+        last_vol_split=[(100.0, 10), (101.0, 15), (102.0, 10)]
+    )
+    curr = create_multi_level_snapshot(
+        2000,
+        bids=[(101.0, 55), (100.0, 40), (99.0, 35)],
+        asks=[(100.0, 35), (101.0, 35), (102.0, 25)],
+        last_vol_split=[(100.0, 10), (101.0, 15), (102.0, 10)]
+    )
+    
+    tape = builder.build(prev, curr)
+    
+    net_flow_bid_100 = [seg.net_flow.get((Side.BUY, 100.0), 0) for seg in tape]
+    net_flow_ask_101 = [seg.net_flow.get((Side.SELL, 101.0), 0) for seg in tape]
+    trades_ask_101 = [seg.trades.get((Side.SELL, 101.0), 0) for seg in tape]
+    
+    # Bid 100 should distribute across activated segments
+    assert len(tape) >= 3, "Expected at least 3 segments for distribution test"
+    total_bid_net = sum(net_flow_bid_100)
+    prev_bid_qty = next(lvl.qty for lvl in prev.bids if abs(lvl.price - 100.0) < 1e-8)
+    curr_bid_qty = next(lvl.qty for lvl in curr.bids if abs(lvl.price - 100.0) < 1e-8)
+    expected_bid_net = (
+        curr_bid_qty - prev_bid_qty + sum(seg.trades.get((Side.BUY, 100.0), 0) for seg in tape)
+    )
+    assert total_bid_net == expected_bid_net, (
+        f"Expected total netflow {expected_bid_net} for bid 100, got {total_bid_net}"
+    )
+    assert net_flow_bid_100[0] != 0, "Netflow for bid 100 should be present in first segment"
+    assert net_flow_bid_100[1] != 0, "Netflow for bid 100 should be present in second segment"
+    assert net_flow_bid_100[-1] != total_bid_net, "Netflow for bid 100 should not be all in last segment"
+    
+    # Ask 101 should have netflow on segments where it is active
+    total_ask_net = sum(net_flow_ask_101)
+    prev_ask_qty = next(lvl.qty for lvl in prev.asks if abs(lvl.price - 101.0) < 1e-8)
+    curr_ask_qty = next(lvl.qty for lvl in curr.asks if abs(lvl.price - 101.0) < 1e-8)
+    expected_ask_net = (
+        curr_ask_qty - prev_ask_qty + sum(seg.trades.get((Side.SELL, 101.0), 0) for seg in tape)
+    )
+    assert total_ask_net == expected_ask_net, (
+        f"Expected total netflow {expected_ask_net} for ask 101, got {total_ask_net}"
+    )
+    assert net_flow_ask_101[0] != 0, "Ask 101 netflow should be present in first segment"
+    assert net_flow_ask_101[1] == 0, "Ask 101 netflow should be zero when price is inactive"
+    assert net_flow_ask_101[2] != 0, "Ask 101 netflow should be present in last segment"
+    
+    # Zeroing segment should consume queue depth (netflow <= trades)
+    assert net_flow_ask_101[0] <= trades_ask_101[0], "Zeroing segment should not leave queue depth"
+    
+    print("✓ Tape builder netflow distribution test passed")
+
+
 def test_exchange_simulator_basic():
     """Test basic exchange simulator functionality."""
     print("\n--- Test 4: Exchange Simulator Basic ---")
@@ -3377,6 +3438,7 @@ def run_all_tests():
         test_tape_builder_basic,
         test_tape_builder_no_trades,
         test_tape_builder_conservation,
+        test_tape_builder_netflow_distribution,
         test_exchange_simulator_basic,
         test_exchange_simulator_ioc,
         test_exchange_simulator_coordinate_axis,
