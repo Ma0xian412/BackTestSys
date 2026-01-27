@@ -3,7 +3,7 @@
 This module implements the complete tape construction logic from the specification:
 - A/B snapshots + lastvolsplit -> Event Tape
 - Discrete price paths with minimal displacement
-- Iterative volume allocation
+- Price-level based volume allocation
 - Conservation-based cancellation derivation
 - Top-5 activation window enforcement
 - Time scaling with lambda parameter
@@ -77,9 +77,9 @@ class TapeConfig:
     ghost_rule: str = "symmetric"  # "symmetric", "proportion", "single_bid", "single_ask"
     ghost_alpha: float = 0.5  # For proportion rule
     
-    # Segment duration iteration
-    epsilon: float = 1.0  # No-trade baseline weight (prevents zero-length segments)
-    segment_iterations: int = 2  # Number of iterations for volume allocation
+    # Volume allocation configuration
+    epsilon: float = 1.0  # No-trade baseline weight for time allocation (prevents zero-length segments)
+    segment_iterations: int = 2  # Deprecated: kept for backward compatibility
     
     # Time scaling (u' axis)
     time_scale_lambda: float = 0.0  # Lambda for early/late event distribution
@@ -109,7 +109,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
     Implements the complete specification including:
     - Symmetric/proportion ghost rules for lastvolsplit
     - Optimal price path construction (minimal displacement, single reversal)
-    - Two-round iterative segment width allocation
+    - Price-level based volume allocation with time distribution
     - Conservation-based queue evolution (N = delta_Q + M)
     - Top-5 activation window enforcement
     - Time scaling via lambda parameter
@@ -223,8 +223,8 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # Compute activation sets for each segment
         segments = self._add_activation_sets(segments, prev, curr)
         
-        # Two-round iterative volume allocation
-        segments = self._allocate_volumes_iterative(segments, e_bid, e_ask, effective_t_a, t_b)
+        # Volume allocation based on price-level distribution
+        segments = self._allocate_volumes(segments, e_bid, e_ask, effective_t_a, t_b)
         
         # Derive cancellations and net flow using queue-zero constraint at price transitions
         segments = self._derive_cancellations_and_net_flow(segments, prev, curr)
@@ -706,18 +706,28 @@ class UnifiedTapeBuilder(ITapeBuilder):
             return 1.0
         return -math.log(inner) / lam
     
-    def _allocate_volumes_iterative(self, segments: List[TapeSegment], 
-                                     e_bid: Dict[Price, Qty], e_ask: Dict[Price, Qty],
-                                     t_a: int, t_b: int) -> List[TapeSegment]:
-        """Allocate volumes using two-round iterative refinement.
+    def _allocate_volumes(self, segments: List[TapeSegment], 
+                          e_bid: Dict[Price, Qty], e_ask: Dict[Price, Qty],
+                          t_a: int, t_b: int) -> List[TapeSegment]:
+        """Allocate volumes based on price-level volume distribution.
         
         Algorithm:
-        1. Initialize uniform segment widths in u' space
-        2. For each iteration:
-           a. Find segments where BOTH bid and ask are at the trade price (bilateral matching)
-           b. Allocate volumes to these bilateral segments proportionally by width
-           c. Update segment widths based on total allocated volume
-        3. Map u' boundaries back to real time
+        1. Count occurrences of each price in the path (bilateral segments)
+        2. Distribute total volume for each price evenly across its occurrences
+        3. For prices with no volume, use epsilon as minimum weight
+        4. Time allocation is proportional to allocated volume weights
+        
+        Example:
+        - Path: 0, 1, 2, 3, 2, 1, 4
+        - Volume at price 1: 100 total (appears twice -> 50 each)
+        - Volume at price 2: 200 total (appears twice -> 100 each)
+        - Volume at price 3: 200 total (appears once -> 200)
+        - Prices 0 and 4 have no volume -> use epsilon
+        
+        Time allocation for total duration N:
+        - Total weight = 2*epsilon + 100 + 200 + 200 = 2*epsilon + 500
+        - Time for price 0 = (N / total_weight) * epsilon
+        - Time for each price 1 occurrence = (N / total_weight) * 50
         
         重要约束：成交必须是双边的
         - 只有当segment的bid_price == ask_price == 成交价时，才能分配成交量
@@ -728,57 +738,70 @@ class UnifiedTapeBuilder(ITapeBuilder):
             return segments
         
         eps = self.config.epsilon
-        num_iter = self.config.segment_iterations
-        
-        # Initialize uniform widths in u' space
-        delta_u_prime = [1.0 / n] * n
         
         # Track allocated volumes per segment (bilateral - same for both sides)
         m_seg = [0.0] * n  # M_i (bilateral trade volume at price)
         
-        for iteration in range(num_iter):
-            # Reset allocations
-            m_seg = [0.0] * n
+        # Step 1: Count occurrences of each price (bilateral segments only)
+        # Price is considered bilateral when bid_price == ask_price
+        price_segment_indices: Dict[Price, List[int]] = {}
+        for i, seg in enumerate(segments):
+            if abs(seg.bid_price - seg.ask_price) < EPSILON:
+                price = seg.bid_price
+                if price not in price_segment_indices:
+                    price_segment_indices[price] = []
+                price_segment_indices[price].append(i)
+        
+        # Step 2: Distribute volumes evenly for each price across its occurrences
+        # Use _largest_remainder_round to preserve total volume when dividing
+        for price, total_vol in e_bid.items():
+            if total_vol <= 0:
+                continue
             
-            # Allocate volumes only to segments where bid_price == ask_price == trade_price
-            # This ensures bilateral matching - a trade requires both buyer and seller
-            for price, total_vol in e_bid.items():
-                if total_vol <= 0:
-                    continue
-                
-                # 找到双边匹配的segments：bid_price == ask_price == price
-                # 这确保了成交是双边的，不会出现单边成交
-                bilateral_segments = [
-                    i for i, seg in enumerate(segments) 
-                    if abs(seg.bid_price - price) < EPSILON and abs(seg.ask_price - price) < EPSILON
-                ]
-                
-                if not bilateral_segments:
-                    continue
-                
-                # Weight by segment width
-                weights = [delta_u_prime[i] for i in bilateral_segments]
-                total_weight = sum(weights)
-                if total_weight < EPSILON:
-                    weights = [1.0 / len(bilateral_segments)] * len(bilateral_segments)
-                    total_weight = 1.0
-                
-                for j, i in enumerate(bilateral_segments):
-                    m_seg[i] += total_vol * weights[j] / total_weight
+            if price not in price_segment_indices:
+                continue
             
-            # Update segment widths based on total volume
-            # 双边成交量计算两次（买卖各一次）
-            e_total = [2 * m_seg[i] for i in range(n)]
-            w = [eps + e for e in e_total]
-            total_w = sum(w)
-            delta_u_prime = [wi / total_w for wi in w]
+            indices = price_segment_indices[price]
+            count = len(indices)
+            if count == 0:
+                continue
+            
+            # Calculate even distribution and use largest remainder method for rounding
+            vol_per_segment_float = total_vol / count
+            float_volumes = [vol_per_segment_float] * count
+            rounded_volumes = _largest_remainder_round(float_volumes, int(total_vol))
+            
+            for j, i in enumerate(indices):
+                m_seg[i] += rounded_volumes[j]
+        
+        # Step 3: Calculate segment weights for time allocation
+        # Weight = allocated volume, or eps (config.epsilon) if no volume
+        # Note: EPSILON (1e-12) is used for floating point comparison, 
+        # eps (config.epsilon, default 1.0) is used as minimum weight for no-trade segments
+        weights = []
+        for i in range(n):
+            if m_seg[i] > EPSILON:
+                weights.append(m_seg[i])
+            else:
+                weights.append(eps)
+        
+        total_weight = sum(weights)
+        
+        # Guard against division by zero (should not happen with eps > 0)
+        if total_weight < EPSILON:
+            total_weight = n  # Fallback to uniform distribution
+            weights = [1.0] * n
+        
+        # Step 4: Calculate time proportions based on weights
+        # delta_u_prime[i] = weights[i] / total_weight
+        delta_u_prime = [w / total_weight for w in weights]
         
         # Compute cumulative u' boundaries
         u_prime_cumsum = [0.0]
         for d in delta_u_prime:
             u_prime_cumsum.append(u_prime_cumsum[-1] + d)
         
-        # Map u' back to u (real progress)
+        # Map u' back to u (real progress) - apply lambda transformation
         u_cumsum = [self._u_prime_to_u(up) for up in u_prime_cumsum]
         
         # Update segment times and volumes
@@ -792,7 +815,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
             trades: Dict[Tuple[Side, Price], Qty] = {}
             if m_seg[i] > 0:
                 trade_price = seg.bid_price  # bid_price == ask_price in bilateral segments
-                trade_qty = int(round(m_seg[i]))
+                trade_qty = int(m_seg[i])  # Already integer from _largest_remainder_round
                 trades[(Side.BUY, trade_price)] = trade_qty
                 trades[(Side.SELL, trade_price)] = trade_qty
             
