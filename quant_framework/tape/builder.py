@@ -198,6 +198,10 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # 确保bid和ask的中间路径完全一致（bid=ask同步的相遇价位）
         meeting_seq = self._build_meeting_sequence(price_set, p_min, p_max)
         
+        # 如果起点价格（bid_a或ask_a）是成交价，但不在meeting_seq开头，
+        # 则在meeting_seq前插入该起点价格，使得起点价格的成交不被误归因为撤单
+        meeting_seq = self._prepend_starting_trade_prices(meeting_seq, bid_a, ask_a, price_set)
+        
         # 用公共meeting序列构建对齐的bid和ask路径
         # 确保bid_path和ask_path长度相同，segment数量一致
         bid_path, ask_path = self._build_aligned_paths(bid_a, bid_b, ask_a, ask_b, meeting_seq)
@@ -413,6 +417,75 @@ class UnifiedTapeBuilder(ITapeBuilder):
         for p in meeting_seq:
             if not result or abs(result[-1] - p) > EPSILON:
                 result.append(round(p, 8))
+        
+        return result
+    
+    def _prepend_starting_trade_prices(
+        self,
+        meeting_seq: List[Price],
+        bid_a: Price,
+        ask_a: Price,
+        price_set: Set[Price]
+    ) -> List[Price]:
+        """在meeting序列前插入起点成交价，使起点价格的成交不被误归因为撤单。
+        
+        当某一方的起点价格（bid_a或ask_a）本身也是成交价时，根据meeting_seq的方向
+        决定插入哪个起点价格：
+        - 如果meeting_seq先向下（第一个元素 < bid_a），说明bid先移动，插入bid_a
+        - 如果meeting_seq先向上（第一个元素 > ask_a），说明ask先移动，插入ask_a
+        
+        这样可以让需要移动的一方先停留一拍，在起点价格上进行成交，
+        避免起点价格的数量变化被错误地全部归因为撤单。
+        
+        例如：
+        - bid_a=6, ask_a=7, meeting_seq=[5,6,7], price_set={5,6,7}
+        - meeting_seq[0]=5 < bid_a=6，说明bid先向下移动
+        - bid_a=6 是成交价 -> 插入bid_a: [6,5,6,7]
+        - 结果: bid路径=[6,6,5,6,7,5], ask路径=[7,6,5,6,7,7]
+        - 第二个segment: bid=6, ask=6，成交可以分配到价格6
+        
+        Args:
+            meeting_seq: 原始的meeting序列
+            bid_a: bid侧起点价格
+            ask_a: ask侧起点价格
+            price_set: 所有成交价位集合
+            
+        Returns:
+            调整后的meeting序列
+        """
+        if not meeting_seq:
+            # 如果没有meeting序列，检查起点是否是成交价
+            result = []
+            # 先检查bid_a
+            if any(abs(bid_a - p) < EPSILON for p in price_set):
+                result.append(round(bid_a, 8))
+            # 再检查ask_a（如果与bid_a不同）
+            if abs(ask_a - bid_a) > EPSILON and any(abs(ask_a - p) < EPSILON for p in price_set):
+                result.append(round(ask_a, 8))
+            return result
+        
+        result = list(meeting_seq)
+        first_meeting = result[0]
+        
+        # 根据meeting_seq的方向决定插入哪个起点价格
+        # 如果第一个meeting点低于bid_a，说明bid需要先向下移动（向下方向）
+        # 如果第一个meeting点高于ask_a，说明ask需要先向上移动（向上方向）
+        
+        goes_down_first = first_meeting < bid_a - EPSILON  # bid先向下移动
+        goes_up_first = first_meeting > ask_a + EPSILON    # ask先向上移动
+        
+        if goes_down_first:
+            # bid先向下移动，检查bid_a是否是成交价
+            bid_a_is_trade = any(abs(bid_a - p) < EPSILON for p in price_set)
+            if bid_a_is_trade:
+                # 在前面插入bid_a，让bid在起点停留一拍
+                result.insert(0, round(bid_a, 8))
+        elif goes_up_first:
+            # ask先向上移动，检查ask_a是否是成交价
+            ask_a_is_trade = any(abs(ask_a - p) < EPSILON for p in price_set)
+            if ask_a_is_trade:
+                # 在前面插入ask_a，让ask在起点停留一拍
+                result.insert(0, round(ask_a, 8))
         
         return result
     
@@ -794,9 +867,17 @@ class UnifiedTapeBuilder(ITapeBuilder):
     ) -> None:
         """处理指定方向的价格转换和流量分配（best-price价位）。
         
-        对于每个曾作为best-price的价位，根据价格转换情况应用不同的约束：
-        - 如果价格转换（队列清空），使用约束：N = M - Q_initial
-        - 否则使用守恒方程按时长比例分配
+        采用动态追踪剩余净增量N的方法，按段顺序逐段分配，确保任何时刻队列长度不为负。
+        
+        算法流程：
+        1. 首先计算全局净增量 N_total = (Q_curr - Q_prev) + M_total
+        2. 按段顺序遍历，维护一个动态的"剩余待分配量" N_remaining，初始值为 N_total
+        3. 对于每一段：
+           - 计算该段的起始队列深度 Q_start（第一段为 Q_prev，后续段根据前面段的变化累积得出）
+           - 如果是归零段（价格转换离开该档位）：该段必须消耗 Q_start 使队列归零，
+             净流入量 = M_group - Q_start，N_remaining += Q_start（归零释放的量加回待分配池）
+           - 如果是有成交段：净流入量 = M_group（需要支撑成交），从N_remaining中消耗
+           - 如果是无成交的普通段：按时长比例分配部分 N_remaining
         
         Args:
             side: 买卖方向
@@ -818,34 +899,89 @@ class UnifiedTapeBuilder(ITapeBuilder):
             q_a = get_qty_at_price(prev, price)
             q_b = get_qty_at_price(curr, price)
             
+            # 计算该价位的全局成交量
+            m_total_at_price = sum(
+                seg.trades.get((side, price), 0) for seg in segments
+            )
+            
+            # 计算全局净增量 N_total = (Q_B - Q_A) + M_total
+            delta_q = q_b - q_a
+            n_total = delta_q + m_total_at_price
+            
+            # 动态追踪剩余待分配量，初始值为 N_total
+            n_remaining = float(n_total)
+            
+            # 动态追踪当前队列深度，初始值为 Q_A
+            q_current = float(q_a)
+            
             for group_idx, (start_idx, end_idx, ends_with_transition) in enumerate(groups):
                 m_group = sum(
                     segments[i].trades.get((side, price), 0)
                     for i in range(start_idx, end_idx + 1)
                 )
                 
-                is_first_visit = (group_idx == 0)
-                initial_queue = q_a if is_first_visit else 0
+                # 该段组的起始队列深度
+                q_start = q_current
                 
                 if ends_with_transition:
-                    n_group = m_group - initial_queue
+                    # 归零段：队列必须从 q_start 归零
+                    # 净流入量 = M_group - Q_start（为了使队列归零）
+                    n_group = m_group - q_start
+                    
+                    # 更新n_remaining：消耗n_group
+                    n_remaining -= n_group
+                    
+                    # 段结束后队列归零
+                    q_current = 0.0
                 else:
-                    m_total_at_price = sum(
-                        seg.trades.get((side, price), 0) for seg in segments
-                    )
-                    delta_q = q_b - q_a
-                    n_total = delta_q + m_total_at_price
-                    
-                    all_active_segs = [
-                        i for i, seg in enumerate(segments)
-                        if price in self._get_activation_set_for_side(seg, side)
-                    ]
-                    group_segs = list(range(start_idx, end_idx + 1))
-                    
-                    group_dur = sum(segments[i].t_end - segments[i].t_start for i in group_segs)
-                    total_dur = sum(segments[i].t_end - segments[i].t_start for i in all_active_segs) or 1
-                    
-                    n_group = n_total * group_dur / total_dur
+                    # 非归零段（保持或最终段）
+                    if m_group > 0:
+                        # 有成交段：必须分配足够的净流入量来支撑成交
+                        # 净流入量 = M_group（确保队列从0开始能支撑M_group的成交）
+                        # 但受限于剩余可分配量n_remaining
+                        n_group = min(m_group, n_remaining) if n_remaining > 0 else m_group
+                        
+                        # 如果起始队列q_start > 0，则实际需要的净流入量可以减少
+                        # 因为队列已有的深度可以支撑部分成交
+                        if q_start > 0:
+                            # 需要的净流入量 = max(0, M_group - Q_start)
+                            # 但为了保持守恒，我们需要消耗n_remaining
+                            needed = max(0.0, m_group - q_start)
+                            n_group = min(needed, n_remaining) if n_remaining > 0 else needed
+                        
+                        # 更新剩余待分配量
+                        n_remaining -= n_group
+                        
+                        # 更新当前队列深度
+                        q_current = q_start + n_group - m_group
+                        if q_current < 0:
+                            q_current = 0.0
+                    else:
+                        # 无成交的普通段：按时长比例分配部分 N_remaining
+                        # 计算该段组在所有活跃段中的时长比例
+                        all_active_segs = [
+                            i for i, seg in enumerate(segments)
+                            if price in self._get_activation_set_for_side(seg, side)
+                        ]
+                        group_segs = list(range(start_idx, end_idx + 1))
+                        
+                        group_dur = sum(segments[i].t_end - segments[i].t_start for i in group_segs)
+                        total_dur = sum(segments[i].t_end - segments[i].t_start for i in all_active_segs) or 1
+                        
+                        # 按时长比例分配剩余待分配量
+                        n_group = n_remaining * group_dur / total_dur
+                        
+                        # 确保队列不为负：n_group >= -q_start
+                        if n_group < -q_start:
+                            n_group = -q_start
+                        
+                        # 更新剩余待分配量
+                        n_remaining -= n_group
+                        
+                        # 更新当前队列深度
+                        q_current = q_start + n_group - m_group
+                        if q_current < 0:
+                            q_current = 0.0
                 
                 group_segs = list(range(start_idx, end_idx + 1))
                 durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
