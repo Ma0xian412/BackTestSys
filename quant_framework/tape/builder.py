@@ -753,6 +753,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 price_segment_indices[price].append(i)
         
         # Step 2: Distribute volumes evenly for each price across its occurrences
+        # Use _largest_remainder_round to preserve total volume when dividing
         for price, total_vol in e_bid.items():
             if total_vol <= 0:
                 continue
@@ -762,13 +763,21 @@ class UnifiedTapeBuilder(ITapeBuilder):
             
             indices = price_segment_indices[price]
             count = len(indices)
-            vol_per_segment = total_vol / count
+            if count == 0:
+                continue
             
-            for i in indices:
-                m_seg[i] += vol_per_segment
+            # Calculate even distribution and use largest remainder method for rounding
+            vol_per_segment_float = total_vol / count
+            float_volumes = [vol_per_segment_float] * count
+            rounded_volumes = _largest_remainder_round(float_volumes, int(total_vol))
+            
+            for j, i in enumerate(indices):
+                m_seg[i] += rounded_volumes[j]
         
         # Step 3: Calculate segment weights for time allocation
-        # Weight = allocated volume, or epsilon if no volume
+        # Weight = allocated volume, or eps (config.epsilon) if no volume
+        # Note: EPSILON (1e-12) is used for floating point comparison, 
+        # eps (config.epsilon, default 1.0) is used as minimum weight for no-trade segments
         weights = []
         for i in range(n):
             if m_seg[i] > EPSILON:
@@ -777,6 +786,11 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 weights.append(eps)
         
         total_weight = sum(weights)
+        
+        # Guard against division by zero (should not happen with eps > 0)
+        if total_weight < EPSILON:
+            total_weight = n  # Fallback to uniform distribution
+            weights = [1.0] * n
         
         # Step 4: Calculate time proportions based on weights
         # delta_u_prime[i] = weights[i] / total_weight
@@ -801,7 +815,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
             trades: Dict[Tuple[Side, Price], Qty] = {}
             if m_seg[i] > 0:
                 trade_price = seg.bid_price  # bid_price == ask_price in bilateral segments
-                trade_qty = int(round(m_seg[i]))
+                trade_qty = int(m_seg[i])  # Already integer from _largest_remainder_round
                 trades[(Side.BUY, trade_price)] = trade_qty
                 trades[(Side.SELL, trade_price)] = trade_qty
             
