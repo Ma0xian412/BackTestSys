@@ -2,8 +2,8 @@
 
 本模块定义回测系统中使用的基础类型：
 - 基本类型别名：Price, Qty, OrderId, Timestamp
-- 枚举类型：Side, OrderStatus, TimeInForce, ReceiptType
-- 数据类：Level, NormalizedSnapshot, Order, Fill, TapeSegment, OrderReceipt等
+- 枚举类型：Side, OrderStatus, TimeInForce, ReceiptType, RequestType
+- 数据类：Level, NormalizedSnapshot, Order, CancelRequest, Fill, TapeSegment, OrderReceipt等
 """
 
 from dataclasses import dataclass, field
@@ -14,7 +14,17 @@ from enum import Enum
 Price = float      # 价格类型
 Qty = int          # 数量类型
 OrderId = str      # 订单ID类型
-Timestamp = int    # 时间戳类型
+Timestamp = int    # 时间戳类型（单位：tick，每tick=100ns，从0000-00-00开始计数）
+
+# 快照推送最小间隔（tick单位，500ms = 5_000_000 ticks）
+# 1ms = 10_000 ticks (100ns per tick)
+TICK_PER_MS = 10_000
+SNAPSHOT_MIN_INTERVAL_TICK = 500 * TICK_PER_MS  # 500ms in ticks
+
+# 快照时间容差（tick单位）
+# 由于RecvTick可能存在误差，相邻快照间隔不一定刚好是500ms
+# 默认容差为10ms = 100_000 ticks
+DEFAULT_SNAPSHOT_TOLERANCE_TICK = 10 * TICK_PER_MS  # 10ms in ticks
 
 
 class Side(Enum):
@@ -39,20 +49,35 @@ class TimeInForce(Enum):
     IOC = "IOC"  # 立即成交否则撤销
 
 
+class RequestType(Enum):
+    """策略请求类型枚举。
+    
+    策略可以发出两类请求：
+    - ORDER: 挂单请求（新订单）
+    - CANCEL: 撤单请求
+    """
+    ORDER = "ORDER"    # 挂单请求
+    CANCEL = "CANCEL"  # 撤单请求
+
+
 class ReceiptType(Enum):
     """订单回执类型枚举。
 
     用于EventLoop架构中的回执消息。
-    与OrderStatus分开定义，用于区分：
-    - OrderStatus: 内部订单状态跟踪
-    - ReceiptType: 交易所到策略的消息类型
-
-    虽然部分值重叠，但在系统中服务于不同目的。
+    
+    回执分为两大类：
+    1. 成交类回执：FILL, PARTIAL
+    2. 撤单类回执：CANCELED, REJECTED
+    
+    撤单回执的判断方法：
+    - fill_qty > 0: 撤单成功，且在撤单前有部分成交
+    - fill_qty == 0: 撤单成功，撤单前无成交
+    - receipt_type == REJECTED: 撤单失败（订单不存在或已完成）
     """
     FILL = "FILL"          # 完全成交
     PARTIAL = "PARTIAL"    # 部分成交
-    CANCELED = "CANCELED"  # 已撤销
-    REJECTED = "REJECTED"  # 已拒绝
+    CANCELED = "CANCELED"  # 已撤销（撤单成功）
+    REJECTED = "REJECTED"  # 已拒绝（撤单失败或订单被拒）
 
 @dataclass
 class Level:
@@ -69,25 +94,28 @@ class Level:
 @dataclass
 class NormalizedSnapshot:
     """标准化快照数据。
+    
+    所有时间戳使用统一的recv timeline（ts_recv），单位为tick（每tick=100ns）。
+    ts_exch保留用于记录交易所时间，但所有事件调度使用ts_recv。
 
     Attributes:
-        ts_exch: 交易所时间戳
+        ts_recv: 接收时间戳（主时间线，tick单位，必填）
         bids: 买盘档位列表
         asks: 卖盘档位列表
         last_vol_split: 最近成交量在各价位的分布
-        ts_recv: 接收时间戳（可选）
+        ts_exch: 交易所时间戳（可选，仅用于记录）
         last: 最新价（可选）
         volume: 成交量（可选）
         turnover: 成交额（可选）
         average_price: 均价（可选）
     """
-    ts_exch: Timestamp
+    ts_recv: Timestamp  # 主时间线（必填）
     bids: List[Level]
     asks: List[Level]
     last_vol_split: List[Tuple[Price, Qty]] = field(default_factory=list)
 
     # 可选字段
-    ts_recv: Optional[Timestamp] = None
+    ts_exch: Optional[Timestamp] = None  # 交易所时间戳（仅记录）
     last: Optional[Price] = None
     volume: Optional[int] = None
     turnover: Optional[float] = None
@@ -130,6 +158,20 @@ class Order:
     def is_active(self) -> bool:
         """判断订单是否活跃。"""
         return self.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED, OrderStatus.LIVE]
+
+
+@dataclass
+class CancelRequest:
+    """撤单请求。
+    
+    策略发出的撤单请求，包含要撤销的订单ID。
+    
+    Attributes:
+        order_id: 要撤销的订单ID
+        create_time: 撤单请求创建时间
+    """
+    order_id: OrderId
+    create_time: Timestamp = 0
 
 
 @dataclass
@@ -185,6 +227,18 @@ class TapeSegment:
 @dataclass
 class OrderReceipt:
     """订单回执（用于EventLoop架构）。
+    
+    回执分为两大类：
+    
+    1. 成交类回执（对应挂单请求）:
+       - FILL: 完全成交，fill_qty = 订单数量
+       - PARTIAL: 部分成交，fill_qty = 已成交数量，remaining_qty = 剩余数量
+    
+    2. 撤单类回执（对应撤单请求）:
+       - CANCELED: 撤单成功
+         - fill_qty > 0: 撤单前有部分成交
+         - fill_qty == 0: 撤单前无成交
+       - REJECTED: 撤单失败（订单不存在、已完成或已撤销）
 
     Attributes:
         order_id: 订单ID

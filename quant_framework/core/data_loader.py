@@ -87,6 +87,14 @@ class PickleMarketDataFeed(IMarketDataFeed):
         try:
             ts_exch = _to_int(row.get('ExchTick')) or 0
             ts_recv = _to_int(row.get('RecvTick'))
+            
+            # RecvTick is mandatory - error if missing or invalid
+            if ts_recv is None:
+                raise ValueError(
+                    f"RecvTick field is required but missing or invalid. "
+                    f"Expected integer timestamp in tick units (100ns per tick), got: {row.get('RecvTick')!r}"
+                )
+            
             bids = _parse_levels("Bid")
             asks = _parse_levels("Ask")
 
@@ -109,15 +117,145 @@ class PickleMarketDataFeed(IMarketDataFeed):
                         continue
 
             return NormalizedSnapshot(
-                ts_exch=ts_exch,
+                ts_recv=ts_recv,  # 主时间线（必填）
                 bids=bids,
                 asks=asks,
                 last_vol_split=lvs,
-                ts_recv=ts_recv,
+                ts_exch=ts_exch,  # 可选（仅记录）
                 last=last,
                 volume=volume,
                 turnover=turnover,
                 average_price=avg_px,
             )
-        except Exception:
+        except Exception as e:
+            # Re-raise ValueError for mandatory field errors
+            if isinstance(e, ValueError):
+                raise
             return None
+
+
+class SnapshotDuplicatingFeed(IMarketDataFeed):
+    """包装feed，实现快照复制逻辑。
+    
+    当两个快照之间的间隔超过500ms(SNAPSHOT_MIN_INTERVAL_TICK) + tolerance时，
+    将前一个快照向右复制以填充间隔，每个复制快照间隔500ms。
+    复制的快照的last_vol_split为空（因为没有新成交）。
+    
+    由于RecvTick可能存在误差，相邻快照间隔不一定刚好是500ms，
+    因此支持tolerance参数来处理这种时间抖动。
+    
+    例如（假设tolerance=10ms）：
+    - 间隔510ms: 在tolerance范围内，不复制
+    - 间隔1000ms: 超过500ms+tolerance，生成1个复制快照
+    - 间隔2000ms: 超过500ms+tolerance，生成3个复制快照
+    
+    时间单位：tick（每tick=100ns）。500ms = 5_000_000 ticks。
+    """
+    
+    def __init__(self, inner_feed: IMarketDataFeed, tolerance_tick: int = None):
+        """初始化包装feed。
+        
+        Args:
+            inner_feed: 被包装的原始feed
+            tolerance_tick: 时间容差（tick单位），默认为10ms。
+                           如果间隔在 min_interval ± tolerance 范围内，
+                           认为是正常的500ms间隔，不进行复制。
+        """
+        from .types import SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
+        
+        self.inner_feed = inner_feed
+        self.min_interval = SNAPSHOT_MIN_INTERVAL_TICK
+        self.tolerance = tolerance_tick if tolerance_tick is not None else DEFAULT_SNAPSHOT_TOLERANCE_TICK
+        
+        # 内部状态
+        self._buffer: List[NormalizedSnapshot] = []
+        self._buffer_idx = 0
+        self._prev_snapshot: Optional[NormalizedSnapshot] = None
+        self._initialized = False
+    
+    def next(self) -> Optional[NormalizedSnapshot]:
+        """获取下一个快照（可能是复制的）。"""
+        # 如果buffer中有内容，直接返回
+        if self._buffer_idx < len(self._buffer):
+            snap = self._buffer[self._buffer_idx]
+            self._buffer_idx += 1
+            return snap
+        
+        # buffer为空，从内部feed获取下一个快照
+        self._buffer.clear()
+        self._buffer_idx = 0
+        
+        curr = self.inner_feed.next()
+        if curr is None:
+            return None
+        
+        # 第一个快照，直接返回
+        if self._prev_snapshot is None:
+            self._prev_snapshot = curr
+            return curr
+        
+        # 计算间隔
+        t_prev = self._prev_snapshot.ts_recv
+        t_curr = curr.ts_recv
+        gap = t_curr - t_prev
+        
+        # 如果间隔在 min_interval + tolerance 范围内，直接返回当前快照
+        # 这处理了RecvTick的时间抖动
+        threshold = self.min_interval + self.tolerance
+        if gap <= threshold:
+            self._prev_snapshot = curr
+            return curr
+        
+        # 间隔超过阈值，需要插入复制的快照
+        # 计算需要插入的复制快照数量
+        # 使用 (gap - tolerance - 1) 来考虑容差，确保边界正确处理：
+        # 例如：min_interval=500ms, tolerance=10ms
+        # - gap = 510ms: (510-10-1)//500 = 0 个复制（在容差范围内）
+        # - gap = 520ms: (520-10-1)//500 = 1 个复制
+        # - gap = 1000ms: (1000-10-1)//500 = 1 个复制
+        # - gap = 1010ms: (1010-10-1)//500 = 1 个复制
+        # - gap = 1020ms: (1020-10-1)//500 = 2 个复制
+        num_copies = int((gap - self.tolerance - 1) // self.min_interval)
+        
+        # 确保至少复制0个（防止负数）
+        num_copies = max(0, num_copies)
+        
+        # 生成复制的快照
+        for i in range(num_copies):
+            copy_time = t_prev + (i + 1) * self.min_interval
+            if copy_time < t_curr:
+                # 创建复制快照，last_vol_split为空
+                copy_snap = NormalizedSnapshot(
+                    ts_recv=copy_time,
+                    bids=list(self._prev_snapshot.bids),  # 复制档位列表
+                    asks=list(self._prev_snapshot.asks),
+                    last_vol_split=[],  # 复制快照的last_vol_split为空
+                    ts_exch=self._prev_snapshot.ts_exch,
+                    last=self._prev_snapshot.last,
+                    volume=self._prev_snapshot.volume,
+                    turnover=self._prev_snapshot.turnover,
+                    average_price=self._prev_snapshot.average_price,
+                )
+                self._buffer.append(copy_snap)
+        
+        # 最后添加当前快照
+        self._buffer.append(curr)
+        
+        # 返回buffer中的第一个
+        if self._buffer:
+            snap = self._buffer[self._buffer_idx]
+            self._buffer_idx += 1
+            self._prev_snapshot = curr  # 更新prev为原始的curr
+            return snap
+        
+        # 理论上不应该到这里
+        self._prev_snapshot = curr
+        return curr
+    
+    def reset(self):
+        """重置feed。"""
+        self.inner_feed.reset()
+        self._buffer.clear()
+        self._buffer_idx = 0
+        self._prev_snapshot = None
+        self._initialized = False

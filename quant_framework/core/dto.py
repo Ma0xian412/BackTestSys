@@ -5,6 +5,8 @@
 - OrderInfoDTO: 订单信息传输对象，提供只读的订单状态
 - PortfolioDTO: 投资组合传输对象，提供只读的持仓信息
 - ReadOnlyOMSView: OMS的只读视图，策略只能查询不能修改订单状态
+
+所有时间使用统一的recv timeline (ts_recv)，单位为tick（每tick=100ns）。
 """
 
 from dataclasses import dataclass, field
@@ -29,23 +31,24 @@ class SnapshotDTO:
     """快照数据传输对象（不可变）。
 
     为策略提供只读的市场快照数据，确保策略无法修改原始数据。
+    使用统一的recv timeline (ts_recv)作为主时间线。
 
     Attributes:
-        ts_exch: 交易所时间戳
+        ts_recv: 接收时间戳（主时间线，tick单位）
         bids: 买盘档位列表（只读）
         asks: 卖盘档位列表（只读）
         last_vol_split: 最近成交量分布（只读）
-        ts_recv: 接收时间戳（可选）
+        ts_exch: 交易所时间戳（可选，仅记录）
         last: 最新价（可选）
         volume: 成交量（可选）
         turnover: 成交额（可选）
         average_price: 均价（可选）
     """
-    ts_exch: Timestamp
+    ts_recv: Timestamp  # 主时间线
     bids: Tuple[LevelDTO, ...]
     asks: Tuple[LevelDTO, ...]
     last_vol_split: Tuple[Tuple[Price, Qty], ...] = field(default_factory=tuple)
-    ts_recv: Optional[Timestamp] = None
+    ts_exch: Optional[Timestamp] = None  # 可选
     last: Optional[Price] = None
     volume: Optional[int] = None
     turnover: Optional[float] = None
@@ -233,11 +236,11 @@ def to_snapshot_dto(snapshot) -> SnapshotDTO:
     last_vol_split = tuple(snapshot.last_vol_split) if snapshot.last_vol_split else ()
 
     return SnapshotDTO(
-        ts_exch=snapshot.ts_exch,
+        ts_recv=snapshot.ts_recv,  # 主时间线
         bids=bids,
         asks=asks,
         last_vol_split=last_vol_split,
-        ts_recv=snapshot.ts_recv,
+        ts_exch=snapshot.ts_exch,  # 可选
         last=snapshot.last,
         volume=snapshot.volume,
         turnover=snapshot.turnover,
