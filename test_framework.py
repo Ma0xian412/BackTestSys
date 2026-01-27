@@ -2797,12 +2797,12 @@ def test_crossing_blocked_by_existing_shadow():
 
 
 def test_crossing_blocked_by_queue_depth():
-    """测试当本方队列在同价位有长度时，crossing不会立即成交。"""
+    """Test that crossing orders are queued when same-side depth exists."""
     print("\n--- Test 36b: Crossing Blocked by Queue Depth ---")
     
     from quant_framework.core.types import TapeSegment
     
-    # 创建一个锁盘的segment (500ms interval)
+    # Create a locked segment (500ms interval)
     seg = TapeSegment(
         index=1,
         t_start=1000 * TICK_PER_MS,
@@ -2819,29 +2819,29 @@ def test_crossing_blocked_by_queue_depth():
     exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
     exchange.set_tape([seg], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
-    # 初始化对手方流动性，确保crossing可成交
+    # Initialize opposite-side liquidity to allow crossing
     ask_level = exchange._get_level(Side.SELL, 101.0)
     ask_level.q_mkt = 50.0
     
-    # 初始化本方队列深度（同价位已有队列）
+    # Initialize same-side queue depth at the price
     bid_level = exchange._get_level(Side.BUY, 101.0)
     bid_level.q_mkt = 20.0
     
     order = Order(
         order_id="buy-cross-queue",
         side=Side.BUY,
-        price=101.0,  # 等于ask，会crossing
+        price=101.0,  # Equal to ask, should cross without the queue check
         qty=10,
         tif=TimeInForce.GTC,
     )
     
     receipt = exchange.on_order_arrival(order, 1100 * TICK_PER_MS, market_qty=0)
-    assert receipt is None, "本方队列有长度时不应立即成交"
+    assert receipt is None, "Should not fill immediately when same-side queue has depth"
     
     shadows = exchange.get_shadow_orders()
     queued = next((s for s in shadows if s.order_id == "buy-cross-queue"), None)
-    assert queued is not None, "订单应入队"
-    assert queued.pos >= 20, f"队列位置应在已有队列之后，实际为{queued.pos}"
+    assert queued is not None, "Order should be queued"
+    assert queued.pos >= 20, f"Order should sit behind existing depth, got {queued.pos}"
     
     print("✓ Crossing blocked by queue depth test passed")
 

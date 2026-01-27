@@ -146,7 +146,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             The price level state after initialization.
         """
         level = self._get_level(side, price)
-        if not level.queue and level.q_mkt == 0:
+        if len(level.queue) == 0 and level.q_mkt == 0:
             level.q_mkt = float(market_qty)
         return level
 
