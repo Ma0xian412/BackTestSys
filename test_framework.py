@@ -2825,7 +2825,8 @@ def test_crossing_blocked_by_queue_depth():
     
     # Initialize same-side queue depth at the price
     bid_level = exchange._get_level(Side.BUY, 101.0)
-    bid_level.q_mkt = 20.0
+    same_side_depth = 20.0
+    bid_level.q_mkt = same_side_depth
     
     order = Order(
         order_id="buy-cross-queue",
@@ -2841,7 +2842,7 @@ def test_crossing_blocked_by_queue_depth():
     shadows = exchange.get_shadow_orders()
     queued = next((s for s in shadows if s.order_id == "buy-cross-queue"), None)
     assert queued is not None, "Order should be queued"
-    assert queued.pos >= 20, f"Order should sit behind existing depth, got {queued.pos}"
+    assert queued.pos >= same_side_depth, f"Order should sit behind existing depth, got {queued.pos}"
     
     print("✓ Crossing blocked by queue depth test passed")
 

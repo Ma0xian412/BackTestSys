@@ -146,7 +146,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             The price level state after initialization.
         """
         level = self._get_level(side, price)
-        if len(level.queue) == 0 and level.q_mkt == 0:
+        if level.q_mkt == 0:
             level.q_mkt = float(market_qty)
         return level
 
@@ -159,9 +159,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             t: Time for queue depth calculation.
             
         Returns:
-            Total quantity in the queue (market depth + shadow orders).
+            Total quantity in the queue at time t (market depth + shadow orders).
         """
         level = self._get_level(side, price)
+        # _get_q_mkt uses time-based interpolation for market depth.
         return self._get_q_mkt(side, price, t) + level.shadow_qty_at_time(t)
     
     def set_tape(self, tape: List[TapeSegment], t_a: int, t_b: int) -> None:
