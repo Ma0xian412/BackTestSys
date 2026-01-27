@@ -3174,6 +3174,109 @@ def test_snapshot_duplication():
     print("✓ Snapshot duplication test passed")
 
 
+def test_dynamic_queue_tracking_netflow():
+    """测试动态队列追踪：确保在多次访问同一价位时队列不会为负。
+    
+    场景说明：
+    - prev快照：bidprice: 6@127, 5@118, 4@32, 3@232, 2@37
+    - curr快照：bidprice: 5@76, 4@32, 3@135, 2@49, 1@42
+    - last_vol_split: 5@97, 6@197, 7@202
+    
+    价格6的情况：
+    - Q_A (prev) = 127
+    - Q_B (curr) = 0
+    - M_total = 197
+    - N_total = (Q_B - Q_A) + M_total = (0 - 127) + 197 = 70
+    
+    当bid路径多次访问价格6时（例如：6→5→6→7→5），
+    必须确保队列在任何时刻都不为负。
+    
+    关键验证：
+    1. 第一次访问价格6的归零段：N = 0 - 127 = -127（队列从127归零）
+    2. 第二次访问价格6的有成交段：N应该基于剩余可分配量计算，而不是简单的M=197
+    
+    全局守恒：所有段的N之和应等于N_total = 70
+    """
+    print("\n--- Test 39: Dynamic Queue Tracking Netflow ---")
+    
+    from quant_framework.core.types import TICK_PER_MS, Side
+    from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+    
+    # 创建prev快照：价格6有队列127
+    prev = create_multi_level_snapshot(
+        ts=1000 * TICK_PER_MS,
+        bids=[(6.0, 127), (5.0, 118), (4.0, 32), (3.0, 232), (2.0, 37)],
+        asks=[(10.0, 100)],  # 简化的ask侧
+        last_vol_split=[]
+    )
+    
+    # 创建curr快照：价格6不存在（队列为0）
+    curr = create_multi_level_snapshot(
+        ts=1500 * TICK_PER_MS,
+        bids=[(5.0, 76), (4.0, 32), (3.0, 135), (2.0, 49), (1.0, 42)],
+        asks=[(10.0, 100)],  # 简化的ask侧
+        last_vol_split=[(5.0, 97), (6.0, 197), (7.0, 202)]
+    )
+    
+    config = TapeConfig()
+    builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
+    
+    tape = builder.build(prev, curr)
+    
+    print_tape_path(tape)
+    
+    # 计算价格6在所有段的总net_flow
+    total_netflow_at_6 = 0
+    total_trade_at_6 = 0
+    
+    for seg in tape:
+        nf = seg.net_flow.get((Side.BUY, 6.0), 0)
+        trade = seg.trades.get((Side.BUY, 6.0), 0)
+        total_netflow_at_6 += nf
+        total_trade_at_6 += trade
+        print(f"  段{seg.index}: bid@6.0 netflow={nf}, trade={trade}")
+    
+    print(f"\n  价格6总计: netflow={total_netflow_at_6}, trade={total_trade_at_6}")
+    
+    # 验证全局守恒：N_total = (Q_B - Q_A) + M_total = (0 - 127) + 197 = 70
+    expected_n_total = (0 - 127) + 197  # = 70
+    print(f"  期望N_total: {expected_n_total}")
+    
+    # 允许一定的取整误差（最大1）
+    assert abs(total_netflow_at_6 - expected_n_total) <= 1, \
+        f"全局守恒失败: netflow总和={total_netflow_at_6}，期望={expected_n_total}"
+    
+    # 验证队列在每个段结束时不为负
+    # 按段顺序累计队列深度
+    q = 127  # 初始队列深度
+    for seg in tape:
+        nf = seg.net_flow.get((Side.BUY, 6.0), 0)
+        trade = seg.trades.get((Side.BUY, 6.0), 0)
+        
+        # 只有当价格6在该段的activation集中时，才会有净流入和成交
+        if 6.0 in seg.activation_bid:
+            q_before = q
+            q = q + nf - trade
+            print(f"  段{seg.index}: Q_before={q_before}, N={nf}, M={trade}, Q_after={q}")
+            
+            # 验证队列不为负
+            assert q >= -1, f"段{seg.index}结束时队列为负: {q}"
+    
+    print("\n  ✓ 所有段结束时队列深度>=0（允许取整误差）")
+    
+    # 验证价格7的成交正确分配
+    total_trade_at_7 = sum(seg.trades.get((Side.BUY, 7.0), 0) for seg in tape)
+    print(f"\n  价格7总成交: {total_trade_at_7}（期望约202）")
+    assert total_trade_at_7 > 0, "价格7应有成交"
+    
+    # 验证价格5的成交正确分配
+    total_trade_at_5 = sum(seg.trades.get((Side.BUY, 5.0), 0) for seg in tape)
+    print(f"  价格5总成交: {total_trade_at_5}（期望约97）")
+    assert total_trade_at_5 > 0, "价格5应有成交"
+    
+    print("✓ Dynamic queue tracking netflow test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -3219,6 +3322,7 @@ def run_all_tests():
         test_crossing_blocked_by_existing_shadow,
         test_post_crossing_fill_with_net_increment,
         test_snapshot_duplication,
+        test_dynamic_queue_tracking_netflow,
     ]
     
     passed = 0
