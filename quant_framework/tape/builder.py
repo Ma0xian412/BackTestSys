@@ -429,25 +429,20 @@ class UnifiedTapeBuilder(ITapeBuilder):
     ) -> List[Price]:
         """在meeting序列前插入起点成交价，使起点价格的成交不被误归因为撤单。
         
-        当某一方的起点价格（bid_a或ask_a）本身也是成交价时，在meeting_seq前插入该价格，
-        创建一个新的路径点，使成交可以分配到这个新插入的segment上。
+        当某一方的起点价格（bid_a或ask_a）本身也是成交价时，根据meeting_seq的方向
+        决定插入哪个起点价格：
+        - 如果meeting_seq先向下（第一个元素 < bid_a），说明bid先移动，插入bid_a
+        - 如果meeting_seq先向上（第一个元素 > ask_a），说明ask先移动，插入ask_a
         
-        策略：
-        1. 如果起点价格是成交价且不是meeting_seq的第一个元素，直接在前面插入该价格
-           （即使该价格已存在于meeting_seq中，也插入，创建重复的路径点以获得额外的交易机会）
-        2. 这样可以在新插入的segment上分配成交量
-        3. bid_a和ask_a的处理顺序：先处理bid_a，再处理ask_a
+        这样可以让需要移动的一方先停留一拍，在起点价格上进行成交，
+        避免起点价格的数量变化被错误地全部归因为撤单。
         
         例如：
         - bid_a=6, ask_a=7, meeting_seq=[5,6,7], price_set={5,6,7}
-        - bid_a=6 是成交价，meeting_seq[0]=5 != 6 -> 插入: [6,5,6,7]
-        - ask_a=7 是成交价，meeting_seq[0]=6 != 7 -> 插入: [7,6,5,6,7]
-        - 结果: bid路径=[6,7,6,5,6,7,5], ask路径=[7,7,6,5,6,7,7]
-        - 第二个segment: bid=7, ask=7，成交可以分配到价格7
-        - 第三个segment: bid=6, ask=6，成交可以分配到价格6
-        
-        注意：由于插入会创建重复的路径点，成交量会在多个segment间分配，
-        可能导致舍入误差（总量可能与预期略有差异，通常在±1范围内）。
+        - meeting_seq[0]=5 < bid_a=6，说明bid先向下移动
+        - bid_a=6 是成交价 -> 插入bid_a: [6,5,6,7]
+        - 结果: bid路径=[6,6,5,6,7,5], ask路径=[7,6,5,6,7,7]
+        - 第二个segment: bid=6, ask=6，成交可以分配到价格6
         
         Args:
             meeting_seq: 原始的meeting序列
@@ -470,20 +465,27 @@ class UnifiedTapeBuilder(ITapeBuilder):
             return result
         
         result = list(meeting_seq)
-        first_meeting = result[0] if result else None
+        first_meeting = result[0]
         
-        # 检查bid_a是否是成交价，且不是meeting_seq的第一个元素
-        bid_a_is_trade = any(abs(bid_a - p) < EPSILON for p in price_set)
-        if bid_a_is_trade and (first_meeting is None or abs(bid_a - first_meeting) > EPSILON):
-            # 直接在前面插入bid_a（即使已存在于序列中）
-            result.insert(0, round(bid_a, 8))
-            first_meeting = result[0]
+        # 根据meeting_seq的方向决定插入哪个起点价格
+        # 如果第一个meeting点低于bid_a，说明bid需要先向下移动（向下方向）
+        # 如果第一个meeting点高于ask_a，说明ask需要先向上移动（向上方向）
         
-        # 检查ask_a是否是成交价，且不等于当前第一个元素
-        ask_a_is_trade = any(abs(ask_a - p) < EPSILON for p in price_set)
-        if ask_a_is_trade and (first_meeting is None or abs(ask_a - first_meeting) > EPSILON):
-            # 直接在前面插入ask_a（即使已存在于序列中）
-            result.insert(0, round(ask_a, 8))
+        goes_down_first = first_meeting < bid_a - EPSILON  # bid先向下移动
+        goes_up_first = first_meeting > ask_a + EPSILON    # ask先向上移动
+        
+        if goes_down_first:
+            # bid先向下移动，检查bid_a是否是成交价
+            bid_a_is_trade = any(abs(bid_a - p) < EPSILON for p in price_set)
+            if bid_a_is_trade:
+                # 在前面插入bid_a，让bid在起点停留一拍
+                result.insert(0, round(bid_a, 8))
+        elif goes_up_first:
+            # ask先向上移动，检查ask_a是否是成交价
+            ask_a_is_trade = any(abs(ask_a - p) < EPSILON for p in price_set)
+            if ask_a_is_trade:
+                # 在前面插入ask_a，让ask在起点停留一拍
+                result.insert(0, round(ask_a, 8))
         
         return result
     
