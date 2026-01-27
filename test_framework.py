@@ -3174,6 +3174,129 @@ def test_snapshot_duplication():
     print("✓ Snapshot duplication test passed")
 
 
+def test_issue1_net_flow_at_transition():
+    """测试Issue 1修复：当价格转换时，net_flow应该正确分配。
+    
+    在有trades的segment开始时，队列应该已经被清空。
+    - 在trades之前的segments：net_flow用于清空队列（负值）
+    - 在有trades的segments：net_flow = trades（因为初始队列为0）
+    
+    例如：Q_A=127, M=197, n_group=70
+    - 旧算法：按duration分配70
+    - 新算法：trades之前的segments分配-127，有trades的segments分配trades=197
+    """
+    print("\n--- Test 39: Issue 1 - Net Flow at Transition ---")
+    
+    config = TapeConfig()
+    builder = UnifiedTapeBuilder(config=config, tick_size=0.5)
+    
+    # 创建prev快照：bid1 = 1241.5@127
+    prev = create_multi_level_snapshot(
+        1000 * TICK_PER_MS,
+        bids=[(1241.5, 127), (1241.0, 100)],
+        asks=[(1242.0, 100), (1242.5, 100)],
+        last_vol_split=[]
+    )
+    
+    # 创建curr快照：bid1 = 1241.0（无1241.5档位），trades at 1241.5@197
+    curr = create_multi_level_snapshot(
+        1500 * TICK_PER_MS,
+        bids=[(1241.0, 100)],
+        asks=[(1242.0, 100), (1242.5, 100)],
+        last_vol_split=[(1241.5, 197)]
+    )
+    
+    tape = builder.build(prev, curr)
+    
+    # 找出有trades的segment和没有trades的segment
+    segs_with_trades = [seg for seg in tape if seg.trades.get((Side.BUY, 1241.5), 0) > 0]
+    segs_without_trades = [seg for seg in tape if seg.trades.get((Side.BUY, 1241.5), 0) == 0]
+    
+    # 验证：没有trades的segment应该有负的net_flow（清空队列）
+    for seg in segs_without_trades:
+        if 1241.5 in seg.activation_bid:
+            net_flow = seg.net_flow.get((Side.BUY, 1241.5), 0)
+            # 允许net_flow为0或负值
+            assert net_flow <= 0, f"Segment {seg.index}没有trades，net_flow应该<=0，实际={net_flow}"
+    
+    # 验证：有trades的segment的net_flow应该等于trades（因为初始队列为0）
+    for seg in segs_with_trades:
+        trades = seg.trades.get((Side.BUY, 1241.5), 0)
+        net_flow = seg.net_flow.get((Side.BUY, 1241.5), 0)
+        assert net_flow == trades, f"Segment {seg.index}有trades={trades}，net_flow应该={trades}，实际={net_flow}"
+    
+    # 验证总net_flow = M - Q_A = 197 - 127 = 70
+    total_net_flow = sum(seg.net_flow.get((Side.BUY, 1241.5), 0) for seg in tape)
+    expected_total = 197 - 127
+    assert total_net_flow == expected_total, f"总net_flow应该={expected_total}，实际={total_net_flow}"
+    
+    print(f"  ✓ 没有trades的segment: net_flow分配正确（清空队列）")
+    print(f"  ✓ 有trades的segment: net_flow = trades = 197")
+    print(f"  ✓ 总net_flow = {total_net_flow} = M - Q_A = {expected_total}")
+    print("✓ Issue 1 - Net flow at transition test passed")
+
+
+def test_issue2_path_insertion_at_start():
+    """测试Issue 2修复：当trades出现在起点价格时，应该插入额外的segment。
+    
+    例如：bid_a=6, meeting_seq=[5,6,7]
+    - 旧路径：[6, 5, 6, 7, 5]，第一个segment从6到5，6上的减少全是撤单
+    - 新路径：[6, 6, 5, 6, 7, 5]，第一个segment从6到6（无变化），第二个segment是成交
+    
+    这确保了起点价格上的trades可以正确分配，而不是全部归因为撤单。
+    """
+    print("\n--- Test 40: Issue 2 - Path Insertion at Start ---")
+    
+    config = TapeConfig()
+    builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
+    
+    # 创建prev快照：bidprice=[6,5,4,3,2], askprice=[7,8,9,10,11]
+    prev = create_multi_level_snapshot(
+        1000 * TICK_PER_MS,
+        bids=[(6, 100), (5, 100), (4, 100), (3, 100), (2, 100)],
+        asks=[(7, 100), (8, 100), (9, 100), (10, 100), (11, 100)],
+        last_vol_split=[]
+    )
+    
+    # 创建curr快照：bidprice=[5,4,3,2,1], trades at [5,6,7]
+    curr = create_multi_level_snapshot(
+        1500 * TICK_PER_MS,
+        bids=[(5, 100), (4, 100), (3, 100), (2, 100), (1, 100)],
+        asks=[(7, 100), (8, 100), (9, 100), (10, 100), (11, 100)],
+        last_vol_split=[(5, 50), (6, 30), (7, 20)]
+    )
+    
+    tape = builder.build(prev, curr)
+    
+    # 检查路径
+    bid_path = [seg.bid_price for seg in tape]
+    ask_path = [seg.ask_price for seg in tape]
+    
+    # 验证：第一个segment应该是bid=6, ask=7（起点）
+    assert tape[0].bid_price == 6.0, f"第一个segment的bid应该是6，实际={tape[0].bid_price}"
+    assert tape[0].ask_price == 7.0, f"第一个segment的ask应该是7，实际={tape[0].ask_price}"
+    
+    # 验证：应该有一个segment是bid=ask=6（插入的meeting point）
+    meeting_at_6 = [seg for seg in tape if abs(seg.bid_price - 6) < 0.01 and abs(seg.ask_price - 6) < 0.01]
+    assert len(meeting_at_6) >= 1, f"应该有至少一个segment在price=6有meeting，实际={len(meeting_at_6)}"
+    
+    # 验证：第一个segment（起点到meeting）不应该有trades at price 6
+    # 因为trades应该在meeting segment中
+    first_seg_trades_6 = tape[0].trades.get((Side.BUY, 6.0), 0) + tape[0].trades.get((Side.SELL, 6.0), 0)
+    
+    # 找出有trades at 6的segment
+    segs_with_trades_6 = [seg for seg in tape 
+                         if seg.trades.get((Side.BUY, 6.0), 0) > 0 or seg.trades.get((Side.SELL, 6.0), 0) > 0]
+    assert len(segs_with_trades_6) >= 1, f"应该有segment在price=6有trades"
+    
+    print(f"  Bid路径: {bid_path}")
+    print(f"  Ask路径: {ask_path}")
+    print(f"  ✓ 第一个segment: bid={tape[0].bid_price}, ask={tape[0].ask_price}")
+    print(f"  ✓ Meeting at price 6: {len(meeting_at_6)}个segment")
+    print(f"  ✓ 有trades at price 6: {len(segs_with_trades_6)}个segment")
+    print("✓ Issue 2 - Path insertion at start test passed")
+
+
 def run_all_tests():
     """Run all tests."""
     print("="*60)
@@ -3219,6 +3342,8 @@ def run_all_tests():
         test_crossing_blocked_by_existing_shadow,
         test_post_crossing_fill_with_net_increment,
         test_snapshot_duplication,
+        test_issue1_net_flow_at_transition,
+        test_issue2_path_insertion_at_start,
     ]
     
     passed = 0

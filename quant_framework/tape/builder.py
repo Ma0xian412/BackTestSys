@@ -464,6 +464,55 @@ class UnifiedTapeBuilder(ITapeBuilder):
         bid_path = [round(bid_a, 8)]
         ask_path = [round(ask_a, 8)]
         
+        # Issue 2 fix: 如果成交出现在起点价格，需要先插入一个额外的segment
+        # 使得起点价格可以作为meeting point进行成交，而不是直接作为transition的起点
+        # 
+        # 问题场景：bid_a=6, meeting_seq=[5,6,7]
+        # 原始路径：[6, 5, 6, 7, 5]，第一个segment从6到5，6上的减少全是撤单
+        # 但实际上6上也有成交！
+        # 
+        # 解决方案：插入bid_a作为第一个meeting point
+        # 新路径：[6, 6, 5, 6, 7, 5]，第一个segment从6到6（无变化），第二个segment是成交
+        # 
+        # 插入规则：
+        # - 对于bid侧：如果bid_a在meeting_seq中，且bid_a不是meeting_seq的第一个元素，插入bid_a
+        #   （如果bid_a是第一个元素，它会被自然访问，不需要额外插入）
+        # - 对于ask侧：如果ask_a在meeting_seq中，且ask_a不是meeting_seq的最后一个元素，插入ask_a
+        #   （如果ask_a是最后一个元素，它会被自然访问，不需要额外插入）
+        meeting_set = set(round(p, 8) for p in meeting_seq)
+        bid_a_rounded = round(bid_a, 8)
+        ask_a_rounded = round(ask_a, 8)
+        
+        # 获取meeting_seq的边界
+        first_meeting = round(meeting_seq[0], 8) if meeting_seq else None
+        last_meeting = round(meeting_seq[-1], 8) if meeting_seq else None
+        
+        # 检查起点是否需要插入
+        # bid_a需要插入：bid_a在meeting_seq中，且bid_a不是第一个meeting（否则会被自然访问）
+        bid_needs_insert = (bid_a_rounded in meeting_set and 
+                           first_meeting is not None and 
+                           abs(bid_a_rounded - first_meeting) > EPSILON)
+        
+        # ask_a需要插入：ask_a在meeting_seq中，且ask_a不是最后一个meeting（否则会被自然访问）
+        ask_needs_insert = (ask_a_rounded in meeting_set and 
+                           last_meeting is not None and 
+                           abs(ask_a_rounded - last_meeting) > EPSILON)
+        
+        # 收集需要插入的meeting points
+        inserted_prices = []
+        if bid_needs_insert:
+            inserted_prices.append(bid_a_rounded)
+        if ask_needs_insert and ask_a_rounded != bid_a_rounded:
+            inserted_prices.append(ask_a_rounded)
+        
+        # 按价格排序（从低到高），确保路径的最小位移
+        inserted_prices.sort()
+        
+        # 将插入的meeting points添加到路径开头
+        for inserted_price in inserted_prices:
+            bid_path.append(inserted_price)
+            ask_path.append(inserted_price)
+        
         # 所有meeting价位都必须在两条路径中同步出现
         # 这确保了在对应的segment中 bid_price == ask_price == meeting_price
         for meeting_price in meeting_seq:
@@ -829,6 +878,93 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 
                 if ends_with_transition:
                     n_group = m_group - initial_queue
+                    
+                    # Issue 1 fix: 当价格转换时，分配net_flow的方式应该考虑trades的分布
+                    # 在有trades的segment开始时，队列应该已经被清空
+                    # 所以：
+                    # - 在trades之前的segments：net_flow用于清空队列（负值）
+                    # - 在有trades的segments：net_flow = trades（因为初始队列为0）
+                    #
+                    # 例如：Q_A=127, M=197, n_group=70
+                    # - 旧算法：按duration分配70
+                    # - 新算法：trades之前的segments分配-127，有trades的segments分配trades
+                    
+                    group_segs = list(range(start_idx, end_idx + 1))
+                    
+                    # 找出有trades的segments和没有trades的segments
+                    segs_with_trades = [
+                        i for i in group_segs
+                        if segments[i].trades.get((side, price), 0) > 0
+                    ]
+                    segs_without_trades = [
+                        i for i in group_segs
+                        if segments[i].trades.get((side, price), 0) == 0
+                    ]
+                    
+                    # 筛选出在activation集中的段
+                    active_in_group = [
+                        (j, seg_idx) for j, seg_idx in enumerate(group_segs)
+                        if price in self._get_activation_set_for_side(segments[seg_idx], side)
+                    ]
+                    
+                    if segs_with_trades and initial_queue > 0:
+                        # 有trades且有初始队列：需要先清空队列
+                        # trades之前的segments需要分配 -initial_queue
+                        # trades的segments分配各自的trades
+                        
+                        # 先为有trades的segments分配
+                        for seg_idx in segs_with_trades:
+                            if price in self._get_activation_set_for_side(segments[seg_idx], side):
+                                trade_qty = segments[seg_idx].trades.get((side, price), 0)
+                                net_flow_per_seg[seg_idx][(side, price)] = trade_qty
+                        
+                        # 然后为没有trades的segments分配清空队列的net_flow
+                        active_segs_without_trades = [
+                            i for i in segs_without_trades
+                            if price in self._get_activation_set_for_side(segments[i], side)
+                        ]
+                        
+                        if active_segs_without_trades:
+                            # 按duration分配 -initial_queue
+                            durations = [segments[i].t_end - segments[i].t_start for i in active_segs_without_trades]
+                            total_dur = sum(durations) or 1
+                            alloc_values = [-initial_queue * d / total_dur for d in durations]
+                            
+                            rounded_allocs = _largest_remainder_round(alloc_values, -initial_queue)
+                            
+                            for k, seg_idx in enumerate(active_segs_without_trades):
+                                net_flow_per_seg[seg_idx][(side, price)] = rounded_allocs[k]
+                                
+                                if rounded_allocs[k] < 0:
+                                    cancels_per_seg[seg_idx][(side, price)] = abs(rounded_allocs[k])
+                        else:
+                            # 没有active的无trades段，将清空量分配给第一个有trades的段
+                            # 即 net_flow = trades - initial_queue
+                            if segs_with_trades:
+                                first_trade_seg = segs_with_trades[0]
+                                if price in self._get_activation_set_for_side(segments[first_trade_seg], side):
+                                    trade_qty = segments[first_trade_seg].trades.get((side, price), 0)
+                                    net_flow_per_seg[first_trade_seg][(side, price)] = trade_qty - initial_queue
+                                    
+                                    if trade_qty - initial_queue < 0:
+                                        cancels_per_seg[first_trade_seg][(side, price)] = abs(trade_qty - initial_queue)
+                    else:
+                        # 没有trades或没有初始队列：按duration分配
+                        durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
+                        
+                        if active_in_group:
+                            active_durations = [durations[j] for j, _ in active_in_group]
+                            active_total_dur = sum(active_durations) or 1
+                            alloc_values = [n_group * d / active_total_dur for d in active_durations]
+                            
+                            n_group_int = int(round(n_group))
+                            rounded_allocs = _largest_remainder_round(alloc_values, n_group_int)
+                            
+                            for k, (j, seg_idx) in enumerate(active_in_group):
+                                net_flow_per_seg[seg_idx][(side, price)] = rounded_allocs[k]
+                                
+                                if rounded_allocs[k] < 0:
+                                    cancels_per_seg[seg_idx][(side, price)] = abs(rounded_allocs[k])
                 else:
                     m_total_at_price = sum(
                         seg.trades.get((side, price), 0) for seg in segments
@@ -846,32 +982,31 @@ class UnifiedTapeBuilder(ITapeBuilder):
                     total_dur = sum(segments[i].t_end - segments[i].t_start for i in all_active_segs) or 1
                     
                     n_group = n_total * group_dur / total_dur
-                
-                group_segs = list(range(start_idx, end_idx + 1))
-                durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
-                total_dur = sum(durations) or 1
-                
-                # 筛选出在activation集中的段
-                active_in_group = [
-                    (j, seg_idx) for j, seg_idx in enumerate(group_segs)
-                    if price in self._get_activation_set_for_side(segments[seg_idx], side)
-                ]
-                
-                if active_in_group:
-                    # 计算每个活跃段的分配比例
-                    active_durations = [durations[j] for j, _ in active_in_group]
-                    active_total_dur = sum(active_durations) or 1
-                    alloc_values = [n_group * d / active_total_dur for d in active_durations]
                     
-                    # 使用最大余数法取整，保证总和等于n_group（取整后）
-                    n_group_int = int(round(n_group))
-                    rounded_allocs = _largest_remainder_round(alloc_values, n_group_int)
+                    # 对于非transition的情况，按duration分配
+                    durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
                     
-                    for k, (j, seg_idx) in enumerate(active_in_group):
-                        net_flow_per_seg[seg_idx][(side, price)] = rounded_allocs[k]
+                    # 筛选出在activation集中的段
+                    active_in_group = [
+                        (j, seg_idx) for j, seg_idx in enumerate(group_segs)
+                        if price in self._get_activation_set_for_side(segments[seg_idx], side)
+                    ]
+                    
+                    if active_in_group:
+                        # 计算每个活跃段的分配比例
+                        active_durations = [durations[j] for j, _ in active_in_group]
+                        active_total_dur = sum(active_durations) or 1
+                        alloc_values = [n_group * d / active_total_dur for d in active_durations]
                         
-                        if rounded_allocs[k] < 0:
-                            cancels_per_seg[seg_idx][(side, price)] = abs(rounded_allocs[k])
+                        # 使用最大余数法取整，保证总和等于n_group（取整后）
+                        n_group_int = int(round(n_group))
+                        rounded_allocs = _largest_remainder_round(alloc_values, n_group_int)
+                        
+                        for k, (j, seg_idx) in enumerate(active_in_group):
+                            net_flow_per_seg[seg_idx][(side, price)] = rounded_allocs[k]
+                            
+                            if rounded_allocs[k] < 0:
+                                cancels_per_seg[seg_idx][(side, price)] = abs(rounded_allocs[k])
 
     def _process_non_best_prices(
         self,
