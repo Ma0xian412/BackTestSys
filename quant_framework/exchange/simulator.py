@@ -135,14 +135,32 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         return self._levels[key]
 
     def _ensure_base_q_mkt(self, side: Side, price: Price, market_qty: Qty) -> PriceLevelState:
-        """Ensure base market queue depth is initialized from snapshot."""
+        """Ensure base market queue depth is initialized from snapshot.
+        
+        Args:
+            side: Queue side to initialize.
+            price: Price level for the queue.
+            market_qty: Snapshot market quantity used as base depth.
+            
+        Returns:
+            The price level state after initialization.
+        """
         level = self._get_level(side, price)
         if not level.queue and level.q_mkt == 0:
             level.q_mkt = float(market_qty)
         return level
 
     def _get_total_queue_depth(self, side: Side, price: Price, t: int) -> float:
-        """Get total queue depth including market and shadow orders."""
+        """Get total queue depth including market and shadow orders.
+        
+        Args:
+            side: Queue side to query.
+            price: Price level to query.
+            t: Time for queue depth calculation.
+            
+        Returns:
+            Total quantity in the queue (market depth + shadow orders).
+        """
         level = self._get_level(side, price)
         return self._get_q_mkt(side, price, t) + level.shadow_qty_at_time(t)
     
