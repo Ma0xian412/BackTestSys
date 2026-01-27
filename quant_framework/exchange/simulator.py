@@ -133,6 +133,18 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         if key not in self._levels:
             self._levels[key] = PriceLevelState(side=side, price=float(price))
         return self._levels[key]
+
+    def _ensure_base_q_mkt(self, side: Side, price: Price, market_qty: Qty) -> PriceLevelState:
+        """Ensure base market queue depth is initialized from snapshot."""
+        level = self._get_level(side, price)
+        if not level.queue and level.q_mkt == 0:
+            level.q_mkt = float(market_qty)
+        return level
+
+    def _get_total_queue_depth(self, side: Side, price: Price, t: int) -> float:
+        """Get total queue depth including market and shadow orders."""
+        level = self._get_level(side, price)
+        return self._get_q_mkt(side, price, t) + level.shadow_qty_at_time(t)
     
     def set_tape(self, tape: List[TapeSegment], t_a: int, t_b: int) -> None:
         """Set the tape for this interval and precompute X rates.
@@ -339,11 +351,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 is_crossing = False
             else:
                 # 新增检查：如果本方挂单队列仍有长度，则不能crossing
-                level = self._get_level(side, price)
-                if not level.queue and level.q_mkt == 0:
-                    level.q_mkt = float(market_qty)
-                queue_depth = self._get_q_mkt(side, price, arrival_time)
-                queue_depth += level.shadow_qty_at_time(arrival_time)
+                self._ensure_base_q_mkt(side, price, market_qty)
+                queue_depth = self._get_total_queue_depth(side, price, arrival_time)
                 
                 if queue_depth > 0:
                     is_crossing = False
