@@ -454,10 +454,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
         Returns:
             调整后的meeting序列
         """
-        def price_in_seq(price: Price, seq: List[Price]) -> bool:
-            """检查价格是否已在序列中"""
-            return any(abs(price - p) < EPSILON for p in seq)
-        
         def find_price_index(price: Price, seq: List[Price]) -> int:
             """找到价格在序列中的索引，不存在返回-1"""
             for i, p in enumerate(seq):
