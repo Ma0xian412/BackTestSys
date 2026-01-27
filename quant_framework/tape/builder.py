@@ -24,6 +24,48 @@ EPSILON = 1e-12
 LAMBDA_THRESHOLD = 1e-6
 
 
+def _largest_remainder_round(values: List[float], total: int) -> List[int]:
+    """使用最大余数法将浮点数列表取整，同时保证总和不变。
+    
+    该方法首先将每个值向0取整，然后按照余数从大到小分配剩余的单位，
+    确保取整后的总和等于指定的总数。
+    
+    Args:
+        values: 需要取整的浮点数列表
+        total: 期望的取整后总和
+        
+    Returns:
+        取整后的整数列表，总和等于total
+    """
+    if not values:
+        return []
+    
+    # 向0取整并计算余数
+    floored = [math.trunc(v) for v in values]
+    remainders = [v - f for v, f in zip(values, floored)]
+    
+    # 计算需要分配的剩余单位
+    current_sum = sum(floored)
+    diff = total - current_sum
+    
+    if diff == 0:
+        return floored
+    
+    # 按余数大小排序，获取索引
+    if diff > 0:
+        # 需要增加diff个单位，选余数最大的
+        indices_by_remainder = sorted(range(len(remainders)), key=lambda i: remainders[i], reverse=True)
+        for i in range(min(diff, len(indices_by_remainder))):
+            floored[indices_by_remainder[i]] += 1
+    else:
+        # 需要减少|diff|个单位，选余数最小的（最接近向下取整的）
+        indices_by_remainder = sorted(range(len(remainders)), key=lambda i: remainders[i])
+        for i in range(min(-diff, len(indices_by_remainder))):
+            floored[indices_by_remainder[i]] -= 1
+    
+    return floored
+
+
 @dataclass
 class TapeConfig:
     """Configuration parameters for tape building.
@@ -809,13 +851,27 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
                 total_dur = sum(durations) or 1
                 
-                for j, seg_idx in enumerate(group_segs):
-                    if price in self._get_activation_set_for_side(segments[seg_idx], side):
-                        alloc = n_group * durations[j] / total_dur
-                        net_flow_per_seg[seg_idx][(side, price)] = int(round(alloc))
+                # 筛选出在activation集中的段
+                active_in_group = [
+                    (j, seg_idx) for j, seg_idx in enumerate(group_segs)
+                    if price in self._get_activation_set_for_side(segments[seg_idx], side)
+                ]
+                
+                if active_in_group:
+                    # 计算每个活跃段的分配比例
+                    active_durations = [durations[j] for j, _ in active_in_group]
+                    active_total_dur = sum(active_durations) or 1
+                    alloc_values = [n_group * d / active_total_dur for d in active_durations]
+                    
+                    # 使用最大余数法取整，保证总和等于n_group（取整后）
+                    n_group_int = int(round(n_group))
+                    rounded_allocs = _largest_remainder_round(alloc_values, n_group_int)
+                    
+                    for k, (j, seg_idx) in enumerate(active_in_group):
+                        net_flow_per_seg[seg_idx][(side, price)] = rounded_allocs[k]
                         
-                        if alloc < 0:
-                            cancels_per_seg[seg_idx][(side, price)] = int(round(abs(alloc)))
+                        if rounded_allocs[k] < 0:
+                            cancels_per_seg[seg_idx][(side, price)] = abs(rounded_allocs[k])
 
     def _process_non_best_prices(
         self,
@@ -871,13 +927,19 @@ class UnifiedTapeBuilder(ITapeBuilder):
             durations = [segments[i].t_end - segments[i].t_start for i in active_segs]
             total_dur = sum(durations) or 1
             
+            # 计算每个活跃段的分配比例
+            alloc_values = [n_total * d / total_dur for d in durations]
+            
+            # 使用最大余数法取整，保证总和等于n_total（取整后）
+            n_total_int = int(round(n_total))
+            rounded_allocs = _largest_remainder_round(alloc_values, n_total_int)
+            
             for j, i in enumerate(active_segs):
-                alloc_net = n_total * durations[j] / total_dur
                 if (side, price) not in net_flow_per_seg[i]:
-                    net_flow_per_seg[i][(side, price)] = int(round(alloc_net))
+                    net_flow_per_seg[i][(side, price)] = rounded_allocs[j]
                 
-                if alloc_net < 0:
-                    alloc_cancel = int(round(abs(alloc_net)))
+                if rounded_allocs[j] < 0:
+                    alloc_cancel = abs(rounded_allocs[j])
                     if alloc_cancel > 0 and (side, price) not in cancels_per_seg[i]:
                         cancels_per_seg[i][(side, price)] = alloc_cancel
 
