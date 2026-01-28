@@ -6,12 +6,17 @@
 """
 
 import csv
+import logging
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 from datetime import datetime
 
 from ..core.types import OrderReceipt, ReceiptType
+
+
+# 设置模块级logger
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,6 +41,10 @@ class ReceiptRecord:
     remaining_qty: int
 
 
+# 回执回调类型定义
+ReceiptCallback = Callable[[OrderReceipt], None]
+
+
 class ReceiptLogger:
     """回执记录器。
     
@@ -43,6 +52,8 @@ class ReceiptLogger:
     1. 记录所有回执到内存
     2. 保存回执到CSV文件
     3. 计算成交率（fill rate）
+    4. 支持实时打印回执（verbose模式）
+    5. 支持自定义回执回调
     
     回执类型说明：
     - PARTIAL: 部分成交
@@ -55,15 +66,27 @@ class ReceiptLogger:
         output_file: 输出文件路径
         order_total_qty: 订单总数量统计 {order_id: total_qty}
         order_filled_qty: 订单已成交数量统计 {order_id: filled_qty}
+        verbose: 是否实时打印回执
+        callback: 自定义回执回调函数
     """
     
-    def __init__(self, output_file: Optional[str] = None):
+    def __init__(
+        self, 
+        output_file: Optional[str] = None,
+        verbose: bool = False,
+        callback: Optional[ReceiptCallback] = None
+    ):
         """初始化回执记录器。
         
         Args:
             output_file: 输出文件路径（可选，如果不提供则只保存在内存中）
+            verbose: 是否实时打印回执到控制台
+            callback: 自定义回执回调函数，签名为 (receipt: OrderReceipt) -> None
+                      回调函数抛出的异常将被记录但不会中断回测
         """
         self.output_file = output_file
+        self.verbose = verbose
+        self.callback = callback
         self.records: List[ReceiptRecord] = []
         
         # 统计数据
@@ -83,6 +106,7 @@ class ReceiptLogger:
         """
         self.order_total_qty[order_id] = qty
         self.order_filled_qty[order_id] = 0
+        logger.debug(f"[ReceiptLogger] Order registered: order_id={order_id}, qty={qty}")
     
     def log_receipt(self, receipt: OrderReceipt) -> None:
         """记录一条回执。
@@ -103,6 +127,32 @@ class ReceiptLogger:
         
         # 更新统计
         self._update_statistics(receipt)
+        
+        # 实时打印回执（verbose模式）
+        if self.verbose:
+            self._print_receipt(receipt)
+        
+        # 调用自定义回调（带异常保护）
+        if self.callback:
+            try:
+                self.callback(receipt)
+            except Exception as e:
+                logger.warning(f"Receipt callback raised exception: {e}")
+    
+    def _print_receipt(self, receipt: OrderReceipt) -> None:
+        """打印单条回执信息。
+        
+        Args:
+            receipt: 订单回执
+        """
+        print(
+            f"[Receipt] {receipt.receipt_type:8s} | "
+            f"order_id={receipt.order_id} | "
+            f"fill_qty={receipt.fill_qty} | "
+            f"fill_price={receipt.fill_price:.2f} | "
+            f"remaining={receipt.remaining_qty} | "
+            f"timestamp={receipt.timestamp}"
+        )
     
     def _update_statistics(self, receipt: OrderReceipt) -> None:
         """更新统计数据。
@@ -256,6 +306,40 @@ class ReceiptLogger:
         print(f"  - By Quantity: {stats['fill_rate_by_qty']:.2%}")
         print(f"  - By Order Count: {stats['fill_rate_by_count']:.2%}")
         print("=" * 60)
+    
+    def get_records_as_dicts(self) -> List[Dict]:
+        """获取所有回执记录作为字典列表。
+        
+        Returns:
+            回执记录的字典列表，适合转换为DataFrame或JSON
+        """
+        return [
+            {
+                'order_id': r.order_id,
+                'exch_time': r.exch_time,
+                'recv_time': r.recv_time,
+                'receipt_type': r.receipt_type,
+                'fill_qty': r.fill_qty,
+                'fill_price': r.fill_price,
+                'remaining_qty': r.remaining_qty,
+            }
+            for r in self.records
+        ]
+    
+    def print_all_receipts(self) -> None:
+        """打印所有已记录的回执。"""
+        if not self.records:
+            print("No receipts recorded.")
+            return
+        
+        print("\n" + "=" * 80)
+        print("All Receipts")
+        print("=" * 80)
+        print(f"{'Type':10s} | {'Order ID':20s} | {'Fill Qty':>10s} | {'Price':>12s} | {'Remaining':>10s} | {'Exch Time':>15s}")
+        print("-" * 80)
+        for r in self.records:
+            print(f"{r.receipt_type:10s} | {r.order_id:20s} | {r.fill_qty:>10d} | {r.fill_price:>12.2f} | {r.remaining_qty:>10d} | {r.exch_time:>15d}")
+        print("=" * 80)
     
     def clear(self) -> None:
         """清空所有记录和统计数据。"""

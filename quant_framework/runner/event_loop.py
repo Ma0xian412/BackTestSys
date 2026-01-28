@@ -17,8 +17,9 @@
 """
 
 import heapq
+import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Protocol, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, Protocol, TYPE_CHECKING, Callable
 from enum import Enum, auto
 
 from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
@@ -26,6 +27,9 @@ from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, C
 
 if TYPE_CHECKING:
     from ..trading.receipt_logger import ReceiptLogger
+
+# 设置模块级logger
+logger = logging.getLogger(__name__)
 
 
 class IReceiptLogger(Protocol):
@@ -157,6 +161,12 @@ class TimelineConfig:
         return recvtime  # 直接返回，无转换
 
 
+# 进度回调类型定义
+# 签名: (current: int, total: int) -> None
+# 注意: total 可能为 0 如果 feed 不支持 __len__ 方法
+ProgressCallback = Callable[[int, int], None]
+
+
 @dataclass
 class RunnerConfig:
     """事件循环运行器配置。
@@ -167,10 +177,16 @@ class RunnerConfig:
         delay_out: 策略 -> 交易所的延迟（tick单位）
         delay_in: 交易所 -> 策略的延迟（tick单位）
         timeline: 时间线配置（已弃用，保留用于兼容）
+        show_progress: 是否显示进度条（需要tqdm库）
+        progress_callback: 自定义进度回调函数，签名为 (current, total) -> None
+                          注意: 如果feed不支持__len__方法，total将为0
+                          回调函数抛出的异常将被记录但不会中断回测
     """
     delay_out: int = 0
     delay_in: int = 0
     timeline: TimelineConfig = None
+    show_progress: bool = False
+    progress_callback: Optional[ProgressCallback] = None
 
     def __post_init__(self):
         if self.timeline is None:
@@ -268,6 +284,20 @@ class EventLoopRunner:
             self.diagnostics["cancels_submitted"] = len(self._pending_cancels)
 
         interval_count = 0
+        
+        # 获取总数据量用于进度显示
+        total_intervals = 0
+        if hasattr(self.feed, '__len__'):
+            total_intervals = len(self.feed) - 1  # -1 因为第一个快照已经处理
+        
+        # 设置进度条（如果启用）
+        pbar = None
+        if self.config.show_progress and total_intervals > 0:
+            try:
+                from tqdm import tqdm
+                pbar = tqdm(total=total_intervals, desc="Backtest Progress", unit="interval")
+            except ImportError:
+                logger.warning("tqdm not installed, progress bar disabled. Install with: pip install tqdm")
 
         while True:
             curr = self.feed.next()
@@ -280,6 +310,19 @@ class EventLoopRunner:
             prev = curr
             self.current_snapshot = curr
             interval_count += 1
+            
+            # 更新进度
+            if pbar:
+                pbar.update(1)
+            if self.config.progress_callback:
+                try:
+                    self.config.progress_callback(interval_count, total_intervals)
+                except Exception as e:
+                    logger.warning(f"Progress callback raised exception: {e}")
+        
+        # 关闭进度条
+        if pbar:
+            pbar.close()
 
         self.diagnostics["intervals_processed"] = interval_count
 
