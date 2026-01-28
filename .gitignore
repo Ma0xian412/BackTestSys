@@ -67,8 +67,10 @@ venv.bak/
 *~
 
 # Output files
+output/
 outputs/
 *.csv
+*.log
 
 # Data files (optional, but sample data may be large)
 # data/

@@ -8,6 +8,7 @@ This module implements exchange matching with:
 - Top-5 activation window enforcement
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
@@ -16,6 +17,10 @@ from ..core.types import (
     Order, OrderReceipt, NormalizedSnapshot, Price, Qty, Side, 
     TapeSegment, TimeInForce, OrderStatus
 )
+
+
+# 设置模块级logger
+logger = logging.getLogger(__name__)
 
 
 EPSILON = 1e-12
@@ -396,6 +401,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         Returns:
             Optional receipt for immediate action (None if order accepted to queue without immediate fill)
         """
+        logger.debug(
+            f"[Exchange] Order arrival: order_id={order.order_id}, "
+            f"side={order.side.value}, price={order.price}, qty={order.qty}, "
+            f"arrival_time={arrival_time}, market_qty={market_qty}"
+        )
+        
         side = order.side
         price = float(order.price)
         remaining_qty = order.remaining_qty
@@ -408,6 +419,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         # Check for crossing (immediate execution condition)
         is_crossing = self._check_crossing(side, price, opposite_best)
+        
+        logger.debug(
+            f"[Exchange] Order {order.order_id}: opposite_best={opposite_best}, "
+            f"is_crossing={is_crossing}"
+        )
         
         immediate_fill_qty = 0
         immediate_fill_price = 0.0
@@ -422,6 +438,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if has_blocking_shadow:
                 # 有优先级更高的shadow订单，不能crossing，直接入队
                 is_crossing = False
+                logger.debug(f"[Exchange] Order {order.order_id}: blocked by higher priority shadow order")
             else:
                 # New check: if same-side queue still has depth, cannot execute immediately
                 self._ensure_base_q_mkt(side, price, market_qty)
@@ -429,6 +446,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 
                 if queue_depth > 0:
                     is_crossing = False
+                    logger.debug(f"[Exchange] Order {order.order_id}: queue_depth={queue_depth} > 0, no crossing")
                 else:
                     # No blocking shadow orders or same-side depth, can execute crossing
                     # Execute immediately against opposite side liquidity
@@ -436,6 +454,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         side, price, remaining_qty, arrival_time, seg_idx
                     )
                     remaining_qty -= immediate_fill_qty
+                    logger.debug(
+                        f"[Exchange] Order {order.order_id}: crossing executed, "
+                        f"immediate_fill_qty={immediate_fill_qty}, fill_price={immediate_fill_price}"
+                    )
         
         # Handle based on TIF and remaining quantity
         if order.tif == TimeInForce.IOC:
@@ -443,7 +465,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if immediate_fill_qty > 0:
                 if remaining_qty == 0:
                     # Full immediate fill
-                    return OrderReceipt(
+                    receipt = OrderReceipt(
                         order_id=order.order_id,
                         receipt_type="FILL",
                         timestamp=arrival_time,
@@ -451,9 +473,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         fill_price=immediate_fill_price,
                         remaining_qty=0,
                     )
+                    logger.debug(f"[Exchange] IOC Order {order.order_id}: FILL receipt generated")
+                    return receipt
                 else:
                     # Partial fill, cancel rest
-                    return OrderReceipt(
+                    receipt = OrderReceipt(
                         order_id=order.order_id,
                         receipt_type="PARTIAL",
                         timestamp=arrival_time,
@@ -461,9 +485,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         fill_price=immediate_fill_price,
                         remaining_qty=0,  # Canceled, so remaining is 0
                     )
+                    logger.debug(f"[Exchange] IOC Order {order.order_id}: PARTIAL receipt (rest canceled)")
+                    return receipt
             else:
                 # No immediate fill, cancel
-                return OrderReceipt(
+                receipt = OrderReceipt(
                     order_id=order.order_id,
                     receipt_type="CANCELED",
                     timestamp=arrival_time,
@@ -471,6 +497,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     fill_price=0.0,
                     remaining_qty=0,
                 )
+                logger.debug(f"[Exchange] IOC Order {order.order_id}: CANCELED (no fill)")
+                return receipt
         
         # Non-IOC (GTC): Queue remaining if any
         if remaining_qty > 0:
@@ -479,6 +507,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             receipt = self._queue_order(
                 order, arrival_time, market_qty, remaining_qty, immediate_fill_qty, crossed_prices
             )
+            logger.debug(f"[Exchange] Order {order.order_id}: queued with remaining_qty={remaining_qty}")
             
             # If there was an immediate fill, return that receipt
             if immediate_fill_qty > 0:
@@ -494,7 +523,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         else:
             # Fully filled immediately
             if immediate_fill_qty > 0:
-                return OrderReceipt(
+                receipt = OrderReceipt(
                     order_id=order.order_id,
                     receipt_type="FILL",
                     timestamp=arrival_time,
@@ -502,6 +531,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     fill_price=immediate_fill_price,
                     remaining_qty=0,
                 )
+                logger.debug(f"[Exchange] Order {order.order_id}: fully filled immediately")
+                return receipt
+        
         
         return None
     
@@ -800,11 +832,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         Returns:
             Receipt for the cancel operation
         """
+        logger.debug(f"[Exchange] Cancel arrival: order_id={order_id}, arrival_time={arrival_time}")
+        
         # Find order in all levels
         for level in self._levels.values():
             for shadow in level.queue:
                 if shadow.order_id == order_id:
                     if shadow.status == "FILLED":
+                        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already filled)")
                         return OrderReceipt(
                             order_id=order_id,
                             receipt_type="REJECTED",
@@ -812,6 +847,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         )
                     
                     if shadow.status == "CANCELED":
+                        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already canceled)")
                         return OrderReceipt(
                             order_id=order_id,
                             receipt_type="REJECTED",
@@ -829,6 +865,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     shadow.remaining_qty = 0
                     shadow.status = "CANCELED"
                     
+                    logger.debug(
+                        f"[Exchange] Cancel {order_id}: CANCELED successfully, "
+                        f"fill_at_cancel={fill_at_cancel}"
+                    )
                     return OrderReceipt(
                         order_id=order_id,
                         receipt_type="CANCELED",
@@ -837,6 +877,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         remaining_qty=0,
                     )
         
+        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (order not found)")
         return OrderReceipt(
             order_id=order_id,
             receipt_type="REJECTED",
@@ -1067,23 +1108,33 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         
                         if shadow.remaining_qty <= 0:
                             shadow.status = "FILLED"
-                            receipts.append(OrderReceipt(
+                            receipt = OrderReceipt(
                                 order_id=shadow.order_id,
                                 receipt_type="FILL",
                                 timestamp=fill_time,
                                 fill_qty=fill_qty,
                                 fill_price=shadow.price,
                                 remaining_qty=0,
-                            ))
+                            )
+                            logger.debug(
+                                f"[Exchange] Advance: post-crossing FILL for {shadow.order_id}, "
+                                f"fill_qty={fill_qty}, price={shadow.price}, time={fill_time}"
+                            )
+                            receipts.append(receipt)
                         else:
-                            receipts.append(OrderReceipt(
+                            receipt = OrderReceipt(
                                 order_id=shadow.order_id,
                                 receipt_type="PARTIAL",
                                 timestamp=fill_time,
                                 fill_qty=fill_qty,
                                 fill_price=shadow.price,
                                 remaining_qty=shadow.remaining_qty,
-                            ))
+                            )
+                            logger.debug(
+                                f"[Exchange] Advance: post-crossing PARTIAL for {shadow.order_id}, "
+                                f"fill_qty={fill_qty}, remaining={shadow.remaining_qty}"
+                            )
+                            receipts.append(receipt)
                     continue
                 
                 # Normal fill logic for non-post-crossing orders
@@ -1107,14 +1158,19 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         shadow.remaining_qty = 0
                         shadow.status = "FILLED"
                         
-                        receipts.append(OrderReceipt(
+                        receipt = OrderReceipt(
                             order_id=shadow.order_id,
                             receipt_type="FILL",
                             timestamp=fill_time,
                             fill_qty=shadow.original_qty,
                             fill_price=shadow.price,
                             remaining_qty=0,
-                        ))
+                        )
+                        logger.debug(
+                            f"[Exchange] Advance: FILL for {shadow.order_id}, "
+                            f"fill_qty={shadow.original_qty}, price={shadow.price}, time={fill_time}"
+                        )
+                        receipts.append(receipt)
                 elif x_t_to > shadow.pos:
                     # Partial fill
                     current_fill = int(x_t_to - shadow.pos)
@@ -1127,14 +1183,19 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         shadow.filled_qty = current_fill
                         shadow.remaining_qty = shadow.original_qty - current_fill
                         
-                        receipts.append(OrderReceipt(
+                        receipt = OrderReceipt(
                             order_id=shadow.order_id,
                             receipt_type="PARTIAL",
                             timestamp=t_to,
                             fill_qty=new_fill,
                             fill_price=shadow.price,
                             remaining_qty=shadow.remaining_qty,
-                        ))
+                        )
+                        logger.debug(
+                            f"[Exchange] Advance: PARTIAL for {shadow.order_id}, "
+                            f"fill_qty={new_fill}, remaining={shadow.remaining_qty}"
+                        )
+                        receipts.append(receipt)
         
         self.current_time = t_to
         return receipts
