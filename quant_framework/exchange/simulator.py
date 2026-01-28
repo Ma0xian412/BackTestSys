@@ -322,6 +322,60 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         return max(0.0, q)
     
+    def _get_positive_netflow_between(self, side: Side, price: Price, t_from: int, t_to: int) -> float:
+        """计算t_from到t_to之间的正净流入累计量。
+        
+        用于计算两个shadow订单之间的队列增量。
+        如果在某个时间段内净流入为负，则该段贡献为0（队列收缩不会增加后续订单的距离）。
+        
+        Args:
+            side: 买卖方向
+            price: 价格档位
+            t_from: 起始时间
+            t_to: 结束时间
+            
+        Returns:
+            正净流入累计量（只计算正值，负值视为0）
+        """
+        if not self._current_tape or t_to <= t_from:
+            return 0.0
+        
+        total_positive_netflow = 0.0
+        
+        for seg_idx, seg in enumerate(self._current_tape):
+            if t_to <= seg.t_start:
+                break
+            if t_from >= seg.t_end:
+                continue
+            
+            seg_duration = seg.t_end - seg.t_start
+            if seg_duration <= 0:
+                continue
+            
+            # Check activation
+            if not self._is_in_activation_window(side, price, seg_idx):
+                continue
+            
+            # Calculate the overlap between [t_from, t_to] and [seg.t_start, seg.t_end]
+            overlap_start = max(seg.t_start, t_from)
+            overlap_end = min(seg.t_end, t_to)
+            
+            if overlap_end <= overlap_start:
+                continue
+            
+            # Segment progress for the overlap period
+            z = (overlap_end - overlap_start) / seg_duration
+            
+            # N_{s,i}(p): 净增量(net flow)
+            n_si = seg.net_flow.get((side, price), 0)
+            
+            # Only count positive netflow (queue growth)
+            # When queue shrinks (negative netflow), distance between orders doesn't increase
+            if n_si > 0:
+                total_positive_netflow += n_si * z
+        
+        return total_positive_netflow
+    
     def on_order_arrival(self, order: Order, arrival_time: int, market_qty: Qty) -> Optional[OrderReceipt]:
         """Handle order arrival at exchange.
         
@@ -667,34 +721,53 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         else:
             # 没有crossing，计算新订单在队列中的位置
             # 
-            # 重要：新订单的位置只基于当前队列深度，不涉及X坐标（取消概率）
-            # X坐标（包含取消概率phi）只用于已在交易所的订单的成交推进计算
+            # FIFO保序修复：
+            # 之前的算法：pos = q_mkt(t) + shadow_qty
+            # 问题：当队列收缩时（trades > netflow），后到达的订单可能有更小的threshold，
+            #       导致后到达的订单先成交，违反FIFO原则
             # 
-            # 新订单位置 = 当前市场队列深度 + 之前的shadow订单数量
+            # 新算法：
+            # - 第一个订单：pos = q_mkt(t)
+            # - 后续订单：pos = 前一个shadow订单的(pos + qty) + 正净流入增量
+            #   - 正净流入增量 = 从前一个订单到达到当前订单到达期间的正netflow累计
+            #   - 负netflow不增加距离（队列收缩不会让后续订单超过前面的订单）
             # 
-            # 例如：订单在t=1000到达，seg1=[0,500]，seg2=[500,1500]
-            # seg1: netflow=100, trade=50
-            # seg2: netflow=-100, trade=30
-            # 初始队列深度=100
-            # 
-            # 队列长度(t=1000) = 100 + (100-50)*1.0 + (-100-30)*(1000-500)/(1500-500)
-            #                  = 100 + 50 + (-65)
-            #                  = 85
+            # 这保证了FIFO：每个订单的threshold = pos + qty >= 前一个订单的threshold
             # 
             # Initialize Q_mkt with base value at interval start T_A
             # This serves as the starting point for interpolation
             if not level.queue and level.q_mkt == 0:
                 level.q_mkt = float(market_qty)
             
-            # 根据arrival_time所在segment的进度计算当前队列深度
-            # q_mkt_t = 基础值 + Σ(net_flow - trades) * segment_progress
-            q_mkt_t = self._get_q_mkt(side, price, arrival_time)  # 插值计算的当前队列深度
-            s_shadow = level.shadow_qty_at_time(arrival_time)
+            # 找到该价位上最后一个活跃的shadow订单
+            last_active_shadow = None
+            for shadow_order in reversed(level.queue):
+                if shadow_order.status == "ACTIVE" and shadow_order.arrival_time < arrival_time:
+                    last_active_shadow = shadow_order
+                    break
             
-            # 新订单位置 = 当前队列深度 + 之前的shadow订单
-            # 注意：不包含X坐标，X坐标只用于成交推进计算
-            # 手数必须是整数，所以需要取整
-            pos = int(round(q_mkt_t + s_shadow))
+            if last_active_shadow is not None:
+                # 有前序shadow订单，基于前序订单计算位置
+                # pos = 前序订单的threshold + 期间的正净流入
+                prev_threshold = last_active_shadow.pos + last_active_shadow.original_qty
+                
+                # 计算从前序订单到当前订单期间的正净流入
+                positive_netflow = self._get_positive_netflow_between(
+                    side, price, last_active_shadow.arrival_time, arrival_time
+                )
+                
+                # 新订单位置 = 前序订单的threshold + 正净流入（只有队列增长才增加距离）
+                pos = int(round(prev_threshold + positive_netflow))
+            else:
+                # 没有前序shadow订单，使用原始逻辑
+                # 根据arrival_time所在segment的进度计算当前队列深度
+                # q_mkt_t = 基础值 + Σ(net_flow - trades) * segment_progress
+                q_mkt_t = self._get_q_mkt(side, price, arrival_time)  # 插值计算的当前队列深度
+                
+                # 新订单位置 = 当前队列深度
+                # 注意：不包含X坐标，X坐标只用于成交推进计算
+                # 手数必须是整数，所以需要取整
+                pos = int(round(q_mkt_t))
         
         # Create shadow order with remaining qty
         # Mark as post-crossing if there was an immediate fill (crossing occurred)
