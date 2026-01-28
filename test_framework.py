@@ -2796,6 +2796,57 @@ def test_crossing_blocked_by_existing_shadow():
     print("✓ Crossing blocked by existing shadow test passed")
 
 
+def test_crossing_blocked_by_queue_depth():
+    """Test that crossing orders are queued when same-side depth exists."""
+    print("\n--- Test 36b: Crossing Blocked by Queue Depth ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    # Create a locked segment (500ms interval)
+    seg = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=1500 * TICK_PER_MS,
+        bid_price=101.0,
+        ask_price=101.0,
+        trades={},
+        cancels={},
+        net_flow={},
+        activation_bid={101.0},
+        activation_ask={101.0},
+    )
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange.set_tape([seg], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    
+    # Initialize opposite-side liquidity to allow crossing
+    ask_level = exchange._get_level(Side.SELL, 101.0)
+    ask_level.q_mkt = 50.0
+    
+    # Initialize same-side queue depth at the price
+    bid_level = exchange._get_level(Side.BUY, 101.0)
+    same_side_depth = 20.0
+    bid_level.q_mkt = same_side_depth
+    
+    order = Order(
+        order_id="buy-cross-queue",
+        side=Side.BUY,
+        price=101.0,  # Equal to ask, but queue depth should block crossing
+        qty=10,
+        tif=TimeInForce.GTC,
+    )
+    
+    receipt = exchange.on_order_arrival(order, 1100 * TICK_PER_MS, market_qty=0)
+    assert receipt is None, "Should not fill immediately when same-side queue has depth"
+    
+    shadows = exchange.get_shadow_orders()
+    queued = next((s for s in shadows if s.order_id == "buy-cross-queue"), None)
+    assert queued is not None, "Order should be queued"
+    assert queued.pos >= same_side_depth, f"Order should sit behind existing depth, got {queued.pos}"
+    
+    print("✓ Crossing blocked by queue depth test passed")
+
+
 def test_post_crossing_fill_with_net_increment():
     """测试post-crossing订单根据对手方净增量成交。
     
@@ -3472,6 +3523,7 @@ def run_all_tests():
         test_crossing_partial_fill_position_zero,
         test_multiple_orders_at_same_price,
         test_crossing_blocked_by_existing_shadow,
+        test_crossing_blocked_by_queue_depth,
         test_post_crossing_fill_with_net_increment,
         test_snapshot_duplication,
         test_dynamic_queue_tracking_netflow,

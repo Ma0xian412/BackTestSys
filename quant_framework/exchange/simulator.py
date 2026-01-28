@@ -133,6 +133,37 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         if key not in self._levels:
             self._levels[key] = PriceLevelState(side=side, price=float(price))
         return self._levels[key]
+
+    def _ensure_base_q_mkt(self, side: Side, price: Price, market_qty: Qty) -> PriceLevelState:
+        """Ensure base market queue depth is initialized from snapshot.
+        
+        Args:
+            side: Queue side to initialize.
+            price: Price level for the queue.
+            market_qty: Snapshot market quantity used as base depth.
+            
+        Returns:
+            The price level state after initialization.
+        """
+        level = self._get_level(side, price)
+        if level.q_mkt == 0:
+            level.q_mkt = float(market_qty)
+        return level
+
+    def _get_total_queue_depth(self, side: Side, price: Price, t: int) -> float:
+        """Get total queue depth including market and shadow orders.
+        
+        Args:
+            side: Queue side to query.
+            price: Price level to query.
+            t: Time for queue depth calculation.
+            
+        Returns:
+            Total quantity in the queue at time t (market depth + shadow orders).
+        """
+        level = self._get_level(side, price)
+        # _get_q_mkt uses time-based interpolation for market depth.
+        return self._get_q_mkt(side, price, t) + level.shadow_qty_at_time(t)
     
     def set_tape(self, tape: List[TapeSegment], t_a: int, t_b: int) -> None:
         """Set the tape for this interval and precompute X rates.
@@ -338,12 +369,19 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # 有优先级更高的shadow订单，不能crossing，直接入队
                 is_crossing = False
             else:
-                # 没有阻止crossing的shadow订单，可以执行crossing
-                # Execute immediately against opposite side liquidity
-                immediate_fill_qty, immediate_fill_price, crossed_prices = self._execute_crossing(
-                    side, price, remaining_qty, arrival_time, seg_idx
-                )
-                remaining_qty -= immediate_fill_qty
+                # New check: if same-side queue still has depth, cannot execute immediately
+                self._ensure_base_q_mkt(side, price, market_qty)
+                queue_depth = self._get_total_queue_depth(side, price, arrival_time)
+                
+                if queue_depth > 0:
+                    is_crossing = False
+                else:
+                    # No blocking shadow orders or same-side depth, can execute crossing
+                    # Execute immediately against opposite side liquidity
+                    immediate_fill_qty, immediate_fill_price, crossed_prices = self._execute_crossing(
+                        side, price, remaining_qty, arrival_time, seg_idx
+                    )
+                    remaining_qty -= immediate_fill_qty
         
         # Handle based on TIF and remaining quantity
         if order.tif == TimeInForce.IOC:
