@@ -1123,6 +1123,13 @@ class UnifiedTapeBuilder(ITapeBuilder):
         if n == 0:
             return segments
 
+        def get_qty_at_price(snap: NormalizedSnapshot, side: Side, price: Price) -> int:
+            levels = snap.bids if side == Side.BUY else snap.asks
+            for lvl in levels:
+                if abs(float(lvl.price) - price) < EPSILON:
+                    return int(lvl.qty)
+            return 0
+
         price_universe_bid: Set[Price] = set()
         price_universe_ask: Set[Price] = set()
         for seg in segments:
