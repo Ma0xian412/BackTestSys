@@ -4,7 +4,7 @@ This demonstrates the new architecture with:
 - EventLoopRunner for coordinating all components
 - UnifiedTapeBuilder for constructing event tapes
 - FIFOExchangeSimulator for exchange matching
-- SimpleNewStrategy for strategy logic
+- SimpleStrategy for strategy logic
 
 Observability features:
 - Progress bar for tracking backtest progress (requires tqdm)
@@ -72,6 +72,7 @@ def setup_logging(debug: bool = False, log_file: str = None):
     else:
         logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.WARNING)
 
 
 def create_feed(data_path: str = DATA_PATH):

@@ -162,6 +162,8 @@ class TimelineConfig:
 
 
 # 进度回调类型定义
+# 签名: (current: int, total: int) -> None
+# 注意: total 可能为 0 如果 feed 不支持 __len__ 方法
 ProgressCallback = Callable[[int, int], None]
 
 
@@ -177,6 +179,8 @@ class RunnerConfig:
         timeline: 时间线配置（已弃用，保留用于兼容）
         show_progress: 是否显示进度条（需要tqdm库）
         progress_callback: 自定义进度回调函数，签名为 (current, total) -> None
+                          注意: 如果feed不支持__len__方法，total将为0
+                          回调函数抛出的异常将被记录但不会中断回测
     """
     delay_out: int = 0
     delay_in: int = 0
@@ -311,7 +315,10 @@ class EventLoopRunner:
             if pbar:
                 pbar.update(1)
             if self.config.progress_callback:
-                self.config.progress_callback(interval_count, total_intervals)
+                try:
+                    self.config.progress_callback(interval_count, total_intervals)
+                except Exception as e:
+                    logger.warning(f"Progress callback raised exception: {e}")
         
         # 关闭进度条
         if pbar:

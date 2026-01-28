@@ -82,6 +82,7 @@ class ReceiptLogger:
             output_file: 输出文件路径（可选，如果不提供则只保存在内存中）
             verbose: 是否实时打印回执到控制台
             callback: 自定义回执回调函数，签名为 (receipt: OrderReceipt) -> None
+                      回调函数抛出的异常将被记录但不会中断回测
         """
         self.output_file = output_file
         self.verbose = verbose
@@ -131,9 +132,12 @@ class ReceiptLogger:
         if self.verbose:
             self._print_receipt(receipt)
         
-        # 调用自定义回调
+        # 调用自定义回调（带异常保护）
         if self.callback:
-            self.callback(receipt)
+            try:
+                self.callback(receipt)
+            except Exception as e:
+                logger.warning(f"Receipt callback raised exception: {e}")
     
     def _print_receipt(self, receipt: OrderReceipt) -> None:
         """打印单条回执信息。

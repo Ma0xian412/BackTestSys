@@ -534,7 +534,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 logger.debug(f"[Exchange] Order {order.order_id}: fully filled immediately")
                 return receipt
         
-        
         return None
     
     def _has_active_shadow_blocking_crossing(self, side: Side, price: Price) -> bool:
