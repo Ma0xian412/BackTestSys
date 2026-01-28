@@ -665,22 +665,36 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # 因此bid@px上不可能有之前的shadow订单，position直接为0
             pos = 0
         else:
-            # 没有crossing，使用坐标轴模型计算位置
+            # 没有crossing，计算新订单在队列中的位置
+            # 
+            # 重要：新订单的位置只基于当前队列深度，不涉及X坐标（取消概率）
+            # X坐标（包含取消概率phi）只用于已在交易所的订单的成交推进计算
+            # 
+            # 新订单位置 = 当前市场队列深度 + 之前的shadow订单数量
+            # 
+            # 例如：订单在t=1000到达，seg1=[0,500]，seg2=[500,1500]
+            # seg1: netflow=100, trade=50
+            # seg2: netflow=-100, trade=30
+            # 初始队列深度=100
+            # 
+            # 队列长度(t=1000) = 100 + (100-50)*1.0 + (-100-30)*(1000-500)/(1500-500)
+            #                  = 100 + 50 + (-65)
+            #                  = 85
+            # 
             # Initialize Q_mkt with base value at interval start T_A
             # This serves as the starting point for interpolation
             if not level.queue and level.q_mkt == 0:
                 level.q_mkt = float(market_qty)
             
-            # Calculate position using coordinate-axis model
             # 根据arrival_time所在segment的进度计算当前队列深度
             # q_mkt_t = 基础值 + Σ(net_flow - trades) * segment_progress
-            x_t = self._get_x_coord(side, price, arrival_time)
             q_mkt_t = self._get_q_mkt(side, price, arrival_time)  # 插值计算的当前队列深度
             s_shadow = level.shadow_qty_at_time(arrival_time)
             
-            # pos = X坐标 + 当前队列深度 + 之前的shadow订单
+            # 新订单位置 = 当前队列深度 + 之前的shadow订单
+            # 注意：不包含X坐标，X坐标只用于成交推进计算
             # 手数必须是整数，所以需要取整
-            pos = int(round(x_t + q_mkt_t + s_shadow))
+            pos = int(round(q_mkt_t + s_shadow))
         
         # Create shadow order with remaining qty
         # Mark as post-crossing if there was an immediate fill (crossing occurred)
