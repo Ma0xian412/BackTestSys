@@ -20,7 +20,9 @@ Configuration:
 
 import argparse
 import logging
+import os
 import sys
+from datetime import datetime
 
 from quant_framework.core.data_loader import PickleMarketDataFeed, CsvMarketDataFeed, SnapshotDuplicatingFeed
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig as FrameworkTapeConfig
@@ -36,29 +38,90 @@ from quant_framework.config import load_config, print_config, BacktestConfig
 DEFAULT_CONFIG_PATH = "config.xml"
 
 
-def setup_logging(config: BacktestConfig):
+def resolve_output_path(path: str, default_filename: str) -> str:
+    """Resolve a folder path to a complete file path.
+    
+    If the provided path is a folder, auto-generate a timestamped filename.
+    If the provided path is a complete file path, return it as-is.
+    
+    Args:
+        path: User-provided path (can be a folder or complete file path)
+        default_filename: Default filename prefix (without timestamp and extension)
+        
+    Returns:
+        Complete file path, or empty string if path is empty
+    """
+    if not path:
+        return ""
+    
+    # Strip trailing slashes for consistent path handling
+    normalized_path = path.rstrip(os.sep).rstrip('/')
+    
+    # Check if path is a directory (existing directory, ends with separator, or has no extension)
+    is_directory = os.path.isdir(normalized_path) or path.endswith(os.sep) or path.endswith('/')
+    
+    # If path has no extension and is not an existing file, treat it as a folder
+    if not is_directory and not os.path.isfile(normalized_path):
+        _, file_ext = os.path.splitext(normalized_path)
+        if not file_ext:
+            is_directory = True
+    
+    if is_directory:
+        # Ensure directory exists
+        os.makedirs(normalized_path, exist_ok=True)
+        
+        # Generate timestamped filename with milliseconds for uniqueness
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        # Determine extension based on default_filename
+        if 'log' in default_filename.lower():
+            output_ext = '.log'
+        elif 'receipt' in default_filename.lower():
+            output_ext = '.csv'
+        else:
+            output_ext = '.txt'
+        
+        filename = f"{default_filename}_{timestamp}{output_ext}"
+        return os.path.join(normalized_path, filename)
+    else:
+        # For complete file paths, ensure parent directory exists
+        dir_path = os.path.dirname(normalized_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        return normalized_path
+
+
+def setup_logging(config: BacktestConfig) -> str:
     """Setup logging configuration from config.
     
     Args:
         config: Backtest configuration object
+        
+    Returns:
+        Actual log file path if configured, otherwise empty string
     """
     debug = config.logging.debug
-    log_file = config.logging.log_file or None
+    log_file_config = config.logging.log_file or None
+    
+    # Resolve log file path if configured
+    log_file = None
+    if log_file_config:
+        log_file = resolve_output_path(log_file_config, "backtest_log")
     
     # Configure root logger
     log_level = logging.DEBUG if debug else getattr(logging, config.logging.level, logging.INFO)
     
     handlers = []
     
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    console_handler.setFormatter(console_format)
-    handlers.append(console_handler)
+    # Console handler (optional, controlled by config.logging.console)
+    if config.logging.console:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(log_level)
+        console_format = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        console_handler.setFormatter(console_format)
+        handlers.append(console_handler)
     
     # File handler (optional)
     if log_file:
@@ -82,6 +145,8 @@ def setup_logging(config: BacktestConfig):
         logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.WARNING)
+    
+    return log_file or ""
 
 
 def create_feed(config: BacktestConfig):
@@ -157,8 +222,16 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         config: Backtest configuration object
         show_config: If True, print configuration before running
     """
-    # Setup logging
-    setup_logging(config)
+    # Setup logging (returns actual log file path if configured)
+    actual_log_file = setup_logging(config)
+    
+    # Resolve receipt output file path (folder -> auto-generated filename)
+    receipt_output_file = None
+    if config.receipt_logger.output_file:
+        receipt_output_file = resolve_output_path(
+            config.receipt_logger.output_file, 
+            "receipts"
+        )
     
     print("\n" + "="*60)
     print("EventLoop-Based Unified Backtest Framework")
@@ -173,8 +246,10 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         print("Progress bar enabled")
     if config.receipt_logger.verbose:
         print("Verbose receipts enabled - will print receipts in real-time")
-    if config.receipt_logger.output_file:
-        print(f"Receipts will be saved to: {config.receipt_logger.output_file}")
+    if actual_log_file:
+        print(f"Logs will be saved to: {actual_log_file}")
+    if receipt_output_file:
+        print(f"Receipts will be saved to: {receipt_output_file}")
     print()
     
     # Create components using config
@@ -187,7 +262,7 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     
     # Create receipt logger for observability
     receipt_logger = ReceiptLogger(
-        output_file=config.receipt_logger.output_file or None,
+        output_file=receipt_output_file,
         verbose=config.receipt_logger.verbose,
     )
     
@@ -227,9 +302,9 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         receipt_logger.print_summary()
         
         # Save receipts to file if specified
-        if config.receipt_logger.output_file:
+        if receipt_output_file:
             receipt_logger.save_to_file()
-            print(f"\nReceipts saved to: {config.receipt_logger.output_file}")
+            print(f"\nReceipts saved to: {receipt_output_file}")
         
         # Print all receipts if verbose mode is not already enabled
         if not config.receipt_logger.verbose and receipt_logger.records:

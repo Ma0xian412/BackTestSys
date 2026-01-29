@@ -213,13 +213,17 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `verbose` | bool | `false` | 是否实时打印回执到控制台 |
-| `output_file` | string | `""` | 回执保存文件路径（留空则不保存） |
+| `output_file` | string | `""` | 回执保存路径（可以是文件夹或完整文件路径，留空则不保存）。如果提供文件夹路径，程序会自动生成带时间戳的CSV文件名 |
 
 **示例：**
 ```xml
 <receipt_logger>
     <verbose>true</verbose>
+    <!-- 方式1：提供完整文件路径 -->
     <output_file>output/receipts.csv</output_file>
+    
+    <!-- 方式2：提供文件夹路径，程序自动生成文件名（如 receipts_20240101_120000.csv） -->
+    <!-- <output_file>output/</output_file> -->
 </receipt_logger>
 ```
 
@@ -230,15 +234,23 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `debug` | bool | `false` | 是否启用debug模式 |
-| `log_file` | string | `""` | 日志文件路径（留空则不保存到文件） |
+| `log_file` | string | `""` | 日志保存路径（可以是文件夹或完整文件路径，留空则不保存到文件）。如果提供文件夹路径，程序会自动生成带时间戳的日志文件名 |
 | `level` | string | `"INFO"` | 日志级别（DEBUG, INFO, WARNING, ERROR） |
+| `console` | bool | `true` | 是否在终端打印日志 |
 
 **示例：**
 ```xml
 <logging>
     <debug>true</debug>
+    <!-- 方式1：提供完整文件路径 -->
     <log_file>output/backtest.log</log_file>
+    
+    <!-- 方式2：提供文件夹路径，程序自动生成文件名（如 backtest_log_20240101_120000.log） -->
+    <!-- <log_file>output/</log_file> -->
     <level>DEBUG</level>
+    
+    <!-- 是否在终端打印日志（默认开启） -->
+    <console>true</console>
 </logging>
 ```
 

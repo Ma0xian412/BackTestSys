@@ -117,6 +117,7 @@ class LoggingConfig:
     debug: bool = False
     log_file: str = ""
     level: str = "INFO"
+    console: bool = True  # 是否在终端打印日志
     
     def __post_init__(self):
         """Validate configuration values."""
@@ -526,6 +527,7 @@ def print_config(config: BacktestConfig) -> None:
     print(f"  debug: {config.logging.debug}")
     print(f"  log_file: {config.logging.log_file or '(not set)'}")
     print(f"  level: {config.logging.level}")
+    print(f"  console: {config.logging.console}")
     
     print("\n[Snapshot]")
     print(f"  min_interval_tick: {config.snapshot.min_interval_tick}")
