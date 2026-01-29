@@ -448,6 +448,9 @@ custom_config = BacktestConfig(
 
 1. **时间单位**：所有时间相关参数使用tick单位（每tick = 100纳秒）
 2. **文件路径**：相对路径基于运行目录
-3. **参数验证**：系统会对部分参数进行基本验证
+3. **参数验证**：系统会验证以下参数：
+   - `tape.ghost_rule`: 必须是 "symmetric", "proportion", "single_bid", "single_ask" 之一
+   - `tape.crossing_order_policy`: 必须是 "reject", "adjust", "passive" 之一
+   - `logging.level`: 必须是 "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL" 之一
 4. **向后兼容**：一些已弃用的参数仍然保留，以确保旧配置文件可用
 5. **YAML依赖**：使用YAML格式需要安装PyYAML（`pip install pyyaml`）

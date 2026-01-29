@@ -42,7 +42,7 @@ def setup_logging(config: BacktestConfig):
         config: Backtest configuration object
     """
     debug = config.logging.debug
-    log_file = config.logging.log_file if config.logging.log_file else None
+    log_file = config.logging.log_file or None
     
     # Configure root logger
     log_level = logging.DEBUG if debug else getattr(logging, config.logging.level, logging.INFO)
@@ -165,7 +165,7 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     
     # Create receipt logger for observability
     receipt_logger = ReceiptLogger(
-        output_file=config.receipt_logger.output_file if config.receipt_logger.output_file else None,
+        output_file=config.receipt_logger.output_file or None,
         verbose=config.receipt_logger.verbose,
     )
     
@@ -277,14 +277,12 @@ Configuration File:
     parser.add_argument(
         '--progress', '-p',
         action='store_true',
-        default=None,
         help='Override runner.show_progress to enable progress bar'
     )
     
     parser.add_argument(
         '--verbose-receipts', '-v',
         action='store_true',
-        default=None,
         help='Override receipt_logger.verbose to print receipts in real-time'
     )
     
@@ -298,7 +296,6 @@ Configuration File:
     parser.add_argument(
         '--debug',
         action='store_true',
-        default=None,
         help='Override logging.debug to enable debug logging'
     )
     
@@ -325,13 +322,13 @@ Configuration File:
     # Apply command-line overrides
     if args.data is not None:
         config.data.path = args.data
-    if args.progress is not None and args.progress:
+    if args.progress:
         config.runner.show_progress = True
-    if args.verbose_receipts is not None and args.verbose_receipts:
+    if args.verbose_receipts:
         config.receipt_logger.verbose = True
     if args.save_receipts is not None:
         config.receipt_logger.output_file = args.save_receipts
-    if args.debug is not None and args.debug:
+    if args.debug:
         config.logging.debug = True
     if args.log_file is not None:
         config.logging.log_file = args.log_file

@@ -9,8 +9,8 @@
 
 import os
 import json
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from dataclasses import dataclass, field, asdict
+from typing import Dict, Any
 from pathlib import Path
 
 
@@ -40,6 +40,22 @@ class TapeConfig:
     crossing_order_policy: str = "passive"
     top_k: int = 5
     tick_size: float = 1.0
+    
+    def __post_init__(self):
+        """Validate configuration values."""
+        valid_ghost_rules = {"symmetric", "proportion", "single_bid", "single_ask"}
+        if self.ghost_rule not in valid_ghost_rules:
+            raise ValueError(
+                f"Invalid ghost_rule '{self.ghost_rule}'. "
+                f"Must be one of: {', '.join(valid_ghost_rules)}"
+            )
+        
+        valid_crossing_policies = {"reject", "adjust", "passive"}
+        if self.crossing_order_policy not in valid_crossing_policies:
+            raise ValueError(
+                f"Invalid crossing_order_policy '{self.crossing_order_policy}'. "
+                f"Must be one of: {', '.join(valid_crossing_policies)}"
+            )
 
 
 @dataclass
@@ -89,6 +105,17 @@ class LoggingConfig:
     debug: bool = False
     log_file: str = ""
     level: str = "INFO"
+    
+    def __post_init__(self):
+        """Validate configuration values."""
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if self.level.upper() not in valid_levels:
+            raise ValueError(
+                f"Invalid log level '{self.level}'. "
+                f"Must be one of: {', '.join(valid_levels)}"
+            )
+        # Normalize to uppercase
+        self.level = self.level.upper()
 
 
 @dataclass
@@ -274,8 +301,6 @@ def _config_to_dict(config: BacktestConfig) -> Dict[str, Any]:
     Returns:
         配置字典
     """
-    from dataclasses import asdict
-    
     result = asdict(config)
     return result
 
@@ -306,6 +331,8 @@ def print_config(config: BacktestConfig) -> None:
     print(f"  ghost_rule: {config.tape.ghost_rule}")
     print(f"  ghost_alpha: {config.tape.ghost_alpha}")
     print(f"  epsilon: {config.tape.epsilon}")
+    print(f"  segment_iterations: {config.tape.segment_iterations}")
+    print(f"  time_scale_lambda: {config.tape.time_scale_lambda}")
     print(f"  cancel_front_ratio: {config.tape.cancel_front_ratio}")
     print(f"  crossing_order_policy: {config.tape.crossing_order_policy}")
     print(f"  top_k: {config.tape.top_k}")
