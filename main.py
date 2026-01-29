@@ -112,15 +112,16 @@ def setup_logging(config: BacktestConfig) -> str:
     
     handlers = []
     
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    console_handler.setFormatter(console_format)
-    handlers.append(console_handler)
+    # Console handler (optional, controlled by config.logging.console)
+    if config.logging.console:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(log_level)
+        console_format = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        console_handler.setFormatter(console_format)
+        handlers.append(console_handler)
     
     # File handler (optional)
     if log_file:

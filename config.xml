@@ -118,6 +118,9 @@ BackTestSys 回测系统配置文件
         
         <!-- 日志级别 (DEBUG, INFO, WARNING, ERROR) -->
         <level>INFO</level>
+        
+        <!-- 是否在终端打印日志 -->
+        <console>true</console>
     </logging>
 
     <!-- ============================================================================
