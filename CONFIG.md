@@ -106,46 +106,15 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `ghost_rule` | string | `"symmetric"` | lastvolsplit到单边的映射规则 |
-| `ghost_alpha` | float | `0.5` | 比例分配因子（仅当ghost_rule="proportion"时生效） |
 | `epsilon` | float | `1.0` | 时间分配的基准权重，防止零长度段 |
-| `segment_iterations` | int | `2` | 段迭代次数（已弃用，保留用于向后兼容） |
 | `time_scale_lambda` | float | `0.0` | 时间缩放参数，控制事件早期/晚期分布 |
-| `cancel_front_ratio` | float | `0.5` | 撤单前端比例 (φ)，控制撤单在队列前端的比例 |
-| `crossing_order_policy` | string | `"passive"` | 穿越订单处理策略 |
 | `top_k` | int | `5` | 跟踪的价格档位数 |
 | `tick_size` | float | `1.0` | 最小价格变动单位 |
-
-#### ghost_rule 详解
-
-| 值 | 说明 |
-|----|------|
-| `"symmetric"` | 对称分配，lastvolsplit量平分给bid和ask侧 |
-| `"proportion"` | 按比例分配，由ghost_alpha控制 |
-| `"single_bid"` | 全部分配给bid侧 |
-| `"single_ask"` | 全部分配给ask侧 |
-
-#### cancel_front_ratio 详解
-
-- `0.0` = 悲观假设（撤单全部发生在队列后端，对我们不利）
-- `0.5` = 中性假设（撤单均匀分布）
-- `1.0` = 乐观假设（撤单全部发生在队列前端，对我们有利）
-
-#### crossing_order_policy 详解
-
-| 值 | 说明 |
-|----|------|
-| `"reject"` | 拒绝穿越订单 |
-| `"adjust"` | 自动调整价格到非穿越 |
-| `"passive"` | 将穿越订单视为被动订单 |
 
 **示例：**
 ```xml
 <tape>
-    <ghost_rule>symmetric</ghost_rule>
     <epsilon>1.0</epsilon>
-    <cancel_front_ratio>0.5</cancel_front_ratio>
-    <crossing_order_policy>passive</crossing_order_policy>
     <top_k>5</top_k>
     <tick_size>0.01</tick_size>  <!-- 适用于股票等市场 -->
 </tape>
@@ -157,7 +126,14 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `cancel_front_ratio` | float | `0.5` | 撤单前端比例，与tape配置含义相同 |
+| `cancel_front_ratio` | float | `0.5` | 撤单前端比例 |
+
+#### cancel_front_ratio 详解
+
+- `0.0` = 悲观假设（撤单全部发生在队列后端，对我们不利）
+- `0.5` = 中性假设（撤单均匀分布）
+- `1.0` = 乐观假设（撤单全部发生在队列前端，对我们有利）
+
 
 **示例：**
 ```xml
@@ -341,121 +317,6 @@ python main.py
 
 ---
 
-## 配置示例
-
-### 保守策略配置
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- conservative_config.xml -->
-<config>
-    <data>
-        <path>data/market.pkl</path>
-    </data>
-    
-    <tape>
-        <cancel_front_ratio>0.0</cancel_front_ratio>  <!-- 悲观假设 -->
-        <crossing_order_policy>reject</crossing_order_policy>
-    </tape>
-    
-    <runner>
-        <delay_out>1000000</delay_out>  <!-- 100ms延迟 -->
-        <delay_in>1000000</delay_in>
-    </runner>
-    
-    <portfolio>
-        <initial_cash>50000.0</initial_cash>
-    </portfolio>
-    
-    <strategy>
-        <params>
-            <order_interval>20</order_interval>
-            <max_active_orders>3</max_active_orders>
-        </params>
-    </strategy>
-    
-    <logging>
-        <level>INFO</level>
-    </logging>
-</config>
-```
-
-### 高频交易配置
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- hft_config.xml -->
-<config>
-    <data>
-        <path>data/tick_data.pkl</path>
-    </data>
-    
-    <tape>
-        <cancel_front_ratio>0.5</cancel_front_ratio>
-        <crossing_order_policy>passive</crossing_order_policy>
-        <tick_size>0.01</tick_size>
-    </tape>
-    
-    <runner>
-        <delay_out>10000</delay_out>   <!-- 1ms延迟 -->
-        <delay_in>10000</delay_in>
-        <show_progress>true</show_progress>
-    </runner>
-    
-    <portfolio>
-        <initial_cash>1000000.0</initial_cash>
-    </portfolio>
-    
-    <strategy>
-        <params>
-            <order_interval>1</order_interval>
-            <max_active_orders>20</max_active_orders>
-        </params>
-    </strategy>
-    
-    <logging>
-        <debug>true</debug>
-        <log_file>output/hft_debug.log</log_file>
-    </logging>
-</config>
-```
-
-### 研究模式配置
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- research_config.xml -->
-<config>
-    <data>
-        <path>data/research_sample.pkl</path>
-    </data>
-    
-    <tape>
-        <ghost_rule>symmetric</ghost_rule>
-        <epsilon>1.0</epsilon>
-        <cancel_front_ratio>0.5</cancel_front_ratio>
-    </tape>
-    
-    <runner>
-        <delay_out>0</delay_out>
-        <delay_in>0</delay_in>
-        <show_progress>true</show_progress>
-    </runner>
-    
-    <receipt_logger>
-        <verbose>true</verbose>
-        <output_file>output/research_receipts.csv</output_file>
-    </receipt_logger>
-    
-    <logging>
-        <debug>true</debug>
-        <log_file>output/research.log</log_file>
-        <level>DEBUG</level>
-    </logging>
-</config>
-```
-
----
 
 ## 程序化配置
 
@@ -502,8 +363,5 @@ custom_config = BacktestConfig(
 1. **时间单位**：所有时间相关参数使用tick单位（每tick = 100纳秒）
 2. **文件路径**：相对路径基于运行目录
 3. **参数验证**：系统会验证以下参数：
-   - `tape.ghost_rule`: 必须是 "symmetric", "proportion", "single_bid", "single_ask" 之一
-   - `tape.crossing_order_policy`: 必须是 "reject", "adjust", "passive" 之一
    - `logging.level`: 必须是 "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL" 之一
-4. **向后兼容**：一些已弃用的参数仍然保留，以确保旧配置文件可用
-5. **YAML依赖**：使用YAML格式需要安装PyYAML（`pip install pyyaml`）
+4. **YAML依赖**：使用YAML格式需要安装PyYAML（`pip install pyyaml`）

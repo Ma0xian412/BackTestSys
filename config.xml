@@ -16,45 +16,16 @@ BackTestSys 回测系统配置文件
          Tape构建器配置 (Tape Builder Configuration)
          ============================================================================ -->
     <tape>
-        <!-- ghost规则: lastvolsplit -> 单边映射规则
-             可选值: "symmetric" | "proportion" | "single_bid" | "single_ask"
-             - symmetric: 对称分配，lastvolsplit量平分给bid和ask
-             - proportion: 按比例分配，由ghost_alpha控制
-             - single_bid: 全部分配给bid侧
-             - single_ask: 全部分配给ask侧 -->
-        <ghost_rule>symmetric</ghost_rule>
-        
-        <!-- ghost比例因子 (仅在ghost_rule="proportion"时生效)
-             取值范围: 0.0 ~ 1.0
-             0.0 = 全部分配给ask, 1.0 = 全部分配给bid -->
-        <ghost_alpha>0.5</ghost_alpha>
-        
         <!-- 时间分配的基准权重 (无成交时的baseline)
              用于防止零长度段的产生，典型值: 1.0 -->
         <epsilon>1.0</epsilon>
         
-        <!-- 段迭代次数 (已弃用，保留用于向后兼容) -->
-        <segment_iterations>2</segment_iterations>
         
         <!-- 时间缩放lambda参数
              用于控制事件早期/晚期的分布
              0.0 = 均匀分布 -->
         <time_scale_lambda>0.0</time_scale_lambda>
         
-        <!-- 撤单前端比例 (phi)
-             控制撤单发生在队列前端的比例
-             取值范围: 0.0 ~ 1.0
-             - 0.0 = 悲观假设 (撤单全部发生在队列后端)
-             - 0.5 = 中性假设
-             - 1.0 = 乐观假设 (撤单全部发生在队列前端) -->
-        <cancel_front_ratio>0.5</cancel_front_ratio>
-        
-        <!-- 穿越订单处理策略
-             可选值: "reject" | "adjust" | "passive"
-             - reject: 拒绝穿越订单
-             - adjust: 调整价格到非穿越
-             - passive: 将穿越订单视为被动订单 -->
-        <crossing_order_policy>passive</crossing_order_policy>
         
         <!-- 跟踪的价格档位数 (Top-K)，典型值: 5 (跟踪前5档) -->
         <top_k>5</top_k>
@@ -68,8 +39,11 @@ BackTestSys 回测系统配置文件
          ============================================================================ -->
     <exchange>
         <!-- 撤单前端比例 (phi)
-             与tape.cancel_front_ratio含义相同
-             控制撤单发生在队列前端的比例 -->
+             控制撤单发生在队列前端的比例
+             取值范围: 0.0 ~ 1.0
+             - 0.0 = 悲观假设 (撤单全部发生在队列后端)
+             - 0.5 = 中性假设
+             - 1.0 = 乐观假设 (撤单全部发生在队列前端) -->
         <cancel_front_ratio>0.5</cancel_front_ratio>
     </exchange>
 

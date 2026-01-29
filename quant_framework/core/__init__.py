@@ -24,3 +24,9 @@ from .dto import (
 )
 
 from .events import EventType, SimulationEvent
+
+from .data_loader import (
+    CsvMarketDataFeed,
+    PickleMarketDataFeed,
+    SnapshotDuplicatingFeed,
+)

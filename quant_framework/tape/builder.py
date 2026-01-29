@@ -73,22 +73,11 @@ class TapeConfig:
     All time values are in tick units (100ns per tick).
     """
     
-    # lastvolsplit -> single-side mapping
-    ghost_rule: str = "symmetric"  # "symmetric", "proportion", "single_bid", "single_ask"
-    ghost_alpha: float = 0.5  # For proportion rule
-    
     # Volume allocation configuration
     epsilon: float = 1.0  # No-trade baseline weight for time allocation (prevents zero-length segments)
-    segment_iterations: int = 2  # Deprecated: kept for backward compatibility
     
     # Time scaling (u' axis)
     time_scale_lambda: float = 0.0  # Lambda for early/late event distribution
-    
-    # Cancellation handling
-    cancel_front_ratio: float = 0.5  # phi: proportion of cancels in front (0=pessimistic, 1=optimistic)
-    
-    # Crossing order handling
-    crossing_order_policy: str = "passive"  # "reject", "adjust", "passive"
     
     # Top-5 constraint
     top_k: int = 5  # Number of price levels to track
@@ -175,28 +164,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         last_vol_split = curr.last_vol_split or []
         price_set = {p for p, q in last_vol_split if q > 0}
         
-        if not price_set:
-            # No trades - single segment from effective_t_a to t_b
-            return [TapeSegment(
-                index=1,
-                t_start=effective_t_a,
-                t_end=t_b,
-                bid_price=bid_a,
-                ask_price=ask_a,
-                activation_bid=self._compute_activation_set(bid_a, Side.BUY),
-                activation_ask=self._compute_activation_set(ask_a, Side.SELL),
-            )]
-        
-        p_min = min(price_set)
-        p_max = max(price_set)
-        
-        # Map lastvolsplit to per-side volumes: E_bid(p), E_ask(p)
-        # 将lastvolsplit映射到每个方向的成交量
-        e_bid, e_ask = self._apply_ghost_rule(last_vol_split)
-        
         # 使用区间扩张DP算法构建公共的"meeting sequence"
         # 确保bid和ask的中间路径完全一致（bid=ask同步的相遇价位）
-        meeting_seq = self._build_meeting_sequence(price_set, p_min, p_max)
+        meeting_seq = self._build_meeting_sequence(price_set)
         
         # 如果起点价格（bid_a或ask_a）是成交价，但不在meeting_seq开头，
         # 则在meeting_seq前插入该起点价格，使得起点价格的成交不被误归因为撤单
@@ -210,21 +180,13 @@ class UnifiedTapeBuilder(ITapeBuilder):
         segments = self._merge_paths_to_segments(bid_path, ask_path, effective_t_a, t_b)
         
         if not segments:
-            segments = [TapeSegment(
-                index=1,
-                t_start=effective_t_a,
-                t_end=t_b,
-                bid_price=bid_a,
-                ask_price=ask_a,
-                activation_bid=self._compute_activation_set(bid_a, Side.BUY),
-                activation_ask=self._compute_activation_set(ask_a, Side.SELL),
-            )]
+            raise ValueError("Segment built for error")
         
         # Compute activation sets for each segment
         segments = self._add_activation_sets(segments, prev, curr)
         
         # Volume allocation based on price-level distribution
-        segments = self._allocate_volumes(segments, e_bid, e_ask, effective_t_a, t_b)
+        segments = self._allocate_volumes(segments, last_vol_split, effective_t_a, t_b)
         
         # Derive cancellations and net flow using queue-zero constraint at price transitions
         segments = self._derive_cancellations_and_net_flow(segments, prev, curr)
@@ -294,40 +256,8 @@ class UnifiedTapeBuilder(ITapeBuilder):
 
         return result
     
-    def _apply_ghost_rule(self, last_vol_split: List[Tuple[Price, Qty]]) -> Tuple[Dict[Price, Qty], Dict[Price, Qty]]:
-        """Map lastvolsplit to per-side volumes using ghost rule.
-        
-        Implements symmetric rule: E_bid(p) = E_ask(p) = E(p)
-        """
-        e_bid: Dict[Price, Qty] = {}
-        e_ask: Dict[Price, Qty] = {}
-        
-        for p, q in last_vol_split:
-            if q <= 0:
-                continue
-            p = float(p)
-            q = int(q)
-            
-            if self.config.ghost_rule == "symmetric":
-                e_bid[p] = q
-                e_ask[p] = q
-            elif self.config.ghost_rule == "proportion":
-                e_bid[p] = int(round(self.config.ghost_alpha * q))
-                e_ask[p] = int(round((1 - self.config.ghost_alpha) * q))
-            elif self.config.ghost_rule == "single_bid":
-                e_bid[p] = q
-                e_ask[p] = 0
-            elif self.config.ghost_rule == "single_ask":
-                e_bid[p] = 0
-                e_ask[p] = q
-            else:
-                # Default to symmetric
-                e_bid[p] = q
-                e_ask[p] = q
-        
-        return e_bid, e_ask
     
-    def _build_meeting_sequence(self, price_set: Set[Price], p_min: Price, p_max: Price) -> List[Price]:
+    def _build_meeting_sequence(self, price_set: Set[Price], p_min: Price = None, p_max: Price = None) -> List[Price]:
         """使用区间扩张DP算法构建公共的"meeting sequence"（相遇价位序列）。
         
         这是bid和ask共享的中间路径，确保两条路径的中间点完全一致。
@@ -707,7 +637,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         return -math.log(inner) / lam
     
     def _allocate_volumes(self, segments: List[TapeSegment], 
-                          e_bid: Dict[Price, Qty], e_ask: Dict[Price, Qty],
+                          last_vol_split: List[Tuple[Price, Qty]],
                           t_a: int, t_b: int) -> List[TapeSegment]:
         """Allocate volumes based on price-level volume distribution.
         
@@ -754,7 +684,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         # Step 2: Distribute volumes evenly for each price across its occurrences
         # Use _largest_remainder_round to preserve total volume when dividing
-        for price, total_vol in e_bid.items():
+        for price, total_vol in last_vol_split.items():
             if total_vol <= 0:
                 continue
             
