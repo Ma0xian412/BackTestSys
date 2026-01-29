@@ -88,9 +88,9 @@ class PriceLevelState:
         self._active_shadow_qty = sum(o.remaining_qty for o in self.queue if o.status == "ACTIVE")
     
     def shadow_qty_at_time(self, t: int) -> int:
-        """Shadow order qty at coordinate for orders arriving before t."""
+        """Shadow order qty at coordinate for orders arriving at or before t."""
         return sum(o.remaining_qty for o in self.queue 
-                  if o.status == "ACTIVE" and o.arrival_time < t)
+                  if o.status == "ACTIVE" and o.arrival_time <= t)
 
 
 class FIFOExchangeSimulator(IExchangeSimulator):
