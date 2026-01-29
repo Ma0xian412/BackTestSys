@@ -684,7 +684,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         # Step 2: Distribute volumes evenly for each price across its occurrences
         # Use _largest_remainder_round to preserve total volume when dividing
-        for price, total_vol in last_vol_split.items():
+        for price, total_vol in last_vol_split:
             if total_vol <= 0:
                 continue
             
