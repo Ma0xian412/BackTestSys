@@ -321,6 +321,11 @@ class UnifiedRunner:
         def _cb(done_intervals: int):
             if pbar is None:
                 return
+            # 当实际处理数量超过初始估计时，动态扩展进度条总数
+            # 这处理了 SnapshotDuplicatingFeed 等会产生额外快照的情况
+            if pbar.total is not None and done_intervals > pbar.total:
+                pbar.total = done_intervals
+                pbar.refresh()
             # tqdm 需要增量更新
             delta = int(done_intervals) - int(pbar.n)
             if delta > 0:
@@ -407,6 +412,11 @@ class UnifiedRunner:
                         # 若 total 在运行时第一次拿到，可设置（tqdm 支持修改 total）
                         if getattr(bar, "total", None) is None and tot_i is not None:
                             bar.total = int(tot_i)
+                        # 当实际处理数量超过初始估计时，动态扩展进度条总数
+                        # 这处理了 SnapshotDuplicatingFeed 等会产生额外快照的情况
+                        elif bar.total is not None and done_i > bar.total:
+                            bar.total = int(done_i)
+                            bar.refresh()
                         delta = int(done_i) - int(bar.n)
                         if delta > 0:
                             bar.update(delta)

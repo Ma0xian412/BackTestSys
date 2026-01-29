@@ -313,6 +313,11 @@ class EventLoopRunner:
             
             # 更新进度
             if pbar:
+                # 当实际处理数量超过初始估计时，动态扩展进度条总数
+                # 这处理了 SnapshotDuplicatingFeed 等会产生额外快照的情况
+                if interval_count > pbar.total:
+                    pbar.total = interval_count
+                    pbar.refresh()
                 pbar.update(1)
             if self.config.progress_callback:
                 try:
