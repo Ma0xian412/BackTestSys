@@ -10,6 +10,12 @@ Observability features:
 - Progress bar for tracking backtest progress (requires tqdm)
 - Receipt logging for tracking all order receipts
 - Debug logging for exchange simulator events
+
+Configuration:
+- Supports external XML configuration files (default)
+- Also supports YAML/JSON for backward compatibility
+- Default configuration file: config.xml
+- Use --config to specify a custom configuration file
 """
 
 import argparse
@@ -17,27 +23,30 @@ import logging
 import sys
 
 from quant_framework.core.data_loader import PickleMarketDataFeed
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig as FrameworkTapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
-from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig
+from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig as FrameworkRunnerConfig
 from quant_framework.trading.strategy import SimpleStrategy
 from quant_framework.trading.oms import OrderManager, Portfolio
 from quant_framework.trading.receipt_logger import ReceiptLogger
+from quant_framework.config import load_config, print_config, BacktestConfig
 
 
-# Configuration
-DATA_PATH = "data/sample.pkl"
+# Default configuration path
+DEFAULT_CONFIG_PATH = "config.xml"
 
 
-def setup_logging(debug: bool = False, log_file: str = None):
-    """Setup logging configuration.
+def setup_logging(config: BacktestConfig):
+    """Setup logging configuration from config.
     
     Args:
-        debug: If True, enable DEBUG level logging for exchange simulator
-        log_file: Optional file path to write logs to
+        config: Backtest configuration object
     """
+    debug = config.logging.debug
+    log_file = config.logging.log_file or None
+    
     # Configure root logger
-    log_level = logging.DEBUG if debug else logging.INFO
+    log_level = logging.DEBUG if debug else getattr(logging, config.logging.level, logging.INFO)
     
     handlers = []
     
@@ -75,99 +84,90 @@ def setup_logging(debug: bool = False, log_file: str = None):
         logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.WARNING)
 
 
-def create_feed(data_path: str = DATA_PATH):
-    """Create market data feed."""
-    return PickleMarketDataFeed(data_path)
+def create_feed(config: BacktestConfig):
+    """Create market data feed from config."""
+    return PickleMarketDataFeed(config.data.path)
 
 
-def create_tape_builder():
-    """Create tape builder with configuration."""
-    config = TapeConfig(
-        ghost_rule="symmetric",      # Two-sided allocation of lastvolsplit
-        epsilon=1.0,                 # Baseline weight for segment duration
-        segment_iterations=2,        # Two-round iteration
-        cancel_front_ratio=0.5,      # Neutral cancellation assumption
-        crossing_order_policy="passive",  # Treat crossing orders as passive
+def create_tape_builder(config: BacktestConfig):
+    """Create tape builder from config."""
+    tape_config = FrameworkTapeConfig(
+        ghost_rule=config.tape.ghost_rule,
+        ghost_alpha=config.tape.ghost_alpha,
+        epsilon=config.tape.epsilon,
+        segment_iterations=config.tape.segment_iterations,
+        time_scale_lambda=config.tape.time_scale_lambda,
+        cancel_front_ratio=config.tape.cancel_front_ratio,
+        crossing_order_policy=config.tape.crossing_order_policy,
+        top_k=config.tape.top_k,
     )
-    return UnifiedTapeBuilder(config=config, tick_size=1.0)
+    return UnifiedTapeBuilder(config=tape_config, tick_size=config.tape.tick_size)
 
 
-def create_exchange():
-    """Create exchange simulator."""
-    return FIFOExchangeSimulator(cancel_front_ratio=0.5)
+def create_exchange(config: BacktestConfig):
+    """Create exchange simulator from config."""
+    return FIFOExchangeSimulator(cancel_front_ratio=config.exchange.cancel_front_ratio)
 
 
-def create_strategy():
-    """Create strategy."""
-    return SimpleStrategy(name="SimpleStrategy")
+def create_strategy(config: BacktestConfig):
+    """Create strategy from config."""
+    return SimpleStrategy(name=config.strategy.name)
 
 
-def create_oms():
-    """Create order manager."""
-    portfolio = Portfolio(cash=100000.0)
+def create_oms(config: BacktestConfig):
+    """Create order manager from config."""
+    portfolio = Portfolio(cash=config.portfolio.initial_cash)
     return OrderManager(portfolio=portfolio)
 
 
-def create_runner_config(show_progress: bool = False):
-    """Create runner configuration.
-    
-    Args:
-        show_progress: If True, show progress bar during backtest
-    """
-    return RunnerConfig(
-        delay_out=0,  # Strategy -> Exchange delay
-        delay_in=0,   # Exchange -> Strategy delay
-        show_progress=show_progress,
+def create_runner_config(config: BacktestConfig):
+    """Create runner configuration from config."""
+    return FrameworkRunnerConfig(
+        delay_out=config.runner.delay_out,
+        delay_in=config.runner.delay_in,
+        show_progress=config.runner.show_progress,
     )
 
 
-def run_backtest(
-    data_path: str = DATA_PATH,
-    show_progress: bool = False,
-    verbose_receipts: bool = False,
-    save_receipts: str = None,
-    debug: bool = False,
-    log_file: str = None,
-):
+def run_backtest(config: BacktestConfig, show_config: bool = False):
     """Run the backtest using the new EventLoop architecture.
     
     Args:
-        data_path: Path to market data file
-        show_progress: If True, show progress bar during backtest
-        verbose_receipts: If True, print receipts in real-time
-        save_receipts: If provided, save receipts to this CSV file
-        debug: If True, enable debug logging for exchange simulator
-        log_file: If provided, save logs to this file
+        config: Backtest configuration object
+        show_config: If True, print configuration before running
     """
     # Setup logging
-    setup_logging(debug=debug, log_file=log_file)
+    setup_logging(config)
     
     print("\n" + "="*60)
     print("EventLoop-Based Unified Backtest Framework")
     print("="*60 + "\n")
     
-    if debug:
+    if show_config:
+        print_config(config)
+    
+    if config.logging.debug:
         print("DEBUG mode enabled - detailed exchange logs will be shown")
-    if show_progress:
+    if config.runner.show_progress:
         print("Progress bar enabled")
-    if verbose_receipts:
+    if config.receipt_logger.verbose:
         print("Verbose receipts enabled - will print receipts in real-time")
-    if save_receipts:
-        print(f"Receipts will be saved to: {save_receipts}")
+    if config.receipt_logger.output_file:
+        print(f"Receipts will be saved to: {config.receipt_logger.output_file}")
     print()
     
-    # Create components
-    feed = create_feed(data_path)
-    tape_builder = create_tape_builder()
-    exchange = create_exchange()
-    strategy = create_strategy()
-    oms = create_oms()
-    config = create_runner_config(show_progress=show_progress)
+    # Create components using config
+    feed = create_feed(config)
+    tape_builder = create_tape_builder(config)
+    exchange = create_exchange(config)
+    strategy = create_strategy(config)
+    oms = create_oms(config)
+    runner_config = create_runner_config(config)
     
     # Create receipt logger for observability
     receipt_logger = ReceiptLogger(
-        output_file=save_receipts,
-        verbose=verbose_receipts,
+        output_file=config.receipt_logger.output_file or None,
+        verbose=config.receipt_logger.verbose,
     )
     
     # Create runner with receipt logger
@@ -177,7 +177,7 @@ def run_backtest(
         exchange=exchange,
         strategy=strategy,
         oms=oms,
-        config=config,
+        config=runner_config,
         receipt_logger=receipt_logger,
     )
     
@@ -206,17 +206,17 @@ def run_backtest(
         receipt_logger.print_summary()
         
         # Save receipts to file if specified
-        if save_receipts:
+        if config.receipt_logger.output_file:
             receipt_logger.save_to_file()
-            print(f"\nReceipts saved to: {save_receipts}")
+            print(f"\nReceipts saved to: {config.receipt_logger.output_file}")
         
         # Print all receipts if verbose mode is not already enabled
-        if not verbose_receipts and receipt_logger.records:
-            print("\nTo see all receipts, run with --verbose-receipts flag")
+        if not config.receipt_logger.verbose and receipt_logger.records:
+            print("\nTo see all receipts, set receipt_logger.verbose: true in config")
             print("Or use receipt_logger.print_all_receipts() programmatically")
         
     except FileNotFoundError:
-        print(f"\nError: Data file not found at {data_path}")
+        print(f"\nError: Data file not found at {config.data.path}")
         print("Please ensure the data file exists before running the backtest.")
         print("\nNote: This is expected if you don't have sample data yet.")
         print("The framework is ready to use once you provide data.")
@@ -233,78 +233,108 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic run
+  # Run with default configuration (config.xml)
   python main.py
   
-  # With progress bar
-  python main.py --progress
+  # Run with custom configuration file
+  python main.py --config my_config.xml
   
-  # With verbose receipts (print in real-time)
-  python main.py --verbose-receipts
+  # Show configuration before running
+  python main.py --show-config
   
-  # Save receipts to CSV
-  python main.py --save-receipts output/receipts.csv
-  
-  # Enable debug logging for exchange
-  python main.py --debug
-  
-  # Save debug logs to file
-  python main.py --debug --log-file output/debug.log
+  # Override specific settings via command line
+  python main.py --data data/custom.pkl --progress --debug
   
   # Full observability mode
   python main.py --progress --verbose-receipts --debug --save-receipts output/receipts.csv
+
+Configuration File:
+  The system loads configuration from config.xml by default.
+  See CONFIG.md for detailed documentation on all available parameters.
 """
     )
     
     parser.add_argument(
+        '--config', '-c',
+        type=str,
+        default=None,
+        help=f'Path to configuration file (default: {DEFAULT_CONFIG_PATH})'
+    )
+    
+    parser.add_argument(
+        '--show-config',
+        action='store_true',
+        help='Print configuration before running backtest'
+    )
+    
+    # Command-line overrides (optional)
+    parser.add_argument(
         '--data', '-d',
         type=str,
-        default=DATA_PATH,
-        help=f'Path to market data file (default: {DATA_PATH})'
+        default=None,
+        help='Override data.path from configuration'
     )
     
     parser.add_argument(
         '--progress', '-p',
         action='store_true',
-        help='Show progress bar during backtest (requires tqdm)'
+        help='Override runner.show_progress to enable progress bar'
     )
     
     parser.add_argument(
         '--verbose-receipts', '-v',
         action='store_true',
-        help='Print receipts in real-time during backtest'
+        help='Override receipt_logger.verbose to print receipts in real-time'
     )
     
     parser.add_argument(
         '--save-receipts', '-s',
         type=str,
         default=None,
-        help='Save receipts to CSV file'
+        help='Override receipt_logger.output_file to save receipts to CSV'
     )
     
     parser.add_argument(
         '--debug',
         action='store_true',
-        help='Enable debug logging for exchange simulator'
+        help='Override logging.debug to enable debug logging'
     )
     
     parser.add_argument(
         '--log-file', '-l',
         type=str,
         default=None,
-        help='Save logs to file'
+        help='Override logging.log_file to save logs to file'
     )
     
     args = parser.parse_args()
     
-    run_backtest(
-        data_path=args.data,
-        show_progress=args.progress,
-        verbose_receipts=args.verbose_receipts,
-        save_receipts=args.save_receipts,
-        debug=args.debug,
-        log_file=args.log_file,
-    )
+    # Load configuration
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        print(f"Please create a configuration file or specify a valid path with --config")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+        sys.exit(1)
+    
+    # Apply command-line overrides
+    if args.data is not None:
+        config.data.path = args.data
+    if args.progress:
+        config.runner.show_progress = True
+    if args.verbose_receipts:
+        config.receipt_logger.verbose = True
+    if args.save_receipts is not None:
+        config.receipt_logger.output_file = args.save_receipts
+    if args.debug:
+        config.logging.debug = True
+    if args.log_file is not None:
+        config.logging.log_file = args.log_file
+    
+    run_backtest(config, show_config=args.show_config)
 
 
 if __name__ == "__main__":
