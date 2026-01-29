@@ -22,7 +22,7 @@ import argparse
 import logging
 import sys
 
-from quant_framework.core.data_loader import PickleMarketDataFeed
+from quant_framework.core.data_loader import PickleMarketDataFeed, CsvMarketDataFeed, SnapshotDuplicatingFeed
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig as FrameworkTapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig as FrameworkRunnerConfig
@@ -85,8 +85,29 @@ def setup_logging(config: BacktestConfig):
 
 
 def create_feed(config: BacktestConfig):
-    """Create market data feed from config."""
-    return PickleMarketDataFeed(config.data.path)
+    """Create market data feed from config.
+    
+    根据配置创建市场数据源：
+    1. 根据 data.format 选择 CsvMarketDataFeed 或 PickleMarketDataFeed 作为 inner feed
+    2. 使用 SnapshotDuplicatingFeed 包装 inner feed，实现快照复制逻辑
+    
+    Args:
+        config: BacktestConfig 配置对象
+        
+    Returns:
+        IMarketDataFeed: 包装后的数据源
+    """
+    # 根据格式选择内部 feed
+    if config.data.format == "csv":
+        inner_feed = CsvMarketDataFeed(config.data.path)
+    else:
+        inner_feed = PickleMarketDataFeed(config.data.path)
+    
+    # 使用 SnapshotDuplicatingFeed 包装，传入配置的 tolerance_tick
+    return SnapshotDuplicatingFeed(
+        inner_feed=inner_feed,
+        tolerance_tick=config.snapshot.tolerance_tick
+    )
 
 
 def create_tape_builder(config: BacktestConfig):
