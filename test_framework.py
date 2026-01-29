@@ -33,6 +33,9 @@ def setup_test_logging():
     - 交易所模拟器的订单处理流程
     - 事件循环的事件调度
     - 回执记录器的回执处理
+    
+    注意：此函数应在测试运行时显式调用，而不是在模块导入时自动执行，
+    以避免干扰其他测试框架（如pytest）的日志配置。
     """
     # 配置root logger
     log_level = logging.DEBUG
@@ -54,10 +57,6 @@ def setup_test_logging():
     logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.DEBUG)
     logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.DEBUG)
     logging.getLogger('quant_framework.tape.builder').setLevel(logging.DEBUG)
-
-
-# 模块加载时设置测试日志
-setup_test_logging()
 
 
 def create_test_snapshot(ts: int, bid: float, ask: float,
@@ -3536,7 +3535,13 @@ def test_starting_price_trade_prepending():
 
 
 def run_all_tests():
-    """Run all tests."""
+    """Run all tests.
+    
+    在运行测试前启用DEBUG日志，通过日志输出验证逻辑正确性。
+    """
+    # 启用DEBUG日志用于验证逻辑
+    setup_test_logging()
+    
     print("="*60)
     print("Testing Unified EventLoop Framework")
     print("="*60)
