@@ -181,13 +181,13 @@ class CsvMarketDataFeed(IMarketDataFeed):
             turnover = _to_float(row.get('Turnover'))
             avg_px = _to_float(row.get('AveragePrice'))
             
-            lvs = _parse_last_vol_split(row.get('LastVolSplit'))
+            last_vol_split = _parse_last_vol_split(row.get('LastVolSplit'))
             
             return NormalizedSnapshot(
                 ts_recv=ts_recv,  # 主时间线（必填）
                 bids=bids,
                 asks=asks,
-                last_vol_split=lvs,
+                last_vol_split=last_vol_split,
                 ts_exch=ts_exch,  # 可选（仅记录）
                 last=last,
                 volume=volume,
