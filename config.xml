@@ -98,7 +98,9 @@ BackTestSys 回测系统配置文件
         <!-- 是否实时打印回执 -->
         <verbose>false</verbose>
         
-        <!-- 回执保存文件路径 (可选，留空则不保存) -->
+        <!-- 回执保存路径 (可选，留空则不保存)
+             可以是完整文件路径 (如 output/receipts.csv)
+             也可以是文件夹路径 (如 output/)，程序会自动生成带时间戳的CSV文件名 -->
         <output_file></output_file>
     </receipt_logger>
 
@@ -109,7 +111,9 @@ BackTestSys 回测系统配置文件
         <!-- 是否启用debug模式 -->
         <debug>false</debug>
         
-        <!-- 日志文件路径 (可选，留空则不保存到文件) -->
+        <!-- 日志保存路径 (可选，留空则不保存到文件)
+             可以是完整文件路径 (如 output/backtest.log)
+             也可以是文件夹路径 (如 output/)，程序会自动生成带时间戳的日志文件名 -->
         <log_file></log_file>
         
         <!-- 日志级别 (DEBUG, INFO, WARNING, ERROR) -->

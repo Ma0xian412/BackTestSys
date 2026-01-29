@@ -20,7 +20,9 @@ Configuration:
 
 import argparse
 import logging
+import os
 import sys
+from datetime import datetime
 
 from quant_framework.core.data_loader import PickleMarketDataFeed, CsvMarketDataFeed, SnapshotDuplicatingFeed
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig as FrameworkTapeConfig
@@ -36,14 +38,71 @@ from quant_framework.config import load_config, print_config, BacktestConfig
 DEFAULT_CONFIG_PATH = "config.xml"
 
 
-def setup_logging(config: BacktestConfig):
+def resolve_output_path(path: str, default_filename: str) -> str:
+    """将文件夹路径解析为完整的文件路径。
+    
+    如果提供的路径是文件夹，则自动生成带时间戳的文件名。
+    如果提供的路径是完整文件路径，则直接返回。
+    
+    Args:
+        path: 用户提供的路径（可以是文件夹或完整文件路径）
+        default_filename: 默认文件名前缀（不含时间戳和扩展名）
+        
+    Returns:
+        完整的文件路径
+    """
+    if not path:
+        return path
+    
+    # 检查是否为文件夹路径（通过判断是否已存在的目录，或路径以/结尾，或没有扩展名）
+    is_directory = os.path.isdir(path) or path.endswith(os.sep) or path.endswith('/')
+    
+    # 如果路径没有扩展名且不是已存在的文件，也认为是文件夹
+    if not is_directory and not os.path.isfile(path):
+        _, ext = os.path.splitext(path)
+        if not ext:  # 没有扩展名，认为是文件夹
+            is_directory = True
+    
+    if is_directory:
+        # 确保目录存在
+        os.makedirs(path, exist_ok=True)
+        
+        # 生成带时间戳的文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 根据默认文件名确定扩展名
+        if 'log' in default_filename.lower():
+            ext = '.log'
+        elif 'receipt' in default_filename.lower():
+            ext = '.csv'
+        else:
+            ext = '.txt'
+        
+        filename = f"{default_filename}_{timestamp}{ext}"
+        return os.path.join(path, filename)
+    else:
+        # 如果是完整文件路径，确保其父目录存在
+        dir_path = os.path.dirname(path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        return path
+
+
+def setup_logging(config: BacktestConfig) -> str:
     """Setup logging configuration from config.
     
     Args:
         config: Backtest configuration object
+        
+    Returns:
+        实际使用的日志文件路径（如果配置了日志文件），否则返回空字符串
     """
     debug = config.logging.debug
-    log_file = config.logging.log_file or None
+    log_file_config = config.logging.log_file or None
+    
+    # 如果配置了日志文件路径，解析为完整路径
+    log_file = None
+    if log_file_config:
+        log_file = resolve_output_path(log_file_config, "backtest_log")
     
     # Configure root logger
     log_level = logging.DEBUG if debug else getattr(logging, config.logging.level, logging.INFO)
@@ -82,6 +141,8 @@ def setup_logging(config: BacktestConfig):
         logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.WARNING)
+    
+    return log_file or ""
 
 
 def create_feed(config: BacktestConfig):
@@ -157,8 +218,16 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         config: Backtest configuration object
         show_config: If True, print configuration before running
     """
-    # Setup logging
-    setup_logging(config)
+    # Setup logging (returns actual log file path if configured)
+    actual_log_file = setup_logging(config)
+    
+    # Resolve receipt output file path (folder -> auto-generated filename)
+    receipt_output_file = None
+    if config.receipt_logger.output_file:
+        receipt_output_file = resolve_output_path(
+            config.receipt_logger.output_file, 
+            "receipts"
+        )
     
     print("\n" + "="*60)
     print("EventLoop-Based Unified Backtest Framework")
@@ -173,8 +242,10 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         print("Progress bar enabled")
     if config.receipt_logger.verbose:
         print("Verbose receipts enabled - will print receipts in real-time")
-    if config.receipt_logger.output_file:
-        print(f"Receipts will be saved to: {config.receipt_logger.output_file}")
+    if actual_log_file:
+        print(f"Logs will be saved to: {actual_log_file}")
+    if receipt_output_file:
+        print(f"Receipts will be saved to: {receipt_output_file}")
     print()
     
     # Create components using config
@@ -187,7 +258,7 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     
     # Create receipt logger for observability
     receipt_logger = ReceiptLogger(
-        output_file=config.receipt_logger.output_file or None,
+        output_file=receipt_output_file,
         verbose=config.receipt_logger.verbose,
     )
     
@@ -227,9 +298,9 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         receipt_logger.print_summary()
         
         # Save receipts to file if specified
-        if config.receipt_logger.output_file:
+        if receipt_output_file:
             receipt_logger.save_to_file()
-            print(f"\nReceipts saved to: {config.receipt_logger.output_file}")
+            print(f"\nReceipts saved to: {receipt_output_file}")
         
         # Print all receipts if verbose mode is not already enabled
         if not config.receipt_logger.verbose and receipt_logger.records:
