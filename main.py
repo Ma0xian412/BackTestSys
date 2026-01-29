@@ -39,52 +39,55 @@ DEFAULT_CONFIG_PATH = "config.xml"
 
 
 def resolve_output_path(path: str, default_filename: str) -> str:
-    """将文件夹路径解析为完整的文件路径。
+    """Resolve a folder path to a complete file path.
     
-    如果提供的路径是文件夹，则自动生成带时间戳的文件名。
-    如果提供的路径是完整文件路径，则直接返回。
+    If the provided path is a folder, auto-generate a timestamped filename.
+    If the provided path is a complete file path, return it as-is.
     
     Args:
-        path: 用户提供的路径（可以是文件夹或完整文件路径）
-        default_filename: 默认文件名前缀（不含时间戳和扩展名）
+        path: User-provided path (can be a folder or complete file path)
+        default_filename: Default filename prefix (without timestamp and extension)
         
     Returns:
-        完整的文件路径
+        Complete file path, or empty string if path is empty
     """
     if not path:
-        return path
+        return ""
     
-    # 检查是否为文件夹路径（通过判断是否已存在的目录，或路径以/结尾，或没有扩展名）
-    is_directory = os.path.isdir(path) or path.endswith(os.sep) or path.endswith('/')
+    # Strip trailing slashes for consistent path handling
+    normalized_path = path.rstrip(os.sep).rstrip('/')
     
-    # 如果路径没有扩展名且不是已存在的文件，也认为是文件夹
-    if not is_directory and not os.path.isfile(path):
-        _, ext = os.path.splitext(path)
-        if not ext:  # 没有扩展名，认为是文件夹
+    # Check if path is a directory (existing directory, ends with separator, or has no extension)
+    is_directory = os.path.isdir(normalized_path) or path.endswith(os.sep) or path.endswith('/')
+    
+    # If path has no extension and is not an existing file, treat it as a folder
+    if not is_directory and not os.path.isfile(normalized_path):
+        _, file_ext = os.path.splitext(normalized_path)
+        if not file_ext:
             is_directory = True
     
     if is_directory:
-        # 确保目录存在
-        os.makedirs(path, exist_ok=True)
+        # Ensure directory exists
+        os.makedirs(normalized_path, exist_ok=True)
         
-        # 生成带时间戳的文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 根据默认文件名确定扩展名
+        # Generate timestamped filename with milliseconds for uniqueness
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        # Determine extension based on default_filename
         if 'log' in default_filename.lower():
-            ext = '.log'
+            output_ext = '.log'
         elif 'receipt' in default_filename.lower():
-            ext = '.csv'
+            output_ext = '.csv'
         else:
-            ext = '.txt'
+            output_ext = '.txt'
         
-        filename = f"{default_filename}_{timestamp}{ext}"
-        return os.path.join(path, filename)
+        filename = f"{default_filename}_{timestamp}{output_ext}"
+        return os.path.join(normalized_path, filename)
     else:
-        # 如果是完整文件路径，确保其父目录存在
-        dir_path = os.path.dirname(path)
+        # For complete file paths, ensure parent directory exists
+        dir_path = os.path.dirname(normalized_path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
-        return path
+        return normalized_path
 
 
 def setup_logging(config: BacktestConfig) -> str:
@@ -94,12 +97,12 @@ def setup_logging(config: BacktestConfig) -> str:
         config: Backtest configuration object
         
     Returns:
-        实际使用的日志文件路径（如果配置了日志文件），否则返回空字符串
+        Actual log file path if configured, otherwise empty string
     """
     debug = config.logging.debug
     log_file_config = config.logging.log_file or None
     
-    # 如果配置了日志文件路径，解析为完整路径
+    # Resolve log file path if configured
     log_file = None
     if log_file_config:
         log_file = resolve_output_path(log_file_config, "backtest_log")
