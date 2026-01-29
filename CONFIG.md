@@ -24,18 +24,18 @@
 
 1. 复制默认配置文件：
 ```bash
-cp config.yaml my_config.yaml
+cp config.xml my_config.xml
 ```
 
 2. 编辑配置文件，修改所需参数
 
 3. 运行回测：
 ```bash
-# 使用默认配置文件 (config.yaml)
+# 使用默认配置文件 (config.xml)
 python main.py
 
 # 使用自定义配置文件
-python main.py --config my_config.yaml
+python main.py --config my_config.xml
 
 # 显示配置信息
 python main.py --show-config
@@ -43,9 +43,24 @@ python main.py --show-config
 
 ## 配置文件格式
 
-系统支持 YAML 和 JSON 两种配置文件格式。
+系统支持 XML 格式配置文件（推荐），同时向后兼容 YAML 和 JSON 格式。
 
-### YAML 格式 (推荐)
+### XML 格式 (推荐)
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+    <data>
+        <path>data/sample.pkl</path>
+    </data>
+    
+    <tape>
+        <ghost_rule>symmetric</ghost_rule>
+        <epsilon>1.0</epsilon>
+    </tape>
+</config>
+```
+
+### YAML 格式 (向后兼容)
 ```yaml
 data:
   path: "data/sample.pkl"
@@ -55,7 +70,7 @@ tape:
   epsilon: 1.0
 ```
 
-### JSON 格式
+### JSON 格式 (向后兼容)
 ```json
 {
   "data": {
@@ -77,9 +92,10 @@ tape:
 | `path` | string | `"data/sample.pkl"` | 市场数据文件路径，支持pickle格式 |
 
 **示例：**
-```yaml
-data:
-  path: "data/my_market_data.pkl"
+```xml
+<data>
+    <path>data/my_market_data.pkl</path>
+</data>
 ```
 
 ---
@@ -124,14 +140,15 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 | `"passive"` | 将穿越订单视为被动订单 |
 
 **示例：**
-```yaml
-tape:
-  ghost_rule: "symmetric"
-  epsilon: 1.0
-  cancel_front_ratio: 0.5
-  crossing_order_policy: "passive"
-  top_k: 5
-  tick_size: 0.01  # 适用于股票等市场
+```xml
+<tape>
+    <ghost_rule>symmetric</ghost_rule>
+    <epsilon>1.0</epsilon>
+    <cancel_front_ratio>0.5</cancel_front_ratio>
+    <crossing_order_policy>passive</crossing_order_policy>
+    <top_k>5</top_k>
+    <tick_size>0.01</tick_size>  <!-- 适用于股票等市场 -->
+</tape>
 ```
 
 ---
@@ -143,9 +160,10 @@ tape:
 | `cancel_front_ratio` | float | `0.5` | 撤单前端比例，与tape配置含义相同 |
 
 **示例：**
-```yaml
-exchange:
-  cancel_front_ratio: 0.5
+```xml
+<exchange>
+    <cancel_front_ratio>0.5</cancel_front_ratio>
+</exchange>
 ```
 
 ---
@@ -167,12 +185,13 @@ exchange:
   - 1秒 = 10,000,000 ticks
 
 **示例：**
-```yaml
-runner:
-  # 模拟100ms往返延迟
-  delay_out: 500000   # 50ms 订单发送延迟
-  delay_in: 500000    # 50ms 回执接收延迟
-  show_progress: true
+```xml
+<runner>
+    <!-- 模拟100ms往返延迟 -->
+    <delay_out>500000</delay_out>   <!-- 50ms 订单发送延迟 -->
+    <delay_in>500000</delay_in>     <!-- 50ms 回执接收延迟 -->
+    <show_progress>true</show_progress>
+</runner>
 ```
 
 ---
@@ -184,9 +203,10 @@ runner:
 | `initial_cash` | float | `100000.0` | 初始现金 |
 
 **示例：**
-```yaml
-portfolio:
-  initial_cash: 1000000.0  # 100万初始资金
+```xml
+<portfolio>
+    <initial_cash>1000000.0</initial_cash>  <!-- 100万初始资金 -->
+</portfolio>
 ```
 
 ---
@@ -200,12 +220,14 @@ portfolio:
 | `params.max_active_orders` | int | `5` | 最大活跃订单数 |
 
 **示例：**
-```yaml
-strategy:
-  name: "MyStrategy"
-  params:
-    order_interval: 5      # 每5个快照下单
-    max_active_orders: 10  # 最多10个活跃订单
+```xml
+<strategy>
+    <name>MyStrategy</name>
+    <params>
+        <order_interval>5</order_interval>      <!-- 每5个快照下单 -->
+        <max_active_orders>10</max_active_orders>  <!-- 最多10个活跃订单 -->
+    </params>
+</strategy>
 ```
 
 ---
@@ -218,10 +240,11 @@ strategy:
 | `output_file` | string | `""` | 回执保存文件路径（留空则不保存） |
 
 **示例：**
-```yaml
-receipt_logger:
-  verbose: true
-  output_file: "output/receipts.csv"
+```xml
+<receipt_logger>
+    <verbose>true</verbose>
+    <output_file>output/receipts.csv</output_file>
+</receipt_logger>
 ```
 
 ---
@@ -235,11 +258,12 @@ receipt_logger:
 | `level` | string | `"INFO"` | 日志级别（DEBUG, INFO, WARNING, ERROR） |
 
 **示例：**
-```yaml
-logging:
-  debug: true
-  log_file: "output/backtest.log"
-  level: "DEBUG"
+```xml
+<logging>
+    <debug>true</debug>
+    <log_file>output/backtest.log</log_file>
+    <level>DEBUG</level>
+</logging>
 ```
 
 ---
@@ -252,10 +276,11 @@ logging:
 | `tolerance_tick` | int | `100000` | 时间容差（tick单位，10ms） |
 
 **示例：**
-```yaml
-snapshot:
-  min_interval_tick: 5000000  # 500ms
-  tolerance_tick: 100000      # 10ms
+```xml
+<snapshot>
+    <min_interval_tick>5000000</min_interval_tick>  <!-- 500ms -->
+    <tolerance_tick>100000</tolerance_tick>         <!-- 10ms -->
+</snapshot>
 ```
 
 ---
@@ -284,7 +309,7 @@ python main.py --log-file output/debug.log
 python main.py --verbose-receipts
 
 # 组合使用
-python main.py --config custom.yaml --progress --debug
+python main.py --config custom.xml --progress --debug
 ```
 
 完整命令行选项：
@@ -310,7 +335,7 @@ python main.py --config custom.yaml --progress --debug
 
 **示例：**
 ```bash
-export BACKTEST_CONFIG_PATH=/path/to/my_config.yaml
+export BACKTEST_CONFIG_PATH=/path/to/my_config.xml
 python main.py
 ```
 
@@ -320,86 +345,114 @@ python main.py
 
 ### 保守策略配置
 
-```yaml
-# conservative_config.yaml
-data:
-  path: "data/market.pkl"
-
-tape:
-  cancel_front_ratio: 0.0  # 悲观假设
-  crossing_order_policy: "reject"
-
-runner:
-  delay_out: 1000000  # 100ms延迟
-  delay_in: 1000000
-
-portfolio:
-  initial_cash: 50000.0
-
-strategy:
-  params:
-    order_interval: 20
-    max_active_orders: 3
-
-logging:
-  level: "INFO"
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- conservative_config.xml -->
+<config>
+    <data>
+        <path>data/market.pkl</path>
+    </data>
+    
+    <tape>
+        <cancel_front_ratio>0.0</cancel_front_ratio>  <!-- 悲观假设 -->
+        <crossing_order_policy>reject</crossing_order_policy>
+    </tape>
+    
+    <runner>
+        <delay_out>1000000</delay_out>  <!-- 100ms延迟 -->
+        <delay_in>1000000</delay_in>
+    </runner>
+    
+    <portfolio>
+        <initial_cash>50000.0</initial_cash>
+    </portfolio>
+    
+    <strategy>
+        <params>
+            <order_interval>20</order_interval>
+            <max_active_orders>3</max_active_orders>
+        </params>
+    </strategy>
+    
+    <logging>
+        <level>INFO</level>
+    </logging>
+</config>
 ```
 
 ### 高频交易配置
 
-```yaml
-# hft_config.yaml
-data:
-  path: "data/tick_data.pkl"
-
-tape:
-  cancel_front_ratio: 0.5
-  crossing_order_policy: "passive"
-  tick_size: 0.01
-
-runner:
-  delay_out: 10000   # 1ms延迟
-  delay_in: 10000
-  show_progress: true
-
-portfolio:
-  initial_cash: 1000000.0
-
-strategy:
-  params:
-    order_interval: 1
-    max_active_orders: 20
-
-logging:
-  debug: true
-  log_file: "output/hft_debug.log"
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- hft_config.xml -->
+<config>
+    <data>
+        <path>data/tick_data.pkl</path>
+    </data>
+    
+    <tape>
+        <cancel_front_ratio>0.5</cancel_front_ratio>
+        <crossing_order_policy>passive</crossing_order_policy>
+        <tick_size>0.01</tick_size>
+    </tape>
+    
+    <runner>
+        <delay_out>10000</delay_out>   <!-- 1ms延迟 -->
+        <delay_in>10000</delay_in>
+        <show_progress>true</show_progress>
+    </runner>
+    
+    <portfolio>
+        <initial_cash>1000000.0</initial_cash>
+    </portfolio>
+    
+    <strategy>
+        <params>
+            <order_interval>1</order_interval>
+            <max_active_orders>20</max_active_orders>
+        </params>
+    </strategy>
+    
+    <logging>
+        <debug>true</debug>
+        <log_file>output/hft_debug.log</log_file>
+    </logging>
+</config>
 ```
 
 ### 研究模式配置
 
-```yaml
-# research_config.yaml
-data:
-  path: "data/research_sample.pkl"
-
-tape:
-  ghost_rule: "symmetric"
-  epsilon: 1.0
-  cancel_front_ratio: 0.5
-
-runner:
-  delay_out: 0
-  delay_in: 0
-  show_progress: true
-
-receipt_logger:
-  verbose: true
-  output_file: "output/research_receipts.csv"
-
-logging:
-  debug: true
-  log_file: "output/research.log"
-  level: "DEBUG"
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- research_config.xml -->
+<config>
+    <data>
+        <path>data/research_sample.pkl</path>
+    </data>
+    
+    <tape>
+        <ghost_rule>symmetric</ghost_rule>
+        <epsilon>1.0</epsilon>
+        <cancel_front_ratio>0.5</cancel_front_ratio>
+    </tape>
+    
+    <runner>
+        <delay_out>0</delay_out>
+        <delay_in>0</delay_in>
+        <show_progress>true</show_progress>
+    </runner>
+    
+    <receipt_logger>
+        <verbose>true</verbose>
+        <output_file>output/research_receipts.csv</output_file>
+    </receipt_logger>
+    
+    <logging>
+        <debug>true</debug>
+        <log_file>output/research.log</log_file>
+        <level>DEBUG</level>
+    </logging>
+</config>
 ```
 
 ---
@@ -421,7 +474,7 @@ from quant_framework.config import (
 )
 
 # 加载配置文件
-config = load_config("config.yaml")
+config = load_config("config.xml")
 
 # 修改配置
 config.data.path = "data/custom.pkl"
@@ -432,7 +485,7 @@ config.portfolio.initial_cash = 500000.0
 print_config(config)
 
 # 保存配置
-save_config(config, "my_config.yaml")
+save_config(config, "my_config.xml")
 
 # 创建全新配置
 custom_config = BacktestConfig(

@@ -1,7 +1,8 @@
 """配置加载模块。
 
-本模块实现从外部YAML/JSON配置文件加载系统配置：
-- 支持YAML和JSON格式
+本模块实现从外部XML配置文件加载系统配置：
+- 支持XML格式（主要）
+- 支持YAML和JSON格式（向后兼容）
 - 提供配置数据类，确保类型安全
 - 支持默认值和配置验证
 - 支持环境变量覆盖
@@ -9,6 +10,7 @@
 
 import os
 import json
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Any
 from pathlib import Path
@@ -164,14 +166,15 @@ def _dict_to_dataclass(data_class, data: Dict[str, Any]):
 def load_config(config_path: str = None) -> BacktestConfig:
     """加载配置文件。
     
-    支持YAML和JSON格式。如果配置文件不存在，返回默认配置。
+    支持XML、YAML和JSON格式。如果配置文件不存在，返回默认配置。
     
     Args:
         config_path: 配置文件路径。如果为None，按以下顺序查找：
                     1. 环境变量 BACKTEST_CONFIG_PATH
-                    2. ./config.yaml
-                    3. ./config.json
-                    4. 默认配置
+                    2. ./config.xml
+                    3. ./config.yaml
+                    4. ./config.json
+                    5. 默认配置
                     
     Returns:
         BacktestConfig实例
@@ -185,8 +188,8 @@ def load_config(config_path: str = None) -> BacktestConfig:
         config_path = os.environ.get("BACKTEST_CONFIG_PATH")
         
     if config_path is None:
-        # 按优先级查找配置文件
-        for path in ["config.yaml", "config.yml", "config.json"]:
+        # 按优先级查找配置文件（XML优先）
+        for path in ["config.xml", "config.yaml", "config.yml", "config.json"]:
             if os.path.exists(path):
                 config_path = path
                 break
@@ -198,26 +201,105 @@ def load_config(config_path: str = None) -> BacktestConfig:
         return BacktestConfig()
     
     # 读取配置文件
-    with open(config_path, "r", encoding="utf-8") as f:
-        file_ext = Path(config_path).suffix.lower()
-        
-        if file_ext in [".yaml", ".yml"]:
-            if not YAML_AVAILABLE:
-                raise ValueError(
-                    "YAML configuration requires PyYAML. "
-                    "Install with: pip install pyyaml"
-                )
+    file_ext = Path(config_path).suffix.lower()
+    
+    if file_ext == ".xml":
+        raw_config = _load_xml_config(config_path)
+    elif file_ext in [".yaml", ".yml"]:
+        if not YAML_AVAILABLE:
+            raise ValueError(
+                "YAML configuration requires PyYAML. "
+                "Install with: pip install pyyaml"
+            )
+        with open(config_path, "r", encoding="utf-8") as f:
             raw_config = yaml.safe_load(f)
-        elif file_ext == ".json":
+    elif file_ext == ".json":
+        with open(config_path, "r", encoding="utf-8") as f:
             raw_config = json.load(f)
-        else:
-            raise ValueError(f"Unsupported configuration format: {file_ext}")
+    else:
+        raise ValueError(f"Unsupported configuration format: {file_ext}")
     
     if raw_config is None:
         return BacktestConfig()
     
     # 构建配置对象
     return _parse_config(raw_config)
+
+
+def _load_xml_config(config_path: str) -> Dict[str, Any]:
+    """从XML文件加载配置。
+    
+    Args:
+        config_path: XML配置文件路径
+        
+    Returns:
+        配置字典
+    """
+    tree = ET.parse(config_path)
+    root = tree.getroot()
+    
+    return _xml_element_to_dict(root)
+
+
+def _xml_element_to_dict(element: ET.Element) -> Dict[str, Any]:
+    """将XML元素转换为字典。
+    
+    Args:
+        element: XML元素
+        
+    Returns:
+        字典
+    """
+    result = {}
+    
+    for child in element:
+        # 跳过注释
+        if child.tag is ET.Comment:
+            continue
+            
+        if len(child) > 0:
+            # 有子元素，递归处理
+            result[child.tag] = _xml_element_to_dict(child)
+        else:
+            # 叶子节点，获取文本值并转换类型
+            text = child.text.strip() if child.text else ""
+            result[child.tag] = _convert_xml_value(text)
+    
+    return result
+
+
+def _convert_xml_value(value: str) -> Any:
+    """将XML文本值转换为适当的Python类型。
+    
+    Args:
+        value: XML文本值
+        
+    Returns:
+        转换后的值
+    """
+    if value == "":
+        return ""
+    
+    # 尝试转换为布尔值
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    
+    # 尝试转换为整数
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    
+    # 尝试转换为浮点数
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    
+    # 返回字符串
+    return value
 
 
 def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
@@ -278,18 +360,80 @@ def save_config(config: BacktestConfig, config_path: str) -> None:
     # 将配置转换为字典
     config_dict = _config_to_dict(config)
     
-    with open(config_path, "w", encoding="utf-8") as f:
-        if file_ext in [".yaml", ".yml"]:
-            if not YAML_AVAILABLE:
-                raise ValueError(
-                    "YAML configuration requires PyYAML. "
-                    "Install with: pip install pyyaml"
-                )
+    if file_ext == ".xml":
+        _save_xml_config(config_dict, config_path)
+    elif file_ext in [".yaml", ".yml"]:
+        if not YAML_AVAILABLE:
+            raise ValueError(
+                "YAML configuration requires PyYAML. "
+                "Install with: pip install pyyaml"
+            )
+        with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
-        elif file_ext == ".json":
+    elif file_ext == ".json":
+        with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config_dict, f, indent=2, ensure_ascii=False)
+    else:
+        raise ValueError(f"Unsupported configuration format: {file_ext}")
+
+
+def _save_xml_config(config_dict: Dict[str, Any], config_path: str) -> None:
+    """保存配置到XML文件。
+    
+    Args:
+        config_dict: 配置字典
+        config_path: XML配置文件路径
+    """
+    root = ET.Element("config")
+    _dict_to_xml_element(config_dict, root)
+    
+    # 格式化输出
+    _indent_xml(root)
+    
+    tree = ET.ElementTree(root)
+    with open(config_path, "wb") as f:
+        tree.write(f, encoding="utf-8", xml_declaration=True)
+
+
+def _dict_to_xml_element(data: Dict[str, Any], parent: ET.Element) -> None:
+    """将字典转换为XML元素。
+    
+    Args:
+        data: 字典数据
+        parent: 父XML元素
+    """
+    for key, value in data.items():
+        child = ET.SubElement(parent, key)
+        if isinstance(value, dict):
+            _dict_to_xml_element(value, child)
         else:
-            raise ValueError(f"Unsupported configuration format: {file_ext}")
+            # 转换为字符串
+            if isinstance(value, bool):
+                child.text = "true" if value else "false"
+            else:
+                child.text = str(value)
+
+
+def _indent_xml(elem: ET.Element, level: int = 0) -> None:
+    """格式化XML输出，添加缩进。
+    
+    Args:
+        elem: XML元素
+        level: 缩进级别
+    """
+    indent = "\n" + "    " * level
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = indent + "    "
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = indent
+        for child in elem:
+            _indent_xml(child, level + 1)
+        if not child.tail or not child.tail.strip():
+            child.tail = indent
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = indent
 
 
 def _config_to_dict(config: BacktestConfig) -> Dict[str, Any]:

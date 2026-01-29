@@ -12,8 +12,9 @@ Observability features:
 - Debug logging for exchange simulator events
 
 Configuration:
-- Supports external YAML/JSON configuration files
-- Default configuration file: config.yaml
+- Supports external XML configuration files (default)
+- Also supports YAML/JSON for backward compatibility
+- Default configuration file: config.xml
 - Use --config to specify a custom configuration file
 """
 
@@ -32,7 +33,7 @@ from quant_framework.config import load_config, print_config, BacktestConfig
 
 
 # Default configuration path
-DEFAULT_CONFIG_PATH = "config.yaml"
+DEFAULT_CONFIG_PATH = "config.xml"
 
 
 def setup_logging(config: BacktestConfig):
@@ -232,11 +233,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run with default configuration (config.yaml)
+  # Run with default configuration (config.xml)
   python main.py
   
   # Run with custom configuration file
-  python main.py --config my_config.yaml
+  python main.py --config my_config.xml
   
   # Show configuration before running
   python main.py --show-config
@@ -248,7 +249,7 @@ Examples:
   python main.py --progress --verbose-receipts --debug --save-receipts output/receipts.csv
 
 Configuration File:
-  The system loads configuration from config.yaml by default.
+  The system loads configuration from config.xml by default.
   See CONFIG.md for detailed documentation on all available parameters.
 """
     )
