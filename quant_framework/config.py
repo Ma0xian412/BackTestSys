@@ -28,6 +28,16 @@ except ImportError:
 class DataConfig:
     """数据配置。"""
     path: str = "data/sample.pkl"
+    format: str = "pkl"  # 数据格式：pkl 或 csv
+    
+    def __post_init__(self):
+        """Validate configuration values."""
+        valid_formats = {"pkl", "csv"}
+        if self.format not in valid_formats:
+            raise ValueError(
+                f"Invalid data format '{self.format}'. "
+                f"Must be one of: {', '.join(valid_formats)}"
+            )
 
 
 @dataclass
