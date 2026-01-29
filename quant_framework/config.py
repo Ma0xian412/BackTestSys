@@ -229,16 +229,25 @@ def load_config(config_path: str = None) -> BacktestConfig:
 def _load_xml_config(config_path: str) -> Dict[str, Any]:
     """从XML文件加载配置。
     
+    注意：配置文件应该来自可信源。XML解析可能受到实体扩展攻击的影响。
+    
     Args:
         config_path: XML配置文件路径
         
     Returns:
         配置字典
+        
+    Raises:
+        ValueError: XML解析错误
     """
-    tree = ET.parse(config_path)
-    root = tree.getroot()
-    
-    return _xml_element_to_dict(root)
+    try:
+        tree = ET.parse(config_path)
+        root = tree.getroot()
+        return _xml_element_to_dict(root)
+    except ET.ParseError as e:
+        raise ValueError(f"XML parsing error in {config_path}: {e}")
+    except Exception as e:
+        raise ValueError(f"Error reading XML config {config_path}: {e}")
 
 
 def _xml_element_to_dict(element: ET.Element) -> Dict[str, Any]:
@@ -253,8 +262,8 @@ def _xml_element_to_dict(element: ET.Element) -> Dict[str, Any]:
     result = {}
     
     for child in element:
-        # 跳过注释
-        if child.tag is ET.Comment:
+        # 跳过注释和处理指令（它们的tag是可调用的）
+        if callable(child.tag):
             continue
             
         if len(child) > 0:
@@ -286,17 +295,18 @@ def _convert_xml_value(value: str) -> Any:
     if value.lower() == "false":
         return False
     
-    # 尝试转换为整数
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    
-    # 尝试转换为浮点数
-    try:
-        return float(value)
-    except ValueError:
-        pass
+    # 如果包含小数点，尝试转换为浮点数
+    if "." in value:
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    else:
+        # 尝试转换为整数
+        try:
+            return int(value)
+        except ValueError:
+            pass
     
     # 返回字符串
     return value
