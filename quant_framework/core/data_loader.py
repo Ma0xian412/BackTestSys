@@ -456,3 +456,13 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
         self._buffer_idx = 0
         self._prev_snapshot = None
         self._initialized = False
+    
+    def __len__(self) -> int:
+        """返回内部feed的长度（用于进度条初始化）。
+        
+        注意：由于快照复制逻辑，实际返回的快照数可能大于此值。
+        进度条应使用动态更新来处理这种情况。
+        """
+        if hasattr(self.inner_feed, '__len__'):
+            return len(self.inner_feed)
+        raise TypeError(f"object of type '{type(self.inner_feed).__name__}' has no len()")
