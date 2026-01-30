@@ -282,21 +282,33 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     try:
         results = runner.run()
         print("\nBacktest completed successfully!")
-        print(f"Results: {results}")
+        print("=" * 60)
+        print("回测运行结果 (Backtest Execution Results)")
+        print("=" * 60)
+        print(f"  intervals (处理的快照区间数): {results.get('intervals', 0)}")
+        print(f"  final_time (最终时间戳 tick): {results.get('final_time', 0)}")
+        
+        diagnostics = results.get('diagnostics', {})
+        print(f"\n诊断信息 (Diagnostics):")
+        print(f"  intervals_processed (已处理区间数): {diagnostics.get('intervals_processed', 0)}")
+        print(f"  orders_submitted (提交的订单数): {diagnostics.get('orders_submitted', 0)}")
+        print(f"  orders_filled (成交的订单数): {diagnostics.get('orders_filled', 0)}")
+        print(f"  receipts_generated (产生的回执数): {diagnostics.get('receipts_generated', 0)}")
+        print(f"  cancels_submitted (提交的撤单数): {diagnostics.get('cancels_submitted', 0)}")
         
         # Print portfolio summary
-        print(f"\nPortfolio Summary:")
-        print(f"  Cash: {oms.portfolio.cash:.2f}")
-        print(f"  Position: {oms.portfolio.position}")
-        print(f"  Realized PnL: {oms.portfolio.realized_pnl:.2f}")
+        print(f"\n投资组合摘要 (Portfolio Summary):")
+        print(f"  Cash (现金余额): {oms.portfolio.cash:.2f}")
+        print(f"  Position (持仓数量): {oms.portfolio.position}")
+        print(f"  Realized PnL (已实现盈亏): {oms.portfolio.realized_pnl:.2f}")
         
         # Print order summary
         active_orders = oms.get_active_orders()
         all_orders = list(oms.orders.values())
-        print(f"\nOrder Summary:")
-        print(f"  Total orders: {len(all_orders)}")
-        print(f"  Active orders: {len(active_orders)}")
-        print(f"  Filled orders: {sum(1 for o in all_orders if o.status.value == 'FILLED')}")
+        print(f"\n订单摘要 (Order Summary):")
+        print(f"  Total orders (总订单数): {len(all_orders)}")
+        print(f"  Active orders (活跃订单数): {len(active_orders)}")
+        print(f"  Filled orders (已成交订单数): {sum(1 for o in all_orders if o.status.value == 'FILLED')}")
         
         # Print receipt summary
         receipt_logger.print_summary()
