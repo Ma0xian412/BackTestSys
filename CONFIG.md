@@ -377,3 +377,142 @@ custom_config = BacktestConfig(
 3. **参数验证**：系统会验证以下参数：
    - `logging.level`: 必须是 "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL" 之一
 4. **YAML依赖**：使用YAML格式需要安装PyYAML（`pip install pyyaml`）
+
+---
+
+## 输出结果说明
+
+回测完成后，系统会输出以下结果信息。本节详细说明各字段的含义，帮助用户理解回测结果。
+
+### 示例输出
+
+```
+============================================================
+回测运行结果 (Backtest Execution Results)
+============================================================
+  intervals (处理的快照区间数): 100
+  final_time (最终时间戳 tick): 1706616000000000
+
+诊断信息 (Diagnostics):
+  intervals_processed (已处理区间数): 100
+  orders_submitted (提交的订单数): 50
+  orders_filled (成交的订单数): 35
+  receipts_generated (产生的回执数): 45
+  cancels_submitted (提交的撤单数): 5
+
+投资组合摘要 (Portfolio Summary):
+  Cash (现金余额): 98500.00
+  Position (持仓数量): 15
+  Realized PnL (已实现盈亏): 150.00
+
+订单摘要 (Order Summary):
+  Total orders (总订单数): 50
+  Active orders (活跃订单数): 3
+  Filled orders (已成交订单数): 35
+
+============================================================
+回执记录器摘要 (Receipt Logger Summary)
+============================================================
+Total Receipts (总回执数): 45
+Total Orders (总订单数): 50
+Total Order Qty (总下单数量): 500
+Total Filled Qty (总成交数量): 350
+
+回执类型分布 (Receipt Type Distribution):
+  - Partial Fill (部分成交): 10
+  - Full Fill (全部成交): 25
+  - Canceled (已撤单): 8
+  - Rejected (已拒绝): 2
+
+订单状态分布 (Order Status Distribution):
+  - Fully Filled (完全成交): 25
+  - Partially Filled (部分成交): 10
+  - Unfilled (未成交): 15
+
+成交率 (Fill Rate):
+  - By Quantity (按数量): 70.00%
+  - By Order Count (按订单数): 50.00%
+============================================================
+```
+
+### 字段含义详解
+
+#### 回测运行结果 (Backtest Execution Results)
+
+| 输出字段 | 中文含义 | 说明 |
+|----------|----------|------|
+| intervals | 处理的快照区间数 | 回测过程中处理的市场快照区间总数，每个区间代表两个相邻快照之间的时间段 |
+| final_time | 最终时间戳 | 回测结束时的时间戳（tick单位，每tick=100纳秒） |
+
+#### 诊断信息 (Diagnostics)
+
+| 输出字段 | 中文含义 | 说明 |
+|----------|----------|------|
+| intervals_processed | 已处理区间数 | 实际处理完成的快照区间数量 |
+| orders_submitted | 提交的订单数 | 策略向交易所提交的订单总数（包括成交、撤单、拒绝等所有状态） |
+| orders_filled | 成交的订单数 | 成功成交（包括部分成交和全部成交）的订单数 |
+| receipts_generated | 产生的回执数 | 交易所返回的回执总数，包括成交、撤单、拒绝等各类回执 |
+| cancels_submitted | 提交的撤单数 | 策略发起的撤单请求数量 |
+
+#### 投资组合摘要 (Portfolio Summary)
+
+| 输出字段 | 中文含义 | 说明 |
+|----------|----------|------|
+| Cash | 现金余额 | 回测结束时账户中的现金金额 |
+| Position | 持仓数量 | 回测结束时持有的标的数量（正数为多头，负数为空头） |
+| Realized PnL | 已实现盈亏 | 已经平仓的交易产生的盈亏总额 |
+
+#### 订单摘要 (Order Summary)
+
+| 输出字段 | 中文含义 | 说明 |
+|----------|----------|------|
+| Total orders | 总订单数 | 回测期间创建的所有订单数量 |
+| Active orders | 活跃订单数 | 回测结束时仍在挂单队列中等待成交的订单数 |
+| Filled orders | 已成交订单数 | 完全成交（FILLED状态）的订单数量 |
+
+#### 回执记录器摘要 (Receipt Logger Summary)
+
+| 输出字段 | 中文含义 | 说明 |
+|----------|----------|------|
+| Total Receipts | 总回执数 | 收到的所有回执数量（一个订单可能产生多个回执） |
+| Total Orders | 总订单数 | 已注册到回执记录器的订单数量 |
+| Total Order Qty | 总下单数量 | 所有订单的下单数量之和 |
+| Total Filled Qty | 总成交数量 | 所有订单的实际成交数量之和 |
+
+#### 回执类型分布 (Receipt Type Distribution)
+
+| 输出字段 | 中文含义 | 说明 |
+|----------|----------|------|
+| Partial Fill | 部分成交 | 订单部分成交的回执数量 |
+| Full Fill | 全部成交 | 订单完全成交的回执数量 |
+| Canceled | 已撤单 | 订单被撤销的回执数量 |
+| Rejected | 已拒绝 | 订单被交易所拒绝的回执数量 |
+
+#### 订单状态分布 (Order Status Distribution)
+
+| 输出字段 | 中文含义 | 说明 |
+|----------|----------|------|
+| Fully Filled | 完全成交 | 下单数量全部成交的订单数 |
+| Partially Filled | 部分成交 | 仅部分成交（成交数量 < 下单数量）的订单数 |
+| Unfilled | 未成交 | 一手都未成交的订单数 |
+
+#### 成交率 (Fill Rate)
+
+| 输出字段 | 中文含义 | 计算公式 | 说明 |
+|----------|----------|----------|------|
+| By Quantity | 按数量 | 总成交数量 / 总下单数量 | 反映下单数量中有多大比例被成交 |
+| By Order Count | 按订单数 | 完全成交订单数 / 总订单数 | 反映提交的订单中有多大比例被完全成交 |
+
+### 如何理解这些指标
+
+1. **成交效率分析**
+   - 如果"按数量成交率"高但"按订单数成交率"低，说明大订单容易成交，小订单不容易成交
+   - 如果两个成交率都低，可能需要调整下单策略或订单价格
+
+2. **订单管理分析**
+   - 活跃订单数较多可能意味着订单挂单时间过长
+   - 撤单数量较多可能需要优化下单时机
+
+3. **盈亏分析**
+   - Realized PnL 只反映已平仓的盈亏
+   - 要计算总盈亏，还需考虑 Position 的浮动盈亏
