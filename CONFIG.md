@@ -424,9 +424,9 @@ Total Filled Qty (总成交数量): 350
   - Canceled (已撤单): 8
   - Rejected (已拒绝): 2
 
-订单状态分布 (Order Status Distribution):
+订单最终状态分布 (Order Final Status Distribution):
   - Fully Filled (完全成交): 25
-  - Partially Filled (部分成交): 10
+  - Partially Filled (仅部分成交): 10
   - Unfilled (未成交): 15
 
 成交率 (Fill Rate):
@@ -488,12 +488,14 @@ Total Filled Qty (总成交数量): 350
 | Canceled | 已撤单 | 订单被撤销的回执数量 |
 | Rejected | 已拒绝 | 订单被交易所拒绝的回执数量 |
 
-#### 订单状态分布 (Order Status Distribution)
+#### 订单最终状态分布 (Order Final Status Distribution)
+
+> **注意**：此处统计的是订单的**最终状态**，不是中间状态。例如，一个订单先收到部分成交（PARTIAL）回执，最后收到全部成交（FILL）回执，该订单会被计入"Fully Filled"，而不是"Partially Filled"。
 
 | 输出字段 | 中文含义 | 说明 |
 |----------|----------|------|
-| Fully Filled | 完全成交 | 下单数量全部成交的订单数 |
-| Partially Filled | 部分成交 | 仅部分成交（成交数量 < 下单数量）的订单数 |
+| Fully Filled | 完全成交 | 最终全部成交的订单数（包括先部分成交后全部成交的订单） |
+| Partially Filled | 仅部分成交 | 最终仅部分成交的订单数（不包括最终全部成交的订单） |
 | Unfilled | 未成交 | 一手都未成交的订单数 |
 
 #### 成交率 (Fill Rate)
