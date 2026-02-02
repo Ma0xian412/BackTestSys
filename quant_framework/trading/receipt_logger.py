@@ -257,14 +257,16 @@ class ReceiptLogger:
         total_qty = sum(self.order_total_qty.values())
         filled_qty = sum(self.order_filled_qty.values())
         fully_filled_orders = len(self._full_fill_counts)
-        partially_filled_orders = len([
-            oid for oid in self.order_filled_qty
+        partially_filled_orders = sum(
+            1
+            for oid in self.order_filled_qty
             if 0 < self.order_filled_qty[oid] < self.order_total_qty.get(oid, 0)
-        ])
-        unfilled_orders = len([
-            oid for oid in self.order_total_qty
+        )
+        unfilled_orders = sum(
+            1
+            for oid in self.order_total_qty
             if self.order_filled_qty.get(oid, 0) == 0
-        ])
+        )
         full_fill_rate = fully_filled_orders / total_orders if total_orders else 0.0
         partial_fill_rate = partially_filled_orders / total_orders if total_orders else 0.0
         
