@@ -83,10 +83,6 @@ class PriceLevelState:
         """Total quantity in active shadow orders."""
         return self._active_shadow_qty
     
-    def _recompute_active_qty(self) -> None:
-        """Recompute cached active shadow qty (call after status changes)."""
-        self._active_shadow_qty = sum(o.remaining_qty for o in self.queue if o.status == "ACTIVE")
-    
     def shadow_qty_at_time(self, t: int) -> int:
         """Shadow order qty at coordinate for orders arriving before t."""
         return sum(o.remaining_qty for o in self.queue 
@@ -121,7 +117,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         # Precomputed X rates per segment for fast fill time calculation
         self._x_rates: Dict[Tuple[Side, Price, int], float] = {}
-        self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
         
         # 待处理的撤单请求（订单尚未到达时暂存）
         self._pending_cancels: Dict[str, int] = {}  # order_id -> cancel_arrival_time
@@ -143,7 +138,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._current_tape = []
         self._current_seg_idx = 0
         self._x_rates.clear()
-        self._x_at_seg_start.clear()
         # 注意：不清除_pending_cancels，因为撤单请求可能跨越区间
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
@@ -199,7 +193,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         # Precompute X rates for each (side, price, segment)
         self._x_rates.clear()
-        self._x_at_seg_start.clear()
         
         for seg_idx, seg in enumerate(tape):
             seg_duration = seg.t_end - seg.t_start
@@ -209,7 +202,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # For each activated price in this segment
             for side in [Side.BUY, Side.SELL]:
                 activation_set = seg.activation_bid if side == Side.BUY else seg.activation_ask
-                best_price = seg.bid_price if side == Side.BUY else seg.ask_price
                 
                 for price in activation_set:
                     key = (side, round(price, 8), seg_idx)
@@ -399,7 +391,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         """Handle order arrival at exchange.
         
         处理流程：
-        1. 首先检查订单是否会立即成交（crossing check）
+        0. 首先检查是否有待处理的撤单请求，如果有则直接取消订单
+        1. 检查订单是否会立即成交（crossing check）
            - BUY订单: 如果 price >= ask_best，可立即成交
            - SELL订单: 如果 price <= bid_best，可立即成交
         2. 如果会crossing，按对手方从最优档开始逐档吃掉流动性
@@ -420,6 +413,23 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             f"side={order.side.value}, price={order.price}, qty={order.qty}, "
             f"arrival_time={arrival_time}, market_qty={market_qty}"
         )
+        
+        # 检查是否有待处理的撤单请求
+        if order.order_id in self._pending_cancels:
+            cancel_time = self._pending_cancels.pop(order.order_id)
+            logger.debug(
+                f"[Exchange] Order {order.order_id}: found pending cancel from time {cancel_time}, "
+                f"canceling immediately upon arrival"
+            )
+            # 订单刚到达就被取消，没有成交
+            return OrderReceipt(
+                order_id=order.order_id,
+                receipt_type="CANCELED",
+                timestamp=arrival_time,  # 使用订单到达时间作为取消时间
+                fill_qty=0,
+                fill_price=0.0,
+                remaining_qty=0,
+            )
         
         side = order.side
         price = float(order.price)
