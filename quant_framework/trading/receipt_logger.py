@@ -280,31 +280,44 @@ class ReceiptLogger:
         }
     
     def print_summary(self) -> None:
-        """打印回执统计摘要。"""
+        """打印回执统计摘要。
+        
+        输出说明：
+        - Total Receipts: 收到的总回执数
+        - Total Orders: 已注册的总订单数
+        - Total Order Qty: 所有订单的总下单数量
+        - Total Filled Qty: 所有订单的总成交数量
+        - Receipt Type Distribution: 按回执类型分布统计（一个订单可能产生多条回执）
+        - Order Final Status Distribution: 按订单最终状态分布统计
+          - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
+          - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
+          - Unfilled: 未成交的订单数
+        - Fill Rate: 成交率统计
+        """
         stats = self.get_statistics()
         
         print("\n" + "=" * 60)
-        print("Receipt Logger Summary")
+        print("回执记录器摘要 (Receipt Logger Summary)")
         print("=" * 60)
-        print(f"Total Receipts: {stats['total_receipts']}")
-        print(f"Total Orders: {stats['total_orders']}")
-        print(f"Total Order Qty: {stats['total_order_qty']}")
-        print(f"Total Filled Qty: {stats['total_filled_qty']}")
+        print(f"Total Receipts (总回执数): {stats['total_receipts']}")
+        print(f"Total Orders (总订单数): {stats['total_orders']}")
+        print(f"Total Order Qty (总下单数量): {stats['total_order_qty']}")
+        print(f"Total Filled Qty (总成交数量): {stats['total_filled_qty']}")
         print()
-        print("Receipt Type Distribution:")
-        print(f"  - Partial Fill: {stats['partial_fill_count']}")
-        print(f"  - Full Fill: {stats['full_fill_count']}")
-        print(f"  - Canceled: {stats['cancel_count']}")
-        print(f"  - Rejected: {stats['reject_count']}")
+        print("回执类型分布 (Receipt Type Distribution):")
+        print(f"  - Partial Fill (部分成交): {stats['partial_fill_count']}")
+        print(f"  - Full Fill (全部成交): {stats['full_fill_count']}")
+        print(f"  - Canceled (已撤单): {stats['cancel_count']}")
+        print(f"  - Rejected (已拒绝): {stats['reject_count']}")
         print()
-        print("Order Status:")
-        print(f"  - Fully Filled: {stats['fully_filled_orders']}")
-        print(f"  - Partially Filled: {stats['partially_filled_orders']}")
-        print(f"  - Unfilled: {stats['unfilled_orders']}")
+        print("订单最终状态分布 (Order Final Status Distribution):")
+        print(f"  - Fully Filled (完全成交): {stats['fully_filled_orders']}")
+        print(f"  - Partially Filled (仅部分成交): {stats['partially_filled_orders']}")
+        print(f"  - Unfilled (未成交): {stats['unfilled_orders']}")
         print()
-        print("Fill Rate:")
-        print(f"  - By Quantity: {stats['fill_rate_by_qty']:.2%}")
-        print(f"  - By Order Count: {stats['fill_rate_by_count']:.2%}")
+        print("成交率 (Fill Rate):")
+        print(f"  - By Quantity (按数量): {stats['fill_rate_by_qty']:.2%}")
+        print(f"  - By Order Count (按订单数): {stats['fill_rate_by_count']:.2%}")
         print("=" * 60)
     
     def get_records_as_dicts(self) -> List[Dict]:
