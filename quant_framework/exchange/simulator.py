@@ -1154,7 +1154,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         level._active_shadow_qty -= shadow.remaining_qty
                         
                         remaining_fill = shadow.original_qty - shadow.filled_qty
-                        if remaining_fill <= 0:
+                        if remaining_fill < 0:
+                            logger.debug(
+                                f"[Exchange] Advance: skip negative remaining_fill for {shadow.order_id}, "
+                                f"filled_qty={shadow.filled_qty}, original_qty={shadow.original_qty}"
+                            )
+                            continue
+                        if remaining_fill == 0:
                             continue
                         
                         shadow.filled_qty = shadow.original_qty
@@ -1183,7 +1189,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         # If this fill completes the order, emit a FILL receipt
                         if current_fill >= shadow.original_qty:
                             new_fill = shadow.original_qty - shadow.filled_qty
-                            if new_fill <= 0:
+                            if new_fill < 0:
+                                logger.debug(
+                                    f"[Exchange] Advance: skip negative new_fill for {shadow.order_id}, "
+                                    f"filled_qty={shadow.filled_qty}, original_qty={shadow.original_qty}"
+                                )
+                                continue
+                            if new_fill == 0:
                                 continue
                             current_fill = shadow.original_qty
                             
