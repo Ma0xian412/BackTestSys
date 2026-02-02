@@ -423,6 +423,46 @@ def test_exchange_simulator_fill():
     print("✓ Exchange simulator fill test passed")
 
 
+def test_exchange_simulator_multi_partial_to_fill():
+    """验证多次部分成交后最终返回FILL回执。"""
+    print("\n--- Test 7b: Exchange Simulator Multi-Partial to Fill ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    seg = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=1304 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 4},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 0},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg], 1000 * TICK_PER_MS, 1304 * TICK_PER_MS)
+    
+    order = Order(order_id="multi-fill", side=Side.BUY, price=100.0, qty=4)
+    exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
+    
+    receipt_1 = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
+    receipt_2 = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
+    receipt_3 = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
+    
+    receipts = receipt_1 + receipt_2 + receipt_3
+    fill_types = [r.receipt_type for r in receipts]
+    fill_qtys = [r.fill_qty for r in receipts]
+    
+    assert receipts, "应该产生回执"
+    assert fill_types[-1] == "FILL", f"最后一笔应为FILL回执，实际: {fill_types[-1]}"
+    assert sum(fill_qtys) == 4, f"总成交数量应为4，实际: {sum(fill_qtys)}"
+    
+    print("✓ Exchange simulator multi-partial to fill test passed")
+
+
 def test_oms():
     """Test order manager."""
     print("\n--- Test 8: Order Manager ---")
@@ -2260,6 +2300,8 @@ def test_receipt_logger():
         receipt3.recv_time = 3010
         logger.log_receipt(receipt3)
         
+        # 撤单后不应被判为完全成交（不修改订单的累计成交量）
+        
         # 记录回执 - 拒绝
         receipt4 = OrderReceipt(
             order_id="order-3",
@@ -3561,6 +3603,7 @@ def run_all_tests():
         test_exchange_simulator_ioc,
         test_exchange_simulator_coordinate_axis,
         test_exchange_simulator_fill,
+        test_exchange_simulator_multi_partial_to_fill,
         test_oms,
         test_strategy,
         test_two_timeline,

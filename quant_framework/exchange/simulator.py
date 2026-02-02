@@ -1153,6 +1153,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         # Update cache before changing
                         level._active_shadow_qty -= shadow.remaining_qty
                         
+                        remaining_fill = shadow.original_qty - shadow.filled_qty
+                        if remaining_fill <= 0:
+                            continue
+                        
                         shadow.filled_qty = shadow.original_qty
                         shadow.remaining_qty = 0
                         shadow.status = "FILLED"
@@ -1161,13 +1165,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             order_id=shadow.order_id,
                             receipt_type="FILL",
                             timestamp=fill_time,
-                            fill_qty=shadow.original_qty,
+                            fill_qty=remaining_fill,
                             fill_price=shadow.price,
                             remaining_qty=0,
                         )
                         logger.debug(
                             f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                            f"fill_qty={shadow.original_qty}, price={shadow.price}, time={fill_time}"
+                            f"fill_qty={remaining_fill}, price={shadow.price}, time={fill_time}"
                         )
                         receipts.append(receipt)
                 elif x_t_to > shadow.pos:
@@ -1175,6 +1179,35 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     current_fill = int(x_t_to - shadow.pos)
                     if current_fill > shadow.filled_qty:
                         new_fill = current_fill - shadow.filled_qty
+                        
+                        # If this fill completes the order, emit a FILL receipt
+                        if current_fill >= shadow.original_qty:
+                            new_fill = shadow.original_qty - shadow.filled_qty
+                            if new_fill <= 0:
+                                continue
+                            current_fill = shadow.original_qty
+                            
+                            # Update cache for the qty change
+                            level._active_shadow_qty -= new_fill
+                            
+                            shadow.filled_qty = shadow.original_qty
+                            shadow.remaining_qty = 0
+                            shadow.status = "FILLED"
+                            
+                            receipt = OrderReceipt(
+                                order_id=shadow.order_id,
+                                receipt_type="FILL",
+                                timestamp=t_to,
+                                fill_qty=new_fill,
+                                fill_price=shadow.price,
+                                remaining_qty=0,
+                            )
+                            logger.debug(
+                                f"[Exchange] Advance: FILL for {shadow.order_id}, "
+                                f"fill_qty={new_fill}, price={shadow.price}, time={t_to}"
+                            )
+                            receipts.append(receipt)
+                            continue
                         
                         # Update cache for the qty change
                         level._active_shadow_qty -= new_fill
