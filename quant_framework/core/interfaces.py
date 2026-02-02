@@ -249,3 +249,31 @@ class IOrderManager(ABC):
             receipt: 要处理的订单回执
         """
         pass
+
+    @abstractmethod
+    def get_pending_orders(self) -> List[Order]:
+        """获取所有待到达的订单（arrival_time is None）。
+
+        Returns:
+            待到达订单列表
+        """
+        pass
+
+    @abstractmethod
+    def get_arrived_orders(self) -> List[Order]:
+        """获取所有已到达的订单（arrival_time is not None）。
+
+        Returns:
+            已到达订单列表
+        """
+        pass
+
+    @abstractmethod
+    def mark_order_arrived(self, order_id: str, arrival_time: int) -> None:
+        """标记订单已到达交易所。
+
+        Args:
+            order_id: 订单ID
+            arrival_time: 到达时间
+        """
+        pass

@@ -395,18 +395,13 @@ class EventLoopRunner:
 
         self._schedule_pending_receipts(event_queue, t_a, t_b)
 
-        # 获取OMS中的待处理订单并调度到达事件
-        # 确保所有时间上早于t_a的订单都已被处理
-        pending_orders = self.oms.get_active_orders()
+        # 获取OMS中的待到达订单并调度到达事件
+        # 直接使用get_pending_orders()，无需再检查arrival_time
+        pending_orders = self.oms.get_pending_orders()
 
         for order in pending_orders:
             # 计算订单到达交易所的时间（统一时间线）
             arrival_time = int(order.create_time) + int(self.config.delay_out)
-            
-            # 跳过已经有arrival_time且已处理过的订单
-            if order.arrival_time is not None:
-                # 订单已经到达过交易所，不需要重复调度
-                continue
             
             # 只处理到达时间在区间内的订单
             if arrival_time >= t_a and arrival_time < t_b:
@@ -488,7 +483,8 @@ class EventLoopRunner:
         if event.event_type == EventType.ORDER_ARRIVAL:
             # 订单到达
             order = event.data
-            order.arrival_time = event.time
+            # 使用OMS的mark_order_arrived方法标记订单已到达
+            self.oms.mark_order_arrived(order.order_id, event.time)
 
             # 从当前快照获取订单价位的市场队列深度
             market_qty = self._get_market_qty_from_snapshot(order, self.current_snapshot)
@@ -572,36 +568,24 @@ class EventLoopRunner:
         使用统一时间线。
         
         优化策略：
-        1. 对于已到达交易所的订单(arrival_time is not None)，检查是否在区间内
-        2. 对于未到达的订单，按计算出的arrival_time排序后检查
+        1. 直接使用OMS维护的已到达和待到达订单集合，避免每次调用都重新分类
+        2. 对于待到达的订单，按计算出的arrival_time排序后检查
            - 如果arrival_time >= t_b，由于已排序，后续订单都会 >= t_b，直接break
         """
-        active_orders = self.oms.get_active_orders()
-        
-        # 分离已到达和未到达的订单
-        arrived_orders = []
-        pending_orders = []
-        
-        for order in active_orders:
-            if order.arrival_time is not None:
-                arrived_orders.append(order)
-            else:
-                pending_orders.append(order)
-        
-        # 检查已到达的订单
-        for order in arrived_orders:
+        # 检查已到达的订单（直接从OMS获取）
+        for order in self.oms.get_arrived_orders():
             if order.arrival_time < t_b:
                 return True
         
-        # 对未到达的订单按arrival_time排序
-        # 计算并缓存arrival_time以避免重复计算
+        # 获取待到达的订单并按arrival_time排序
+        pending_orders = self.oms.get_pending_orders()
         pending_with_arrival = [
             (int(order.create_time) + int(self.config.delay_out), order)
             for order in pending_orders
         ]
         pending_with_arrival.sort(key=lambda x: x[0])
         
-        # 检查未到达的订单（已按arrival_time升序排列）
+        # 检查待到达的订单（已按arrival_time升序排列）
         for arrival_time, order in pending_with_arrival:
             # 优化：如果arrival_time >= t_b，后续所有订单也都 >= t_b，直接退出
             if arrival_time >= t_b:
