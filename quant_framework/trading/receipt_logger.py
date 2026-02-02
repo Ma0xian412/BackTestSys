@@ -261,6 +261,7 @@ class ReceiptLogger:
         unfilled_orders = 0
         for oid, total_qty in self.order_total_qty.items():
             if total_qty <= 0:
+                # Skip non-positive order quantities from final fill rate stats
                 continue
             order_filled_qty = self.order_filled_qty.get(oid, 0)
             if order_filled_qty >= total_qty:
@@ -304,7 +305,7 @@ class ReceiptLogger:
           - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
           - Unfilled: 未成交的订单数
-        - Final Fill Rate: 最终成交率统计（基于订单最终状态，仅统计数量>0的订单）
+        - Final Fill Rate: 最终成交率统计（基于订单最终状态，仅统计数量>0的订单，排除0或负数）
         - Fill Rate: 成交率统计（按数量/按订单数，订单数口径仅统计完全成交）
         """
         stats = self.get_statistics()
