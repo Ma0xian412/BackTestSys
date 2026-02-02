@@ -301,6 +301,7 @@ class ReceiptLogger:
         - Total Order Qty: 所有订单的总下单数量
         - Total Filled Qty: 所有订单的总成交数量
         - Receipt Type Distribution: 按回执类型分布统计（一个订单可能产生多条回执，统计的是回执条数）
+          - Full Fill回执数 != 完全成交订单数：部分成交后撤单或最终未满量的订单不会产生FILL回执
         - Order Final Status Distribution: 按订单最终状态分布统计
           - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
@@ -323,6 +324,8 @@ class ReceiptLogger:
         print("回执类型分布 (Receipt Type Distribution):")
         print(f"  - Partial Fill (部分成交回执数): {stats['partial_fill_count']}")
         print(f"  - Full Fill (全部成交回执数): {stats['full_fill_count']}")
+        if stats['full_fill_count'] != stats['fully_filled_orders']:
+            print(f"    * 注: 全部成交回执数和完全成交订单数不一定相等（可能有最终部分成交或撤单）")
         print(f"  - Canceled (已撤单): {stats['cancel_count']}")
         print(f"  - Rejected (已拒绝): {stats['reject_count']}")
         print()
