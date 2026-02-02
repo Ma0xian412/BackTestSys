@@ -2219,9 +2219,10 @@ def test_receipt_logger():
         logger.register_order("order-1", 100)
         logger.register_order("order-2", 50)
         logger.register_order("order-3", 30)
+        logger.register_order("order-4", 0)
         
-        assert len(logger.order_total_qty) == 3
-        print(f"  ✓ 注册3个订单成功")
+        assert len(logger.order_total_qty) == 4
+        print(f"  ✓ 注册4个订单成功")
         
         # 记录回执 - 部分成交
         receipt1 = OrderReceipt(
@@ -2277,7 +2278,7 @@ def test_receipt_logger():
         # 验证统计
         stats = logger.get_statistics()
         assert stats['total_receipts'] == 4
-        assert stats['total_orders'] == 3
+        assert stats['total_orders'] == 4
         assert stats['partial_fill_count'] == 1
         assert stats['full_fill_count'] == 1
         assert stats['cancel_count'] == 1
@@ -2301,8 +2302,8 @@ def test_receipt_logger():
         print(f"  ✓ 按数量成交率: {fill_rate_qty:.2%}")
         
         fill_rate_count = logger.calculate_fill_rate_by_count()
-        # 3个订单中1个完全成交
-        expected_rate_count = 1 / 3
+        # 4个订单中1个完全成交（包含一个0数量订单）
+        expected_rate_count = 1 / 4
         assert abs(fill_rate_count - expected_rate_count) < 0.01
         print(f"  ✓ 按订单数成交率: {fill_rate_count:.2%}")
         

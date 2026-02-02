@@ -270,8 +270,8 @@ class ReceiptLogger:
             else:
                 unfilled_orders += 1
         valid_orders = fully_filled_orders + partially_filled_orders + unfilled_orders
-        full_fill_order_rate = fully_filled_orders / valid_orders if valid_orders else 0.0
-        partial_fill_order_rate = partially_filled_orders / valid_orders if valid_orders else 0.0
+        full_fill_rate = fully_filled_orders / valid_orders if valid_orders else 0.0
+        partial_fill_rate = partially_filled_orders / valid_orders if valid_orders else 0.0
         
         return {
             'total_receipts': len(self.records),
@@ -280,8 +280,8 @@ class ReceiptLogger:
             'total_filled_qty': filled_qty,
             'fill_rate_by_qty': self.calculate_fill_rate(),
             'fill_rate_by_count': self.calculate_fill_rate_by_count(),
-            'full_fill_rate': full_fill_order_rate,
-            'partial_fill_rate': partial_fill_order_rate,
+            'full_fill_rate': full_fill_rate,
+            'partial_fill_rate': partial_fill_rate,
             'partial_fill_count': sum(self._partial_fill_counts.values()),
             'full_fill_count': sum(self._full_fill_counts.values()),
             'cancel_count': sum(self._cancel_counts.values()),
