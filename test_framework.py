@@ -2285,6 +2285,9 @@ def test_receipt_logger():
         assert stats['reject_count'] == 1
         assert abs(stats['full_fill_rate'] - (1 / 3)) < 0.01
         assert abs(stats['partial_fill_rate'] - (1 / 3)) < 0.01
+        assert stats['fully_filled_orders'] == 1
+        assert stats['partially_filled_orders'] == 1
+        assert stats['unfilled_orders'] == 1
         print(f"  ✓ 回执类型统计正确")
         
         # 验证成交量统计
