@@ -1163,15 +1163,15 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         # Update cache before changing
                         level._active_shadow_qty -= shadow.remaining_qty
                         
-                        remaining_fill = shadow.original_qty - shadow.filled_qty
+                        final_fill_qty = shadow.original_qty - shadow.filled_qty
                         if not self._validate_fill_delta(
                             shadow.order_id,
-                            remaining_fill,
+                            final_fill_qty,
                             shadow.filled_qty,
                             shadow.original_qty,
                         ):
                             continue
-                        if remaining_fill == 0:
+                        if final_fill_qty == 0:
                             continue
                         
                         shadow.filled_qty = shadow.original_qty
@@ -1182,13 +1182,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             order_id=shadow.order_id,
                             receipt_type="FILL",
                             timestamp=fill_time,
-                            fill_qty=remaining_fill,
+                            fill_qty=final_fill_qty,
                             fill_price=shadow.price,
                             remaining_qty=0,
                         )
                         logger.debug(
                             f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                            f"fill_qty={remaining_fill}, price={shadow.price}, time={fill_time}"
+                            f"fill_qty={final_fill_qty}, price={shadow.price}, time={fill_time}"
                         )
                         receipts.append(receipt)
                 elif x_t_to > shadow.pos:
@@ -1209,6 +1209,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             continue
                         
                         # If this fill completes the order, emit a FILL receipt
+                        # Cap final fill to remaining qty if current_fill overshoots due to interpolation
                         completes_order = new_fill >= shadow.remaining_qty
                         if completes_order:
                             new_fill = shadow.remaining_qty
