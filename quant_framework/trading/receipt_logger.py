@@ -256,6 +256,17 @@ class ReceiptLogger:
         total_orders = len(self.order_total_qty)
         total_qty = sum(self.order_total_qty.values())
         filled_qty = sum(self.order_filled_qty.values())
+        fully_filled_orders = len(self._full_fill_counts)
+        partially_filled_orders = len([
+            oid for oid in self.order_filled_qty
+            if 0 < self.order_filled_qty[oid] < self.order_total_qty.get(oid, 0)
+        ])
+        unfilled_orders = len([
+            oid for oid in self.order_total_qty
+            if self.order_filled_qty.get(oid, 0) == 0
+        ])
+        full_fill_rate = fully_filled_orders / total_orders if total_orders else 0.0
+        partial_fill_rate = partially_filled_orders / total_orders if total_orders else 0.0
         
         return {
             'total_receipts': len(self.records),
@@ -264,19 +275,15 @@ class ReceiptLogger:
             'total_filled_qty': filled_qty,
             'fill_rate_by_qty': self.calculate_fill_rate(),
             'fill_rate_by_count': self.calculate_fill_rate_by_count(),
+            'full_fill_rate': full_fill_rate,
+            'partial_fill_rate': partial_fill_rate,
             'partial_fill_count': sum(self._partial_fill_counts.values()),
             'full_fill_count': sum(self._full_fill_counts.values()),
             'cancel_count': sum(self._cancel_counts.values()),
             'reject_count': sum(self._reject_counts.values()),
-            'fully_filled_orders': len(self._full_fill_counts),
-            'partially_filled_orders': len([
-                oid for oid in self.order_filled_qty 
-                if 0 < self.order_filled_qty[oid] < self.order_total_qty.get(oid, 0)
-            ]),
-            'unfilled_orders': len([
-                oid for oid in self.order_total_qty 
-                if self.order_filled_qty.get(oid, 0) == 0
-            ]),
+            'fully_filled_orders': fully_filled_orders,
+            'partially_filled_orders': partially_filled_orders,
+            'unfilled_orders': unfilled_orders,
         }
     
     def print_summary(self) -> None:
@@ -292,7 +299,8 @@ class ReceiptLogger:
           - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
           - Unfilled: 未成交的订单数
-        - Fill Rate: 成交率统计
+        - Final Fill Rate: 最终成交率统计（基于订单最终状态）
+        - Fill Rate: 成交率统计（按数量/按订单数）
         """
         stats = self.get_statistics()
         
@@ -314,6 +322,10 @@ class ReceiptLogger:
         print(f"  - Fully Filled (完全成交): {stats['fully_filled_orders']}")
         print(f"  - Partially Filled (仅部分成交): {stats['partially_filled_orders']}")
         print(f"  - Unfilled (未成交): {stats['unfilled_orders']}")
+        print()
+        print("最终成交率 (Final Fill Rate):")
+        print(f"  - Full Fill Rate (完全成交率): {stats['full_fill_rate']:.2%}")
+        print(f"  - Partial Fill Rate (部分成交率): {stats['partial_fill_rate']:.2%}")
         print()
         print("成交率 (Fill Rate):")
         print(f"  - By Quantity (按数量): {stats['fill_rate_by_qty']:.2%}")
