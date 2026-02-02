@@ -269,8 +269,9 @@ class ReceiptLogger:
                 partially_filled_orders += 1
             else:
                 unfilled_orders += 1
-        full_fill_order_rate = fully_filled_orders / total_orders if total_orders else 0.0
-        partial_fill_order_rate = partially_filled_orders / total_orders if total_orders else 0.0
+        valid_orders = sum(1 for qty in self.order_total_qty.values() if qty > 0)
+        full_fill_order_rate = fully_filled_orders / valid_orders if valid_orders else 0.0
+        partial_fill_order_rate = partially_filled_orders / valid_orders if valid_orders else 0.0
         
         return {
             'total_receipts': len(self.records),
@@ -303,7 +304,7 @@ class ReceiptLogger:
           - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
           - Unfilled: 未成交的订单数
-        - Final Fill Rate: 最终成交率统计（基于订单最终状态，拆分完全/部分）
+        - Final Fill Rate: 最终成交率统计（基于订单最终状态，仅统计数量>0的订单）
         - Fill Rate: 成交率统计（按数量/按订单数，订单数仅统计完全成交）
         """
         stats = self.get_statistics()
