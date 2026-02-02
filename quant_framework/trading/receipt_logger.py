@@ -256,23 +256,21 @@ class ReceiptLogger:
         total_orders = len(self.order_total_qty)
         total_qty = sum(self.order_total_qty.values())
         filled_qty = sum(self.order_filled_qty.values())
-        fully_filled_orders = sum(
-            1
-            for oid, total_qty in self.order_total_qty.items()
-            if total_qty > 0 and self.order_filled_qty.get(oid, 0) >= total_qty
-        )
-        partially_filled_orders = sum(
-            1
-            for oid, total_qty in self.order_total_qty.items()
-            if total_qty > 0 and 0 < self.order_filled_qty.get(oid, 0) < total_qty
-        )
-        unfilled_orders = sum(
-            1
-            for oid, total_qty in self.order_total_qty.items()
-            if total_qty > 0 and self.order_filled_qty.get(oid, 0) == 0
-        )
-        full_fill_rate = fully_filled_orders / total_orders if total_orders else 0.0
-        partial_fill_rate = partially_filled_orders / total_orders if total_orders else 0.0
+        fully_filled_orders = 0
+        partially_filled_orders = 0
+        unfilled_orders = 0
+        for oid, total_qty in self.order_total_qty.items():
+            if total_qty <= 0:
+                continue
+            filled_qty = self.order_filled_qty.get(oid, 0)
+            if filled_qty >= total_qty:
+                fully_filled_orders += 1
+            elif filled_qty > 0:
+                partially_filled_orders += 1
+            else:
+                unfilled_orders += 1
+        full_fill_order_rate = fully_filled_orders / total_orders if total_orders else 0.0
+        partial_fill_order_rate = partially_filled_orders / total_orders if total_orders else 0.0
         
         return {
             'total_receipts': len(self.records),
@@ -281,8 +279,8 @@ class ReceiptLogger:
             'total_filled_qty': filled_qty,
             'fill_rate_by_qty': self.calculate_fill_rate(),
             'fill_rate_by_count': self.calculate_fill_rate_by_count(),
-            'full_fill_rate': full_fill_rate,
-            'partial_fill_rate': partial_fill_rate,
+            'full_fill_rate': full_fill_order_rate,
+            'partial_fill_rate': partial_fill_order_rate,
             'partial_fill_count': sum(self._partial_fill_counts.values()),
             'full_fill_count': sum(self._full_fill_counts.values()),
             'cancel_count': sum(self._cancel_counts.values()),
