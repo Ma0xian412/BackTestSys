@@ -96,7 +96,7 @@ class ReceiptLogger:
         self._full_fill_counts: Dict[str, int] = {}  # 全部成交次数
         self._cancel_counts: Dict[str, int] = {}  # 撤单次数
         self._reject_counts: Dict[str, int] = {}  # 拒绝次数
-        self._canceled_orders: Set[str] = set()  # Track canceled order IDs to exclude from full-fill stats
+        self._canceled_orders: Set[str] = set()  # Track canceled order IDs to exclude from full-fill stats（撤单订单标记）
     
     def register_order(self, order_id: str, qty: int) -> None:
         """注册新订单，用于计算成交率。

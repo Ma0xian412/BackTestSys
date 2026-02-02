@@ -1178,6 +1178,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         shadow.remaining_qty = 0
                         shadow.status = "FILLED"
                         
+                        # Emit only the remaining delta on the final fill receipt
                         receipt = OrderReceipt(
                             order_id=shadow.order_id,
                             receipt_type="FILL",
