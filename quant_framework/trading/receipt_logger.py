@@ -269,7 +269,7 @@ class ReceiptLogger:
                 partially_filled_orders += 1
             else:
                 unfilled_orders += 1
-        valid_orders = sum(1 for qty in self.order_total_qty.values() if qty > 0)
+        valid_orders = fully_filled_orders + partially_filled_orders + unfilled_orders
         full_fill_order_rate = fully_filled_orders / valid_orders if valid_orders else 0.0
         partial_fill_order_rate = partially_filled_orders / valid_orders if valid_orders else 0.0
         
