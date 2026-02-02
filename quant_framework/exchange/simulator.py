@@ -122,6 +122,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Precomputed X rates per segment for fast fill time calculation
         self._x_rates: Dict[Tuple[Side, Price, int], float] = {}
         self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
+        
+        # 待处理的撤单请求（订单尚未到达时暂存）
+        self._pending_cancels: Dict[str, int] = {}  # order_id -> cancel_arrival_time
 
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
@@ -141,6 +144,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._current_seg_idx = 0
         self._x_rates.clear()
         self._x_at_seg_start.clear()
+        # 注意：不清除_pending_cancels，因为撤单请求可能跨越区间
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
         """Get or create price level state."""
@@ -831,15 +835,18 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         return None
     
-    def on_cancel_arrival(self, order_id: str, arrival_time: int) -> OrderReceipt:
+    def on_cancel_arrival(self, order_id: str, arrival_time: int) -> Optional[OrderReceipt]:
         """Handle cancel request.
+        
+        如果订单尚未到达交易所，则将撤单请求缓存到_pending_cancels中，
+        订单到达时会立即被取消。
         
         Args:
             order_id: ID of order to cancel
             arrival_time: Time of cancel arrival (exchtime)
             
         Returns:
-            Receipt for the cancel operation
+            Receipt for the cancel operation, or None if cancel is pending
         """
         logger.debug(f"[Exchange] Cancel arrival: order_id={order_id}, arrival_time={arrival_time}")
         
@@ -886,12 +893,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         remaining_qty=0,
                     )
         
-        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (order not found)")
-        return OrderReceipt(
-            order_id=order_id,
-            receipt_type="REJECTED",
-            timestamp=arrival_time,
-        )
+        # 订单未找到，可能是订单尚未到达交易所
+        # 将撤单请求缓存，订单到达时立即取消
+        logger.debug(f"[Exchange] Cancel {order_id}: order not found, caching cancel request for later")
+        self._pending_cancels[order_id] = arrival_time
+        return None
     
     def _find_segment(self, t: int) -> int:
         """Find segment index containing time t."""
