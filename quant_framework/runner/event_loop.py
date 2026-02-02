@@ -404,6 +404,13 @@ class EventLoopRunner:
     def _is_after_last_trading_session(self, time_seconds: int) -> bool:
         """检查时间是否在最后一个交易时段结束之后。
         
+        对于跨越午夜的交易时段（如21:00-02:30），此方法将：
+        - 将结束时间02:30视为当天的最后时段结束
+        - 时间03:00-08:59之间被视为"在最后时段之后"（假设没有其他日盘时段）
+        
+        注意：此方法假设交易日内的时段按照配置顺序排列。
+        对于复杂的跨日场景，需要额外的逻辑处理。
+        
         Args:
             time_seconds: 当前时间（一天内的秒数）
             
@@ -413,27 +420,62 @@ class EventLoopRunner:
         if not self.trading_hours:
             return False  # 未配置交易时段，永远不会"在最后时段之后"
         
-        # 收集所有交易时段的结束时间
-        session_ends = []
+        # 首先，如果当前时间在任何交易时段内，则不是"在最后时段之后"
+        # 这个检查在调用方法前已经做过，但为了安全起见再次检查
+        if self._is_in_any_trading_session(time_seconds):
+            return False
+        
+        # 收集所有交易时段的结束时间（考虑跨夜时段）
+        session_ends_non_overnight = []  # 非跨夜时段的结束时间
+        has_overnight_session = False
+        overnight_end = 0  # 跨夜时段的结束时间
+        
         for th in self.trading_hours:
             end_str = getattr(th, 'end_time', '')
             start_str = getattr(th, 'start_time', '')
             if end_str and start_str:
                 end_sec = self._parse_time_to_seconds(end_str)
                 start_sec = self._parse_time_to_seconds(start_str)
-                # 处理跨越午夜的情况：如果end < start，则end实际上是第二天的时间
-                # 对于判断"最后时段"，我们只关心非跨夜时段的结束时间
+                
                 if end_sec >= start_sec:  # 非跨夜时段
-                    session_ends.append(end_sec)
+                    session_ends_non_overnight.append(end_sec)
+                else:  # 跨夜时段
+                    has_overnight_session = True
+                    overnight_end = end_sec  # 记录跨夜时段的结束时间
         
-        if not session_ends:
-            return False
+        # 如果只有跨夜时段，没有日盘时段
+        if not session_ends_non_overnight and has_overnight_session:
+            # 跨夜时段的结束时间之后，到下一天的开始之前，都是"最后时段之后"
+            # 例如：21:00-02:30，则03:00-20:59都是"最后时段之后"
+            return time_seconds > overnight_end
         
-        # 找到最大的结束时间
-        max_end = max(session_ends)
+        # 如果有非跨夜时段
+        if session_ends_non_overnight:
+            max_end = max(session_ends_non_overnight)
+            # 如果当前时间大于最大的非跨夜时段结束时间，则是"最后时段之后"
+            # 但需要排除跨夜时段的夜间部分（例如21:00之后）
+            if has_overnight_session:
+                # 有跨夜时段，需要考虑夜盘开始前的时间
+                # 例如：日盘15:00结束，夜盘21:00开始
+                # 则15:01-20:59是"两个时段之间"，不是"最后时段之后"
+                # 获取夜盘开始时间
+                for th in self.trading_hours:
+                    end_str = getattr(th, 'end_time', '')
+                    start_str = getattr(th, 'start_time', '')
+                    if end_str and start_str:
+                        end_sec = self._parse_time_to_seconds(end_str)
+                        start_sec = self._parse_time_to_seconds(start_str)
+                        if end_sec < start_sec:  # 跨夜时段
+                            # 如果当前时间在日盘结束后、夜盘开始前
+                            if max_end < time_seconds < start_sec:
+                                return False  # 这是"两个时段之间"
+                            # 如果当前时间在跨夜时段结束后、日盘开始前
+                            # 这种情况已经被_is_in_any_trading_session排除了
+                            break
+            
+            return time_seconds > max_end
         
-        # 如果当前时间严格大于最大结束时间，则在最后时段之后
-        return time_seconds > max_end
+        return False
     
     def _adjust_arrival_time_for_trading_hours(
         self, 
@@ -476,11 +518,13 @@ class EventLoopRunner:
         
         if next_start_seconds is None:
             # 理论上不应该到这里（因为前面已经检查了是否在最后时段之后）
+            logger.warning(f"Unexpected state: no next trading session found for time {time_seconds}s")
             return (None, False)
         
         # 计算调整后的到达时间
         # 需要保持同一天，只调整到下一个时段开始
-        current_day_start_tick = (arrival_tick // (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)) * (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)
+        ticks_per_day = self.SECONDS_PER_DAY * self.TICKS_PER_SECOND
+        current_day_start_tick = (arrival_tick // ticks_per_day) * ticks_per_day
         adjusted_tick = current_day_start_tick + self._seconds_to_tick_offset(next_start_seconds)
         
         return (adjusted_tick, True)
