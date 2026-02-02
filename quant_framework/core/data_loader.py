@@ -5,6 +5,7 @@ import math
 from typing import List, Any, Optional, Tuple
 from .interfaces import IMarketDataFeed
 from .types import NormalizedSnapshot, Level
+from .trading_hours import TradingHoursHelper
 
 
 class CsvMarketDataFeed(IMarketDataFeed):
@@ -346,10 +347,16 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
     - 间隔1000ms: 超过500ms+tolerance，生成1个复制快照
     - 间隔2000ms: 超过500ms+tolerance，生成3个复制快照
     
+    交易时段支持：
+    - 如果提供了交易时段配置（trading_hours），在两个交易时段之间不进行快照复制
+    - 交易时段支持跨越午夜，例如晚上9点到凌晨2点半
+    - 一天的交易可能包含多个不连续的时段
+    
     时间单位：tick（每tick=100ns）。500ms = 5_000_000 ticks。
     """
     
-    def __init__(self, inner_feed: IMarketDataFeed, tolerance_tick: int = None):
+    def __init__(self, inner_feed: IMarketDataFeed, tolerance_tick: int = None, 
+                 trading_hours: List = None):
         """初始化包装feed。
         
         Args:
@@ -357,12 +364,18 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
             tolerance_tick: 时间容差（tick单位），默认为10ms。
                            如果间隔在 min_interval ± tolerance 范围内，
                            认为是正常的500ms间隔，不进行复制。
+            trading_hours: 交易时段列表，每个元素是一个包含start_time和end_time的对象。
+                          时间格式为 "HH:MM:SS"。如果为None，不进行交易时段检查。
         """
         from .types import SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
         
         self.inner_feed = inner_feed
         self.min_interval = SNAPSHOT_MIN_INTERVAL_TICK
         self.tolerance = tolerance_tick if tolerance_tick is not None else DEFAULT_SNAPSHOT_TOLERANCE_TICK
+        self.trading_hours = trading_hours or []
+        
+        # 使用TradingHoursHelper处理交易时段相关逻辑
+        self._trading_hours_helper = TradingHoursHelper(self.trading_hours)
         
         # 内部状态
         self._buffer: List[NormalizedSnapshot] = []
@@ -403,6 +416,12 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
             self._prev_snapshot = curr
             return curr
         
+        # 检查是否跨越交易时段间隔
+        # 如果跨越了间隔，不进行快照复制
+        if self._trading_hours_helper.spans_trading_session_gap(t_prev, t_curr):
+            self._prev_snapshot = curr
+            return curr
+        
         # 间隔超过阈值，需要插入复制的快照
         # 计算需要插入的复制快照数量
         # 使用 (gap - tolerance - 1) 来考虑容差，确保边界正确处理：
@@ -420,20 +439,29 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
         # 生成复制的快照
         for i in range(num_copies):
             copy_time = t_prev + (i + 1) * self.min_interval
-            if copy_time < t_curr:
-                # 创建复制快照，last_vol_split为空
-                copy_snap = NormalizedSnapshot(
-                    ts_recv=copy_time,
-                    bids=list(self._prev_snapshot.bids),  # 复制档位列表
-                    asks=list(self._prev_snapshot.asks),
-                    last_vol_split=[],  # 复制快照的last_vol_split为空
-                    ts_exch=self._prev_snapshot.ts_exch,
-                    last=self._prev_snapshot.last,
-                    volume=self._prev_snapshot.volume,
-                    turnover=self._prev_snapshot.turnover,
-                    average_price=self._prev_snapshot.average_price,
-                )
-                self._buffer.append(copy_snap)
+            
+            # 首先检查时间边界，确保复制快照不超过当前快照时间
+            if copy_time >= t_curr:
+                break  # 超出时间边界，停止生成复制快照
+            
+            # 检查复制快照的时间是否在交易时段内
+            copy_seconds = self._trading_hours_helper.tick_to_day_seconds(copy_time)
+            if not self._trading_hours_helper.is_in_any_trading_session(copy_seconds):
+                continue  # 跳过非交易时间的复制快照
+            
+            # 创建复制快照，last_vol_split为空
+            copy_snap = NormalizedSnapshot(
+                ts_recv=copy_time,
+                bids=list(self._prev_snapshot.bids),  # 复制档位列表
+                asks=list(self._prev_snapshot.asks),
+                last_vol_split=[],  # 复制快照的last_vol_split为空
+                ts_exch=self._prev_snapshot.ts_exch,
+                last=self._prev_snapshot.last,
+                volume=self._prev_snapshot.volume,
+                turnover=self._prev_snapshot.turnover,
+                average_price=self._prev_snapshot.average_price,
+            )
+            self._buffer.append(copy_snap)
         
         # 最后添加当前快照
         self._buffer.append(curr)

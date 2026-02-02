@@ -155,6 +155,7 @@ def create_feed(config: BacktestConfig):
     根据配置创建市场数据源：
     1. 根据 data.format 选择 CsvMarketDataFeed 或 PickleMarketDataFeed 作为 inner feed
     2. 使用 SnapshotDuplicatingFeed 包装 inner feed，实现快照复制逻辑
+    3. 如果配置了合约信息，传入交易时段以避免在交易时段之间复制快照
     
     Args:
         config: BacktestConfig 配置对象
@@ -168,10 +169,16 @@ def create_feed(config: BacktestConfig):
     else:
         inner_feed = PickleMarketDataFeed(config.data.path)
     
-    # 使用 SnapshotDuplicatingFeed 包装，传入配置的 tolerance_tick
+    # 获取交易时段配置（如果有的话）
+    trading_hours = None
+    if config.contract.contract_info and config.contract.contract_info.trading_hours:
+        trading_hours = config.contract.contract_info.trading_hours
+    
+    # 使用 SnapshotDuplicatingFeed 包装，传入配置的 tolerance_tick 和交易时段
     return SnapshotDuplicatingFeed(
         inner_feed=inner_feed,
-        tolerance_tick=config.snapshot.tolerance_tick
+        tolerance_tick=config.snapshot.tolerance_tick,
+        trading_hours=trading_hours
     )
 
 
@@ -260,13 +267,18 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     oms = create_oms(config)
     runner_config = create_runner_config(config)
     
+    # 获取交易时段配置（如果有的话）
+    trading_hours = None
+    if config.contract.contract_info and config.contract.contract_info.trading_hours:
+        trading_hours = config.contract.contract_info.trading_hours
+    
     # Create receipt logger for observability
     receipt_logger = ReceiptLogger(
         output_file=receipt_output_file,
         verbose=config.receipt_logger.verbose,
     )
     
-    # Create runner with receipt logger
+    # Create runner with receipt logger and trading hours
     runner = EventLoopRunner(
         feed=feed,
         tape_builder=tape_builder,
@@ -275,6 +287,7 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         oms=oms,
         config=runner_config,
         receipt_logger=receipt_logger,
+        trading_hours=trading_hours,
     )
     
     # Run backtest

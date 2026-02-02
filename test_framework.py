@@ -3583,6 +3583,498 @@ def test_starting_price_trade_prepending():
     print("✓ Starting price trade prepending test passed")
 
 
+def test_contract_config_loading():
+    """测试合约配置加载功能。
+    
+    验证：
+    1. 能够从合约字典XML文件中正确加载合约信息
+    2. 交易时段（包括跨越午夜的时段）能够正确解析
+    3. 未找到的合约返回None
+    """
+    print("\n--- Test: Contract Config Loading ---")
+    
+    import os
+    import tempfile
+    from quant_framework.config import _load_contract_dictionary, TradingHour, ContractInfo
+    
+    # 创建临时合约字典文件
+    contract_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<ContractDictionaryConfig>
+    <Contract>
+        <ContractId>IF2401</ContractId>
+        <TickSize>0.2</TickSize>
+        <ExchangeCode>CFFEX</ExchangeCode>
+        <TradingHours>
+            <TradingHour>
+                <StartTime>09:30:00</StartTime>
+                <EndTime>11:30:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>13:00:00</StartTime>
+                <EndTime>15:00:00</EndTime>
+            </TradingHour>
+        </TradingHours>
+    </Contract>
+    <Contract>
+        <ContractId>AU2401</ContractId>
+        <TickSize>0.02</TickSize>
+        <ExchangeCode>SHFE</ExchangeCode>
+        <TradingHours>
+            <TradingHour>
+                <StartTime>21:00:00</StartTime>
+                <EndTime>02:30:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>09:00:00</StartTime>
+                <EndTime>10:15:00</EndTime>
+            </TradingHour>
+        </TradingHours>
+    </Contract>
+</ContractDictionaryConfig>"""
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
+        f.write(contract_xml)
+        temp_path = f.name
+    
+    try:
+        # 测试1: 加载IF2401
+        print("\n测试1: 加载IF2401合约信息...")
+        info = _load_contract_dictionary(temp_path, "IF2401")
+        assert info is not None, "应该找到IF2401合约"
+        assert info.contract_id == "IF2401", f"合约ID应为IF2401，实际为{info.contract_id}"
+        assert info.tick_size == 0.2, f"TickSize应为0.2，实际为{info.tick_size}"
+        assert info.exchange_code == "CFFEX", f"ExchangeCode应为CFFEX，实际为{info.exchange_code}"
+        assert len(info.trading_hours) == 2, f"应有2个交易时段，实际有{len(info.trading_hours)}"
+        assert info.trading_hours[0].start_time == "09:30:00", "第一个时段开始时间错误"
+        assert info.trading_hours[0].end_time == "11:30:00", "第一个时段结束时间错误"
+        print(f"  ✓ IF2401加载成功: tick_size={info.tick_size}, exchange={info.exchange_code}")
+        
+        # 测试2: 加载AU2401（有跨越午夜的时段）
+        print("\n测试2: 加载AU2401合约信息（有跨越午夜的时段）...")
+        info = _load_contract_dictionary(temp_path, "AU2401")
+        assert info is not None, "应该找到AU2401合约"
+        assert info.contract_id == "AU2401"
+        assert info.tick_size == 0.02
+        assert len(info.trading_hours) == 2
+        assert info.trading_hours[0].start_time == "21:00:00", "夜盘开始时间应为21:00:00"
+        assert info.trading_hours[0].end_time == "02:30:00", "夜盘结束时间应为02:30:00"
+        print(f"  ✓ AU2401加载成功: 夜盘={info.trading_hours[0].start_time}-{info.trading_hours[0].end_time}")
+        
+        # 测试3: 查找不存在的合约
+        print("\n测试3: 查找不存在的合约...")
+        info = _load_contract_dictionary(temp_path, "NON_EXISTENT")
+        assert info is None, "不存在的合约应返回None"
+        print("  ✓ 不存在的合约正确返回None")
+        
+        # 测试4: 空路径或空合约ID
+        print("\n测试4: 空路径或空合约ID...")
+        assert _load_contract_dictionary("", "IF2401") is None
+        assert _load_contract_dictionary(temp_path, "") is None
+        print("  ✓ 空参数正确处理")
+        
+    finally:
+        os.unlink(temp_path)
+    
+    print("✓ Contract config loading test passed")
+
+
+def test_trading_hours_session_detection():
+    """测试交易时段检测功能。
+    
+    验证SnapshotDuplicatingFeed能够正确检测：
+    1. 时间是否在交易时段内
+    2. 两个时间点是否跨越交易时段间隔
+    3. 跨越午夜的交易时段处理
+    """
+    print("\n--- Test: Trading Hours Session Detection ---")
+    
+    from quant_framework.core.data_loader import SnapshotDuplicatingFeed
+    from quant_framework.config import TradingHour
+    
+    # 创建mock feed
+    class MockFeed:
+        def __init__(self):
+            self.idx = 0
+        def next(self):
+            return None
+        def reset(self):
+            self.idx = 0
+    
+    # 测试正常时段（09:30 - 11:30, 13:00 - 15:00）
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    
+    feed = SnapshotDuplicatingFeed(MockFeed(), trading_hours=trading_hours)
+    helper = feed._trading_hours_helper  # 使用TradingHoursHelper
+    
+    # 测试1: 时间解析
+    print("\n测试1: 时间解析...")
+    assert helper.parse_time_to_seconds("09:30:00") == 9 * 3600 + 30 * 60
+    assert helper.parse_time_to_seconds("21:00:00") == 21 * 3600
+    assert helper.parse_time_to_seconds("02:30:00") == 2 * 3600 + 30 * 60
+    print("  ✓ 时间解析正确")
+    
+    # 测试2: 正常时段内的检测
+    print("\n测试2: 正常时段内的检测...")
+    assert helper.is_in_any_trading_session(9 * 3600 + 30 * 60)  # 09:30:00
+    assert helper.is_in_any_trading_session(10 * 3600)  # 10:00:00
+    assert helper.is_in_any_trading_session(11 * 3600 + 30 * 60)  # 11:30:00
+    assert helper.is_in_any_trading_session(13 * 3600)  # 13:00:00
+    assert not helper.is_in_any_trading_session(12 * 3600)  # 12:00:00 (午休)
+    print("  ✓ 正常时段检测正确")
+    
+    # 测试3: 跨越午夜的时段
+    print("\n测试3: 跨越午夜的时段...")
+    night_hours = [
+        TradingHour(start_time="21:00:00", end_time="02:30:00"),
+        TradingHour(start_time="09:00:00", end_time="10:15:00"),
+    ]
+    
+    feed2 = SnapshotDuplicatingFeed(MockFeed(), trading_hours=night_hours)
+    helper2 = feed2._trading_hours_helper  # 使用TradingHoursHelper
+    
+    # 夜盘时间
+    assert helper2.is_in_any_trading_session(21 * 3600)  # 21:00:00
+    assert helper2.is_in_any_trading_session(23 * 3600)  # 23:00:00
+    assert helper2.is_in_any_trading_session(1 * 3600)   # 01:00:00 (次日凌晨)
+    assert helper2.is_in_any_trading_session(2 * 3600 + 30 * 60)  # 02:30:00
+    
+    # 非交易时间
+    assert not helper2.is_in_any_trading_session(3 * 3600)  # 03:00:00
+    assert not helper2.is_in_any_trading_session(8 * 3600)  # 08:00:00
+    
+    print("  ✓ 跨越午夜时段检测正确")
+    
+    print("✓ Trading hours session detection test passed")
+
+
+def test_snapshot_duplication_with_trading_hours():
+    """测试带交易时段的快照复制功能。
+    
+    验证：
+    1. 同一交易时段内正常进行快照复制
+    2. 不同交易时段之间不进行快照复制
+    3. 跨越午夜的交易时段正确处理
+    """
+    print("\n--- Test: Snapshot Duplication with Trading Hours ---")
+    
+    from quant_framework.core.data_loader import SnapshotDuplicatingFeed
+    from quant_framework.core.types import TICK_PER_MS
+    from quant_framework.config import TradingHour
+    
+    # 创建mock feed
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    def time_to_tick(hours, minutes, seconds):
+        """将时间转换为tick"""
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        return total_seconds * 10_000_000
+    
+    # 交易时段
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    
+    # 测试1: 同一时段内的复制
+    print("\n测试1: 同一交易时段内的复制 (09:30:00 -> 09:30:02)...")
+    snap1 = create_test_snapshot(time_to_tick(9, 30, 0), 100.0, 101.0)
+    snap2 = create_test_snapshot(time_to_tick(9, 30, 2), 100.0, 101.0)  # 2秒后
+    
+    feed = SnapshotDuplicatingFeed(MockFeed([snap1, snap2]), trading_hours=trading_hours)
+    
+    count = 0
+    while feed.next() is not None:
+        count += 1
+    
+    # 2秒 = 2000ms，间隔超过500ms，应该有复制
+    # 预期：原始2个 + 约3个复制 = 约5个
+    assert count >= 4, f"同一时段内应进行复制，实际{count}个快照"
+    print(f"  ✓ 同一时段内复制正常，共{count}个快照")
+    
+    # 测试2: 不同时段之间不复制
+    print("\n测试2: 不同交易时段之间不复制 (11:29:59 -> 13:00:00)...")
+    snap1 = create_test_snapshot(time_to_tick(11, 29, 59), 100.0, 101.0)
+    snap2 = create_test_snapshot(time_to_tick(13, 0, 0), 100.0, 101.0)  # 中午休市后
+    
+    feed = SnapshotDuplicatingFeed(MockFeed([snap1, snap2]), trading_hours=trading_hours)
+    
+    count = 0
+    while feed.next() is not None:
+        count += 1
+    
+    # 跨越休市，不应该复制
+    assert count == 2, f"跨越休市不应复制，预期2个，实际{count}个"
+    print(f"  ✓ 跨越休市时段不复制，共{count}个快照")
+    
+    # 测试3: 无交易时段配置时正常复制
+    print("\n测试3: 无交易时段配置时正常复制...")
+    snap1 = create_test_snapshot(time_to_tick(11, 29, 59), 100.0, 101.0)
+    snap2 = create_test_snapshot(time_to_tick(13, 0, 0), 100.0, 101.0)
+    
+    feed = SnapshotDuplicatingFeed(MockFeed([snap1, snap2]), trading_hours=None)
+    
+    count = 0
+    while feed.next() is not None:
+        count += 1
+    
+    # 没有交易时段配置，应该正常复制
+    assert count > 2, f"无交易时段配置应正常复制，实际{count}个快照"
+    print(f"  ✓ 无交易时段配置时正常复制，共{count}个快照")
+    
+    print("✓ Snapshot duplication with trading hours test passed")
+
+
+def test_order_arrival_trading_hours_adjustment():
+    """测试订单到达时间根据交易时段调整的功能。
+    
+    验证：
+    1. 交易时段内的订单到达时间不变
+    2. 交易时段之间的订单到达时间调整到下一个时段开始
+    3. 最后一个交易时段之后的订单被拒绝
+    """
+    print("\n--- Test: Order Arrival Trading Hours Adjustment ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner
+    from quant_framework.config import TradingHour
+    
+    # 创建交易时段配置
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    
+    # 创建一个最小的runner来测试到达时间调整
+    class MinimalRunner:
+        TICKS_PER_SECOND = 10_000_000
+        SECONDS_PER_DAY = 86400
+        
+        def __init__(self, trading_hours):
+            self.trading_hours = trading_hours
+        
+        def _parse_time_to_seconds(self, time_str):
+            parts = time_str.split(":")
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        
+        def _tick_to_day_seconds(self, tick):
+            total_seconds = tick // self.TICKS_PER_SECOND
+            return total_seconds % self.SECONDS_PER_DAY
+        
+        def _seconds_to_tick_offset(self, seconds):
+            return seconds * self.TICKS_PER_SECOND
+        
+        def _is_within_trading_session(self, start_seconds, end_seconds, time_seconds):
+            if start_seconds <= end_seconds:
+                return start_seconds <= time_seconds <= end_seconds
+            else:
+                return time_seconds >= start_seconds or time_seconds <= end_seconds
+        
+        def _find_trading_session_index(self, time_seconds):
+            for i, th in enumerate(self.trading_hours):
+                start_str = getattr(th, 'start_time', '')
+                end_str = getattr(th, 'end_time', '')
+                if not start_str or not end_str:
+                    continue
+                start_sec = self._parse_time_to_seconds(start_str)
+                end_sec = self._parse_time_to_seconds(end_str)
+                if self._is_within_trading_session(start_sec, end_sec, time_seconds):
+                    return i
+            return -1
+        
+        def _is_in_any_trading_session(self, time_seconds):
+            return self._find_trading_session_index(time_seconds) >= 0
+        
+        def _get_next_trading_session_start(self, time_seconds):
+            session_starts = []
+            for th in self.trading_hours:
+                start_str = getattr(th, 'start_time', '')
+                if start_str:
+                    start_sec = self._parse_time_to_seconds(start_str)
+                    session_starts.append(start_sec)
+            session_starts.sort()
+            for start in session_starts:
+                if start > time_seconds:
+                    return start
+            return None
+        
+        def _is_after_last_trading_session(self, time_seconds):
+            session_ends = []
+            for th in self.trading_hours:
+                end_str = getattr(th, 'end_time', '')
+                start_str = getattr(th, 'start_time', '')
+                if end_str and start_str:
+                    end_sec = self._parse_time_to_seconds(end_str)
+                    start_sec = self._parse_time_to_seconds(start_str)
+                    if end_sec >= start_sec:
+                        session_ends.append(end_sec)
+            if not session_ends:
+                return False
+            return time_seconds > max(session_ends)
+        
+        def _adjust_arrival_time_for_trading_hours(self, arrival_tick, is_order=True):
+            if not self.trading_hours:
+                return (arrival_tick, True)
+            
+            time_seconds = self._tick_to_day_seconds(arrival_tick)
+            
+            if self._is_in_any_trading_session(time_seconds):
+                return (arrival_tick, True)
+            
+            if self._is_after_last_trading_session(time_seconds):
+                return (None, False)
+            
+            next_start_seconds = self._get_next_trading_session_start(time_seconds)
+            
+            if next_start_seconds is None:
+                return (None, False)
+            
+            current_day_start_tick = (arrival_tick // (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)) * (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)
+            adjusted_tick = current_day_start_tick + self._seconds_to_tick_offset(next_start_seconds)
+            
+            return (adjusted_tick, True)
+    
+    runner = MinimalRunner(trading_hours)
+    
+    def time_to_tick(hours, minutes, seconds):
+        """将时间转换为tick"""
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        return total_seconds * 10_000_000
+    
+    # 测试1: 交易时段内的到达时间不变
+    print("\n测试1: 交易时段内的到达时间不变...")
+    arrival_tick = time_to_tick(10, 0, 0)  # 10:00:00 在上午时段内
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert success, "交易时段内应成功"
+    assert adjusted == arrival_tick, f"交易时段内不应调整，期望{arrival_tick}，实际{adjusted}"
+    print(f"  ✓ 10:00:00 (交易时段内) 到达时间不变")
+    
+    # 测试2: 两个时段之间的到达时间调整到下一个时段开始
+    print("\n测试2: 两个时段之间的到达时间调整到下一个时段开始...")
+    arrival_tick = time_to_tick(12, 0, 0)  # 12:00:00 在两个时段之间
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert success, "两个时段之间应成功（调整）"
+    expected_tick = time_to_tick(13, 0, 0)  # 应调整到下午时段开始 13:00:00
+    assert adjusted == expected_tick, f"应调整到13:00:00，期望{expected_tick}，实际{adjusted}"
+    print(f"  ✓ 12:00:00 (时段之间) 调整到 13:00:00 (下一个时段开始)")
+    
+    # 测试3: 最后一个时段之后的到达时间应被拒绝
+    print("\n测试3: 最后一个时段之后的订单应被拒绝...")
+    arrival_tick = time_to_tick(16, 0, 0)  # 16:00:00 在最后时段之后
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert not success, "最后时段之后应失败"
+    assert adjusted is None, "失败时应返回None"
+    print(f"  ✓ 16:00:00 (最后时段之后) 订单被拒绝")
+    
+    # 测试4: 撤单在最后时段之后也应失败
+    print("\n测试4: 撤单在最后时段之后也应失败...")
+    arrival_tick = time_to_tick(15, 30, 0)  # 15:30:00 在最后时段之后
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=False)
+    assert not success, "撤单在最后时段之后应失败"
+    print(f"  ✓ 15:30:00 (最后时段之后) 撤单失败")
+    
+    # 测试5: 无交易时段配置时不做任何调整
+    print("\n测试5: 无交易时段配置时不做任何调整...")
+    runner_no_hours = MinimalRunner([])
+    arrival_tick = time_to_tick(12, 0, 0)
+    adjusted, success = runner_no_hours._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert success, "无交易时段配置应成功"
+    assert adjusted == arrival_tick, "无交易时段配置不应调整"
+    print(f"  ✓ 无交易时段配置时到达时间不变")
+    
+    print("✓ Order arrival trading hours adjustment test passed")
+
+
+def test_trading_hours_helper_class():
+    """测试TradingHoursHelper类的独立功能。
+    
+    验证TradingHoursHelper作为独立类的复用性和正确性。
+    """
+    print("\n--- Test: TradingHoursHelper Class ---")
+    
+    from quant_framework.core.trading_hours import TradingHoursHelper
+    from quant_framework.config import TradingHour
+    
+    # 测试1: 创建空配置的helper
+    print("\n测试1: 空配置的TradingHoursHelper...")
+    empty_helper = TradingHoursHelper([])
+    assert empty_helper.is_in_any_trading_session(10 * 3600) == True  # 未配置时默认都在交易时间
+    assert empty_helper.spans_trading_session_gap(100, 200) == False  # 未配置时不跨越间隔
+    assert empty_helper.is_after_last_trading_session(16 * 3600) == False
+    print("  ✓ 空配置正确处理")
+    
+    # 测试2: 正常时段配置
+    print("\n测试2: 正常时段配置...")
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    helper = TradingHoursHelper(trading_hours)
+    
+    # 验证常量
+    assert helper.TICKS_PER_SECOND == 10_000_000
+    assert helper.SECONDS_PER_DAY == 86400
+    print("  ✓ 常量正确")
+    
+    # 测试3: 时间转换方法
+    print("\n测试3: 时间转换方法...")
+    assert helper.parse_time_to_seconds("09:30:00") == 9 * 3600 + 30 * 60
+    assert helper.parse_time_to_seconds("invalid") == 0  # 无效格式返回0
+    assert helper.seconds_to_tick_offset(1) == 10_000_000
+    
+    tick_at_10am = 10 * 3600 * helper.TICKS_PER_SECOND
+    assert helper.tick_to_day_seconds(tick_at_10am) == 10 * 3600
+    print("  ✓ 时间转换正确")
+    
+    # 测试4: 交易时段检测
+    print("\n测试4: 交易时段检测...")
+    # 正常时段
+    assert helper.is_within_trading_session(9 * 3600, 11 * 3600, 10 * 3600) == True
+    assert helper.is_within_trading_session(9 * 3600, 11 * 3600, 12 * 3600) == False
+    # 跨夜时段
+    assert helper.is_within_trading_session(21 * 3600, 2 * 3600, 22 * 3600) == True
+    assert helper.is_within_trading_session(21 * 3600, 2 * 3600, 1 * 3600) == True
+    assert helper.is_within_trading_session(21 * 3600, 2 * 3600, 10 * 3600) == False
+    print("  ✓ 交易时段检测正确")
+    
+    # 测试5: 查找交易时段索引
+    print("\n测试5: 查找交易时段索引...")
+    assert helper.find_trading_session_index(10 * 3600) == 0  # 上午时段
+    assert helper.find_trading_session_index(14 * 3600) == 1  # 下午时段
+    assert helper.find_trading_session_index(12 * 3600) == -1  # 午休
+    print("  ✓ 交易时段索引查找正确")
+    
+    # 测试6: 获取下一个交易时段开始时间
+    print("\n测试6: 获取下一个交易时段开始时间...")
+    assert helper.get_next_trading_session_start(8 * 3600) == 9 * 3600 + 30 * 60  # 09:30
+    assert helper.get_next_trading_session_start(12 * 3600) == 13 * 3600  # 13:00
+    assert helper.get_next_trading_session_start(16 * 3600) is None  # 无下一个时段
+    print("  ✓ 下一个交易时段开始时间查找正确")
+    
+    # 测试7: 判断是否在最后时段之后
+    print("\n测试7: 判断是否在最后时段之后...")
+    assert helper.is_after_last_trading_session(16 * 3600) == True
+    assert helper.is_after_last_trading_session(14 * 3600) == False  # 仍在交易时段
+    assert helper.is_after_last_trading_session(12 * 3600) == False  # 午休不是"最后时段之后"
+    print("  ✓ 最后时段判断正确")
+    
+    print("✓ TradingHoursHelper class test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -3639,6 +4131,11 @@ def run_all_tests():
         test_snapshot_duplication,
         test_dynamic_queue_tracking_netflow,
         test_starting_price_trade_prepending,
+        test_contract_config_loading,
+        test_trading_hours_session_detection,
+        test_snapshot_duplication_with_trading_hours,
+        test_order_arrival_trading_hours_adjustment,
+        test_trading_hours_helper_class,
     ]
     
     passed = 0

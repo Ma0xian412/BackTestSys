@@ -24,6 +24,7 @@ from enum import Enum, auto
 
 from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
 from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest
+from ..core.trading_hours import TradingHoursHelper
 
 if TYPE_CHECKING:
     from ..trading.receipt_logger import ReceiptLogger
@@ -203,6 +204,7 @@ class EventLoopRunner:
     主要功能：
     - 单一时间线：所有事件使用ts_recv
     - 延迟处理：delay_out（策略->交易所），delay_in（交易所->策略）
+    - 交易时段支持：订单/撤单到达时间基于交易时段调整
     """
 
     def __init__(
@@ -214,6 +216,7 @@ class EventLoopRunner:
         oms: IOrderManager,
         config: RunnerConfig = None,
         receipt_logger: Optional[IReceiptLogger] = None,
+        trading_hours: List = None,
     ):
         """初始化运行器。
 
@@ -225,6 +228,10 @@ class EventLoopRunner:
             oms: 订单管理器
             config: 运行器配置
             receipt_logger: 回执记录器（可选）
+            trading_hours: 交易时段列表，每个元素是一个TradingHour对象。
+                          用于调整订单/撤单到达时间：
+                          - 如果到达时间在交易时段之间，则调整到下一个交易时段开始
+                          - 如果在最后一个交易时段结束之后，挂单直接失败，撤单也失败
         """
         self.feed = feed
         self.tape_builder = tape_builder
@@ -233,6 +240,10 @@ class EventLoopRunner:
         self.oms = oms
         self.config = config or RunnerConfig()
         self.receipt_logger = receipt_logger
+        self.trading_hours = trading_hours or []
+        
+        # 使用TradingHoursHelper处理交易时段相关逻辑
+        self._trading_hours_helper = TradingHoursHelper(self.trading_hours)
 
         # 当前状态（统一使用recv time）
         self.current_time = 0  # 统一时间（ts_recv）
@@ -249,7 +260,64 @@ class EventLoopRunner:
             "orders_filled": 0,
             "receipts_generated": 0,
             "cancels_submitted": 0,
+            "orders_rejected_after_trading": 0,
+            "cancels_failed_after_trading": 0,
         }
+    
+    # ========== 交易时段相关方法 ==========
+    
+    def _adjust_arrival_time_for_trading_hours(
+        self, 
+        arrival_tick: int,
+        is_order: bool = True
+    ) -> Tuple[Optional[int], bool]:
+        """根据交易时段调整到达时间。
+        
+        规则：
+        1. 如果到达时间在交易时段内，保持不变
+        2. 如果到达时间在两个交易时段之间，调整到下一个交易时段的开始
+        3. 如果到达时间在最后一个交易时段结束之后：
+           - 挂单：返回None表示订单被拒绝
+           - 撤单：返回None表示撤单失败
+        
+        Args:
+            arrival_tick: 原始到达时间（tick单位）
+            is_order: True表示是挂单，False表示是撤单
+            
+        Returns:
+            (adjusted_tick, success): 
+            - adjusted_tick: 调整后的到达时间，如果应该被拒绝则为None
+            - success: 是否成功（用于区分正常调整和被拒绝的情况）
+        """
+        if not self.trading_hours:
+            return (arrival_tick, True)  # 未配置交易时段，不做调整
+        
+        helper = self._trading_hours_helper
+        time_seconds = helper.tick_to_day_seconds(arrival_tick)
+        
+        # 检查是否在交易时段内
+        if helper.is_in_any_trading_session(time_seconds):
+            return (arrival_tick, True)  # 在交易时段内，不做调整
+        
+        # 检查是否在最后一个交易时段之后
+        if helper.is_after_last_trading_session(time_seconds):
+            return (None, False)  # 在最后时段之后，拒绝
+        
+        # 在两个交易时段之间，找下一个交易时段的开始
+        next_start_seconds = helper.get_next_trading_session_start(time_seconds)
+        
+        if next_start_seconds is None:
+            # 理论上不应该到这里（因为前面已经检查了是否在最后时段之后）
+            logger.warning(f"Unexpected state: no next trading session found for time {time_seconds}s")
+            return (None, False)
+        
+        # 计算调整后的到达时间
+        # 需要保持同一天，只调整到下一个时段开始
+        ticks_per_day = helper.SECONDS_PER_DAY * helper.TICKS_PER_SECOND
+        current_day_start_tick = (arrival_tick // ticks_per_day) * ticks_per_day
+        adjusted_tick = current_day_start_tick + helper.seconds_to_tick_offset(next_start_seconds)
+        
+        return (adjusted_tick, True)
 
     def run(self) -> Dict[str, Any]:
         """运行回测。
@@ -402,6 +470,28 @@ class EventLoopRunner:
         for order in pending_orders:
             # 计算订单到达交易所的时间（统一时间线）
             arrival_time = int(order.create_time) + int(self.config.delay_out)
+            
+            # 根据交易时段调整到达时间
+            adjusted_arrival, success = self._adjust_arrival_time_for_trading_hours(
+                arrival_time, is_order=True
+            )
+            
+            if not success:
+                # 到达时间在最后交易时段之后，订单被拒绝
+                self.diagnostics["orders_rejected_after_trading"] += 1
+                # 生成拒绝回执
+                reject_receipt = OrderReceipt(
+                    order_id=order.order_id,
+                    receipt_type="REJECTED",
+                    timestamp=arrival_time,
+                    fill_qty=0,
+                    fill_price=0.0,
+                    remaining_qty=order.qty,
+                )
+                self._schedule_receipt(reject_receipt, event_queue, t_b)
+                continue
+            
+            arrival_time = adjusted_arrival
             
             # 只处理到达时间在区间内的订单
             if arrival_time >= t_a and arrival_time < t_b:
@@ -642,6 +732,10 @@ class EventLoopRunner:
         
         使用统一时间线。将撤单到达时间落在区间[t_a, t_b)内的撤单请求加入事件队列。
         
+        根据交易时段调整到达时间：
+        - 如果到达时间在交易时段之间，调整到下一个交易时段开始
+        - 如果在最后一个交易时段结束之后，撤单失败
+        
         Args:
             event_queue: 事件队列
             t_a: 区间开始时间
@@ -652,6 +746,28 @@ class EventLoopRunner:
         for cancel_sent_time, cancel_request in self._pending_cancels:
             # 计算撤单到达时间（统一时间线）
             arrival_time = cancel_sent_time + self.config.delay_out
+            
+            # 根据交易时段调整到达时间
+            adjusted_arrival, success = self._adjust_arrival_time_for_trading_hours(
+                arrival_time, is_order=False
+            )
+            
+            if not success:
+                # 到达时间在最后交易时段之后，撤单失败
+                self.diagnostics["cancels_failed_after_trading"] += 1
+                # 生成撤单失败回执
+                reject_receipt = OrderReceipt(
+                    order_id=cancel_request.order_id,
+                    receipt_type="REJECTED",
+                    timestamp=arrival_time,
+                    fill_qty=0,
+                    fill_price=0.0,
+                    remaining_qty=0,
+                )
+                self._schedule_receipt(reject_receipt, event_queue, t_b)
+                continue
+            
+            arrival_time = adjusted_arrival
             
             if arrival_time >= t_a and arrival_time < t_b:
                 # 撤单到达时间在区间内，加入事件队列

@@ -273,6 +273,80 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 
 ---
 
+### 合约配置 (contract)
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `contract_id` | string | `""` | 合约ID，用于从合约字典中查找对应合约信息 |
+| `contract_dictionary_path` | string | `""` | 合约字典XML文件路径 |
+
+#### 合约字典XML格式
+
+合约字典是一个包含所有合约信息的XML文件，系统会根据用户提供的`contract_id`从中读取对应合约的详细信息。
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<ContractDictionaryConfig>
+    <Contract>
+        <ContractId>IF2401</ContractId>
+        <TickSize>0.2</TickSize>
+        <ExchangeCode>CFFEX</ExchangeCode>
+        <TradingHours>
+            <TradingHour>
+                <StartTime>09:30:00</StartTime>
+                <EndTime>11:30:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>13:00:00</StartTime>
+                <EndTime>15:00:00</EndTime>
+            </TradingHour>
+        </TradingHours>
+    </Contract>
+    <Contract>
+        <ContractId>AU2401</ContractId>
+        <TickSize>0.02</TickSize>
+        <ExchangeCode>SHFE</ExchangeCode>
+        <TradingHours>
+            <TradingHour>
+                <StartTime>21:00:00</StartTime>
+                <EndTime>02:30:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>09:00:00</StartTime>
+                <EndTime>10:15:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>10:30:00</StartTime>
+                <EndTime>11:30:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>13:30:00</StartTime>
+                <EndTime>15:00:00</EndTime>
+            </TradingHour>
+        </TradingHours>
+    </Contract>
+</ContractDictionaryConfig>
+```
+
+#### 交易时段说明
+
+- 每个合约可以有多个交易时段
+- 支持跨越午夜的时段（如夜盘从21:00到次日02:30）
+- 时间格式为 `HH:MM:SS`
+- 系统会根据交易时段自动处理快照复制：
+  - 在同一交易时段内，正常进行快照复制填充
+  - 在不同交易时段之间（如上午盘和下午盘之间），不进行快照复制
+
+**示例配置：**
+```xml
+<contract>
+    <contract_id>AU2401</contract_id>
+    <contract_dictionary_path>data/contracts.xml</contract_dictionary_path>
+</contract>
+```
+
+---
+
 ## 命令行覆盖
 
 命令行参数可以覆盖配置文件中的设置：
