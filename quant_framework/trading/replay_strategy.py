@@ -15,7 +15,6 @@ CSV文件格式：
 import csv
 import logging
 import os
-from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
 from ..core.interfaces import IStrategy
@@ -24,36 +23,6 @@ from ..core.dto import SnapshotDTO, ReadOnlyOMSView
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class OrderRecord:
-    """下单记录。
-    
-    Attributes:
-        order_id: 订单ID
-        limit_price: 限价
-        volume: 数量
-        direction: 方向 (Buy/Sell)
-        sent_time: 发送时间（对应RecvTime）
-    """
-    order_id: int
-    limit_price: float
-    volume: int
-    direction: str
-    sent_time: int
-
-
-@dataclass
-class CancelRecord:
-    """撤单记录。
-    
-    Attributes:
-        order_id: 要撤销的订单ID
-        cancel_sent_time: 撤单发送时间
-    """
-    order_id: int
-    cancel_sent_time: int
 
 
 class ReplayStrategy(IStrategy):
@@ -71,8 +40,6 @@ class ReplayStrategy(IStrategy):
         name: 策略名称
         order_file: 下单文件路径
         cancel_file: 撤单文件路径
-        orders: 解析后的订单记录列表
-        cancels: 解析后的撤单记录列表
         is_first_snapshot: 是否是第一张快照
         pending_orders: 待发送的订单（按sent_time排序）
         pending_cancels: 待发送的撤单（按cancel_sent_time排序）
@@ -96,30 +63,35 @@ class ReplayStrategy(IStrategy):
         self.order_file = order_file
         self.cancel_file = cancel_file
         
-        # 解析后的记录
-        self.orders: List[OrderRecord] = []
-        self.cancels: List[CancelRecord] = []
-        
         # 状态
         self.is_first_snapshot = True
         self.pending_orders: List[Tuple[int, Order]] = []  # (sent_time, order)
         self.pending_cancels: List[Tuple[int, CancelRequest]] = []  # (cancel_sent_time, cancel_request)
         self.current_time = 0
         
-        # 订单ID映射：原始order_id -> 内部order_id字符串
+        # 统计计数器
+        self._total_orders_loaded = 0
+        self._total_cancels_loaded = 0
+        
+        # 订单ID映射：原始order_id -> 内部order_id字符串（用于撤单关联）
         self._order_id_map: dict = {}
         
-        # 加载文件
+        # 加载文件，直接存入pending_orders/pending_cancels
         if order_file and os.path.exists(order_file):
             self._load_orders(order_file)
         if cancel_file and os.path.exists(cancel_file):
             self._load_cancels(cancel_file)
         
-        # 按时间排序
-        self._prepare_pending_events()
+        # 一次性排序
+        self.pending_orders.sort(key=lambda x: x[0])
+        self.pending_cancels.sort(key=lambda x: x[0])
+        
+        # 记录初始加载总数
+        self._total_orders_loaded = len(self.pending_orders)
+        self._total_cancels_loaded = len(self.pending_cancels)
     
     def _load_orders(self, filepath: str) -> None:
-        """从CSV文件加载下单记录。
+        """从CSV文件加载下单记录，直接转换为Order对象存入pending_orders。
         
         Args:
             filepath: CSV文件路径
@@ -128,20 +100,29 @@ class ReplayStrategy(IStrategy):
             reader = csv.DictReader(f)
             for row in reader:
                 try:
-                    record = OrderRecord(
-                        order_id=int(row['OrderId']),
-                        limit_price=float(row['LimitPrice']),
-                        volume=int(row['Volume']),
-                        direction=row['OrderDirection'],
-                        sent_time=int(row['SentTime']),
+                    order_id = int(row['OrderId'])
+                    sent_time = int(row['SentTime'])
+                    limit_price = float(row['LimitPrice'])
+                    volume = int(row['Volume'])
+                    direction = row['OrderDirection']
+                    
+                    order_id_str = f"{self.name}-{order_id}"
+                    self._order_id_map[order_id] = order_id_str
+                    
+                    side = Side.BUY if direction.upper() == "BUY" else Side.SELL
+                    order = Order(
+                        order_id=order_id_str,
+                        side=side,
+                        price=limit_price,
+                        qty=volume,
                     )
-                    self.orders.append(record)
+                    self.pending_orders.append((sent_time, order))
                 except (KeyError, ValueError) as e:
                     # 跳过无效行
                     logger.warning(f"Skipping invalid order row: {row}, error: {e}")
     
     def _load_cancels(self, filepath: str) -> None:
-        """从CSV文件加载撤单记录。
+        """从CSV文件加载撤单记录，直接转换为CancelRequest对象存入pending_cancels。
         
         Args:
             filepath: CSV文件路径
@@ -150,47 +131,22 @@ class ReplayStrategy(IStrategy):
             reader = csv.DictReader(f)
             for row in reader:
                 try:
-                    record = CancelRecord(
-                        order_id=int(row['OrderId']),
-                        cancel_sent_time=int(row['CancelSentTime']),
+                    order_id = int(row['OrderId'])
+                    cancel_sent_time = int(row['CancelSentTime'])
+                    
+                    # 撤单时需要使用映射后的订单ID
+                    order_id_str = self._order_id_map.get(
+                        order_id, 
+                        f"{self.name}-{order_id}"
                     )
-                    self.cancels.append(record)
+                    cancel_request = CancelRequest(
+                        order_id=order_id_str,
+                        create_time=cancel_sent_time,
+                    )
+                    self.pending_cancels.append((cancel_sent_time, cancel_request))
                 except (KeyError, ValueError) as e:
                     # 跳过无效行
                     logger.warning(f"Skipping invalid cancel row: {row}, error: {e}")
-    
-    def _prepare_pending_events(self) -> None:
-        """准备待处理的订单和撤单事件，按时间排序。"""
-        # 转换订单记录为Order对象
-        for record in self.orders:
-            order_id_str = f"{self.name}-{record.order_id}"
-            self._order_id_map[record.order_id] = order_id_str
-            
-            side = Side.BUY if record.direction.upper() == "BUY" else Side.SELL
-            order = Order(
-                order_id=order_id_str,
-                side=side,
-                price=record.limit_price,
-                qty=record.volume,
-            )
-            self.pending_orders.append((record.sent_time, order))
-        
-        # 转换撤单记录为CancelRequest对象
-        for record in self.cancels:
-            # 撤单时需要使用映射后的订单ID
-            order_id_str = self._order_id_map.get(
-                record.order_id, 
-                f"{self.name}-{record.order_id}"
-            )
-            cancel_request = CancelRequest(
-                order_id=order_id_str,
-                create_time=record.cancel_sent_time,
-            )
-            self.pending_cancels.append((record.cancel_sent_time, cancel_request))
-        
-        # 按时间排序
-        self.pending_orders.sort(key=lambda x: x[0])
-        self.pending_cancels.sort(key=lambda x: x[0])
     
     def on_snapshot(self, snapshot: SnapshotDTO, oms_view: ReadOnlyOMSView) -> List[Order]:
         """快照到达时回调。
@@ -248,8 +204,8 @@ class ReplayStrategy(IStrategy):
             统计信息字典
         """
         return {
-            'total_orders': len(self.orders),
-            'total_cancels': len(self.cancels),
+            'total_orders': self._total_orders_loaded,
+            'total_cancels': self._total_cancels_loaded,
             'pending_orders': len(self.pending_orders),
             'pending_cancels': len(self.pending_cancels),
         }
