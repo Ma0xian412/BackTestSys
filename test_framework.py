@@ -2148,7 +2148,7 @@ def test_replay_strategy():
     
     import os
     import tempfile
-    from quant_framework.trading.replay_strategy import ReplayStrategy, OrderRecord, CancelRecord
+    from quant_framework.trading.replay_strategy import ReplayStrategy
     from quant_framework.core.types import Order, CancelRequest, Side
     
     # 创建临时CSV文件
@@ -2175,29 +2175,30 @@ def test_replay_strategy():
             cancel_file=cancel_file,
         )
         
-        # 验证加载的订单
-        assert len(strategy.orders) == 3, f"应加载3个订单，实际{len(strategy.orders)}"
-        assert strategy.orders[0].order_id == 1001
-        assert strategy.orders[0].limit_price == 100.5
-        assert strategy.orders[0].volume == 10
-        assert strategy.orders[0].direction == "Buy"
-        assert strategy.orders[0].sent_time == 1000
+        # 验证加载的订单（直接验证pending_orders）
+        assert len(strategy.pending_orders) == 3, f"应加载3个订单，实际{len(strategy.pending_orders)}"
+        first_order_time, first_order = strategy.pending_orders[0]
+        assert first_order_time == 1000
+        assert first_order.price == 100.5
+        assert first_order.qty == 10
+        assert first_order.side == Side.BUY
         print(f"  ✓ 成功加载3个订单")
         
-        # 验证加载的撤单
-        assert len(strategy.cancels) == 2, f"应加载2个撤单，实际{len(strategy.cancels)}"
-        assert strategy.cancels[0].order_id == 1001
-        assert strategy.cancels[0].cancel_sent_time == 1500
+        # 验证加载的撤单（直接验证pending_cancels）
+        assert len(strategy.pending_cancels) == 2, f"应加载2个撤单，实际{len(strategy.pending_cancels)}"
+        first_cancel_time, first_cancel = strategy.pending_cancels[0]
+        assert first_cancel_time == 1500
+        assert first_cancel.order_id == "TestReplay-1001"
         print(f"  ✓ 成功加载2个撤单")
         
         # 验证pending_orders按时间排序
-        assert len(strategy.pending_orders) == 3
         times = [t for t, o in strategy.pending_orders]
         assert times == sorted(times), "订单应按时间排序"
         print(f"  ✓ 订单按时间正确排序")
         
-        # 验证pending_cancels
-        assert len(strategy.pending_cancels) == 2
+        # 验证pending_cancels按时间排序
+        cancel_times = [t for t, c in strategy.pending_cancels]
+        assert cancel_times == sorted(cancel_times), "撤单应按时间排序"
         print(f"  ✓ 撤单列表正确准备")
         
         # 测试on_snapshot返回所有订单
