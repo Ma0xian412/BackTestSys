@@ -256,16 +256,20 @@ class ReceiptLogger:
         total_orders = len(self.order_total_qty)
         total_qty = sum(self.order_total_qty.values())
         filled_qty = sum(self.order_filled_qty.values())
-        fully_filled_orders = len(self._full_fill_counts)
+        fully_filled_orders = sum(
+            1
+            for oid, total_qty in self.order_total_qty.items()
+            if total_qty > 0 and self.order_filled_qty.get(oid, 0) >= total_qty
+        )
         partially_filled_orders = sum(
             1
-            for oid in self.order_filled_qty
-            if 0 < self.order_filled_qty[oid] < self.order_total_qty.get(oid, 0)
+            for oid, total_qty in self.order_total_qty.items()
+            if total_qty > 0 and 0 < self.order_filled_qty.get(oid, 0) < total_qty
         )
         unfilled_orders = sum(
             1
-            for oid in self.order_total_qty
-            if self.order_filled_qty.get(oid, 0) == 0
+            for oid, total_qty in self.order_total_qty.items()
+            if total_qty > 0 and self.order_filled_qty.get(oid, 0) == 0
         )
         full_fill_rate = fully_filled_orders / total_orders if total_orders else 0.0
         partial_fill_rate = partially_filled_orders / total_orders if total_orders else 0.0
@@ -301,8 +305,8 @@ class ReceiptLogger:
           - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
           - Unfilled: 未成交的订单数
-        - Final Fill Rate: 最终成交率统计（基于订单最终状态）
-        - Fill Rate: 成交率统计（按数量/按订单数）
+        - Final Fill Rate: 最终成交率统计（基于订单最终状态，拆分完全/部分）
+        - Fill Rate: 成交率统计（按数量/按订单数，订单数仅统计完全成交）
         """
         stats = self.get_statistics()
         
