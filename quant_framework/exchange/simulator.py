@@ -1197,11 +1197,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     if current_fill > shadow.filled_qty:
                         new_fill = current_fill - shadow.filled_qty
                         
-                        # If this fill completes the order, emit a FILL receipt
-                        completes_order = shadow.remaining_qty - new_fill <= 0
-                        if completes_order:
-                            new_fill = shadow.remaining_qty
-                        
+                        # Validate fill delta before checking completion
                         if not self._validate_fill_delta(
                             shadow.order_id,
                             new_fill,
@@ -1211,6 +1207,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             continue
                         if new_fill == 0:
                             continue
+                        
+                        # If this fill completes the order, emit a FILL receipt
+                        completes_order = new_fill >= shadow.remaining_qty
+                        if completes_order:
+                            new_fill = shadow.remaining_qty
                         
                         # Update cache for the qty change
                         level._active_shadow_qty -= new_fill
