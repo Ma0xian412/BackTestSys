@@ -325,7 +325,7 @@ class ReceiptLogger:
         print(f"  - Partial Fill (部分成交回执数): {stats['partial_fill_count']}")
         print(f"  - Full Fill (全部成交回执数): {stats['full_fill_count']}")
         if stats['full_fill_count'] != stats['fully_filled_orders']:
-            print(f"    * 注: 部分成交后撤单/未满量的订单只会产生PARTIAL回执，不会产生Full Fill回执")
+            print(f"    * 注: 部分成交后撤单/未满量的订单只会产生Partial Fill回执，不会产生Full Fill回执")
         print(f"  - Canceled (已撤单): {stats['cancel_count']}")
         print(f"  - Rejected (已拒绝): {stats['reject_count']}")
         print()
