@@ -3583,6 +3583,261 @@ def test_starting_price_trade_prepending():
     print("✓ Starting price trade prepending test passed")
 
 
+def test_contract_config_loading():
+    """测试合约配置加载功能。
+    
+    验证：
+    1. 能够从合约字典XML文件中正确加载合约信息
+    2. 交易时段（包括跨越午夜的时段）能够正确解析
+    3. 未找到的合约返回None
+    """
+    print("\n--- Test: Contract Config Loading ---")
+    
+    import os
+    import tempfile
+    from quant_framework.config import _load_contract_dictionary, TradingHour, ContractInfo
+    
+    # 创建临时合约字典文件
+    contract_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<ContractDictionaryConfig>
+    <Contract>
+        <ContractId>IF2401</ContractId>
+        <TickSize>0.2</TickSize>
+        <ExchangeCode>CFFEX</ExchangeCode>
+        <TradingHours>
+            <TradingHour>
+                <StartTime>09:30:00</StartTime>
+                <EndTime>11:30:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>13:00:00</StartTime>
+                <EndTime>15:00:00</EndTime>
+            </TradingHour>
+        </TradingHours>
+    </Contract>
+    <Contract>
+        <ContractId>AU2401</ContractId>
+        <TickSize>0.02</TickSize>
+        <ExchangeCode>SHFE</ExchangeCode>
+        <TradingHours>
+            <TradingHour>
+                <StartTime>21:00:00</StartTime>
+                <EndTime>02:30:00</EndTime>
+            </TradingHour>
+            <TradingHour>
+                <StartTime>09:00:00</StartTime>
+                <EndTime>10:15:00</EndTime>
+            </TradingHour>
+        </TradingHours>
+    </Contract>
+</ContractDictionaryConfig>"""
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
+        f.write(contract_xml)
+        temp_path = f.name
+    
+    try:
+        # 测试1: 加载IF2401
+        print("\n测试1: 加载IF2401合约信息...")
+        info = _load_contract_dictionary(temp_path, "IF2401")
+        assert info is not None, "应该找到IF2401合约"
+        assert info.contract_id == "IF2401", f"合约ID应为IF2401，实际为{info.contract_id}"
+        assert info.tick_size == 0.2, f"TickSize应为0.2，实际为{info.tick_size}"
+        assert info.exchange_code == "CFFEX", f"ExchangeCode应为CFFEX，实际为{info.exchange_code}"
+        assert len(info.trading_hours) == 2, f"应有2个交易时段，实际有{len(info.trading_hours)}"
+        assert info.trading_hours[0].start_time == "09:30:00", "第一个时段开始时间错误"
+        assert info.trading_hours[0].end_time == "11:30:00", "第一个时段结束时间错误"
+        print(f"  ✓ IF2401加载成功: tick_size={info.tick_size}, exchange={info.exchange_code}")
+        
+        # 测试2: 加载AU2401（有跨越午夜的时段）
+        print("\n测试2: 加载AU2401合约信息（有跨越午夜的时段）...")
+        info = _load_contract_dictionary(temp_path, "AU2401")
+        assert info is not None, "应该找到AU2401合约"
+        assert info.contract_id == "AU2401"
+        assert info.tick_size == 0.02
+        assert len(info.trading_hours) == 2
+        assert info.trading_hours[0].start_time == "21:00:00", "夜盘开始时间应为21:00:00"
+        assert info.trading_hours[0].end_time == "02:30:00", "夜盘结束时间应为02:30:00"
+        print(f"  ✓ AU2401加载成功: 夜盘={info.trading_hours[0].start_time}-{info.trading_hours[0].end_time}")
+        
+        # 测试3: 查找不存在的合约
+        print("\n测试3: 查找不存在的合约...")
+        info = _load_contract_dictionary(temp_path, "NON_EXISTENT")
+        assert info is None, "不存在的合约应返回None"
+        print("  ✓ 不存在的合约正确返回None")
+        
+        # 测试4: 空路径或空合约ID
+        print("\n测试4: 空路径或空合约ID...")
+        assert _load_contract_dictionary("", "IF2401") is None
+        assert _load_contract_dictionary(temp_path, "") is None
+        print("  ✓ 空参数正确处理")
+        
+    finally:
+        os.unlink(temp_path)
+    
+    print("✓ Contract config loading test passed")
+
+
+def test_trading_hours_session_detection():
+    """测试交易时段检测功能。
+    
+    验证SnapshotDuplicatingFeed能够正确检测：
+    1. 时间是否在交易时段内
+    2. 两个时间点是否跨越交易时段间隔
+    3. 跨越午夜的交易时段处理
+    """
+    print("\n--- Test: Trading Hours Session Detection ---")
+    
+    from quant_framework.core.data_loader import SnapshotDuplicatingFeed
+    from quant_framework.config import TradingHour
+    
+    # 创建mock feed
+    class MockFeed:
+        def __init__(self):
+            self.idx = 0
+        def next(self):
+            return None
+        def reset(self):
+            self.idx = 0
+    
+    # 测试正常时段（09:30 - 11:30, 13:00 - 15:00）
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    
+    feed = SnapshotDuplicatingFeed(MockFeed(), trading_hours=trading_hours)
+    
+    # 测试1: 时间解析
+    print("\n测试1: 时间解析...")
+    assert feed._parse_time_to_seconds("09:30:00") == 9 * 3600 + 30 * 60
+    assert feed._parse_time_to_seconds("21:00:00") == 21 * 3600
+    assert feed._parse_time_to_seconds("02:30:00") == 2 * 3600 + 30 * 60
+    print("  ✓ 时间解析正确")
+    
+    # 测试2: 正常时段内的检测
+    print("\n测试2: 正常时段内的检测...")
+    assert feed._is_in_any_trading_session(9 * 3600 + 30 * 60)  # 09:30:00
+    assert feed._is_in_any_trading_session(10 * 3600)  # 10:00:00
+    assert feed._is_in_any_trading_session(11 * 3600 + 30 * 60)  # 11:30:00
+    assert feed._is_in_any_trading_session(13 * 3600)  # 13:00:00
+    assert not feed._is_in_any_trading_session(12 * 3600)  # 12:00:00 (午休)
+    print("  ✓ 正常时段检测正确")
+    
+    # 测试3: 跨越午夜的时段
+    print("\n测试3: 跨越午夜的时段...")
+    night_hours = [
+        TradingHour(start_time="21:00:00", end_time="02:30:00"),
+        TradingHour(start_time="09:00:00", end_time="10:15:00"),
+    ]
+    
+    feed2 = SnapshotDuplicatingFeed(MockFeed(), trading_hours=night_hours)
+    
+    # 夜盘时间
+    assert feed2._is_in_any_trading_session(21 * 3600)  # 21:00:00
+    assert feed2._is_in_any_trading_session(23 * 3600)  # 23:00:00
+    assert feed2._is_in_any_trading_session(1 * 3600)   # 01:00:00 (次日凌晨)
+    assert feed2._is_in_any_trading_session(2 * 3600 + 30 * 60)  # 02:30:00
+    
+    # 非交易时间
+    assert not feed2._is_in_any_trading_session(3 * 3600)  # 03:00:00
+    assert not feed2._is_in_any_trading_session(8 * 3600)  # 08:00:00
+    
+    print("  ✓ 跨越午夜时段检测正确")
+    
+    print("✓ Trading hours session detection test passed")
+
+
+def test_snapshot_duplication_with_trading_hours():
+    """测试带交易时段的快照复制功能。
+    
+    验证：
+    1. 同一交易时段内正常进行快照复制
+    2. 不同交易时段之间不进行快照复制
+    3. 跨越午夜的交易时段正确处理
+    """
+    print("\n--- Test: Snapshot Duplication with Trading Hours ---")
+    
+    from quant_framework.core.data_loader import SnapshotDuplicatingFeed
+    from quant_framework.core.types import TICK_PER_MS
+    from quant_framework.config import TradingHour
+    
+    # 创建mock feed
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    def time_to_tick(hours, minutes, seconds):
+        """将时间转换为tick"""
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        return total_seconds * 10_000_000
+    
+    # 交易时段
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    
+    # 测试1: 同一时段内的复制
+    print("\n测试1: 同一交易时段内的复制 (09:30:00 -> 09:30:02)...")
+    snap1 = create_test_snapshot(time_to_tick(9, 30, 0), 100.0, 101.0)
+    snap2 = create_test_snapshot(time_to_tick(9, 30, 2), 100.0, 101.0)  # 2秒后
+    
+    feed = SnapshotDuplicatingFeed(MockFeed([snap1, snap2]), trading_hours=trading_hours)
+    
+    count = 0
+    while feed.next() is not None:
+        count += 1
+    
+    # 2秒 = 2000ms，间隔超过500ms，应该有复制
+    # 预期：原始2个 + 约3个复制 = 约5个
+    assert count >= 4, f"同一时段内应进行复制，实际{count}个快照"
+    print(f"  ✓ 同一时段内复制正常，共{count}个快照")
+    
+    # 测试2: 不同时段之间不复制
+    print("\n测试2: 不同交易时段之间不复制 (11:29:59 -> 13:00:00)...")
+    snap1 = create_test_snapshot(time_to_tick(11, 29, 59), 100.0, 101.0)
+    snap2 = create_test_snapshot(time_to_tick(13, 0, 0), 100.0, 101.0)  # 中午休市后
+    
+    feed = SnapshotDuplicatingFeed(MockFeed([snap1, snap2]), trading_hours=trading_hours)
+    
+    count = 0
+    while feed.next() is not None:
+        count += 1
+    
+    # 跨越休市，不应该复制
+    assert count == 2, f"跨越休市不应复制，预期2个，实际{count}个"
+    print(f"  ✓ 跨越休市时段不复制，共{count}个快照")
+    
+    # 测试3: 无交易时段配置时正常复制
+    print("\n测试3: 无交易时段配置时正常复制...")
+    snap1 = create_test_snapshot(time_to_tick(11, 29, 59), 100.0, 101.0)
+    snap2 = create_test_snapshot(time_to_tick(13, 0, 0), 100.0, 101.0)
+    
+    feed = SnapshotDuplicatingFeed(MockFeed([snap1, snap2]), trading_hours=None)
+    
+    count = 0
+    while feed.next() is not None:
+        count += 1
+    
+    # 没有交易时段配置，应该正常复制
+    assert count > 2, f"无交易时段配置应正常复制，实际{count}个快照"
+    print(f"  ✓ 无交易时段配置时正常复制，共{count}个快照")
+    
+    print("✓ Snapshot duplication with trading hours test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -3639,6 +3894,9 @@ def run_all_tests():
         test_snapshot_duplication,
         test_dynamic_queue_tracking_netflow,
         test_starting_price_trade_prepending,
+        test_contract_config_loading,
+        test_trading_hours_session_detection,
+        test_snapshot_duplication_with_trading_hours,
     ]
     
     passed = 0
