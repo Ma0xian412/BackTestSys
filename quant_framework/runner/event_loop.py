@@ -570,21 +570,45 @@ class EventLoopRunner:
         """判断区间内是否存在需要处理的订单或撤单事件。
         
         使用统一时间线。
+        
+        优化策略：
+        1. 对于已到达交易所的订单(arrival_time is not None)，检查是否在区间内
+        2. 对于未到达的订单，按计算出的arrival_time排序后检查
+           - 如果arrival_time >= t_b，由于已排序，后续订单都会 >= t_b，直接break
         """
         active_orders = self.oms.get_active_orders()
         
-        # 检查活跃订单
+        # 分离已到达和未到达的订单
+        arrived_orders = []
+        pending_orders = []
+        
         for order in active_orders:
             if order.arrival_time is not None:
-                if order.arrival_time < t_b:
-                    return True
-                continue
-
-            arrival_time = int(order.create_time) + int(self.config.delay_out)
-            if arrival_time < t_a:
-                continue
-
-            if arrival_time < t_b:
+                arrived_orders.append(order)
+            else:
+                pending_orders.append(order)
+        
+        # 检查已到达的订单
+        for order in arrived_orders:
+            if order.arrival_time < t_b:
+                return True
+        
+        # 对未到达的订单按arrival_time排序
+        # 计算并缓存arrival_time以避免重复计算
+        pending_with_arrival = [
+            (int(order.create_time) + int(self.config.delay_out), order)
+            for order in pending_orders
+        ]
+        pending_with_arrival.sort(key=lambda x: x[0])
+        
+        # 检查未到达的订单（已按arrival_time升序排列）
+        for arrival_time, order in pending_with_arrival:
+            # 优化：如果arrival_time >= t_b，后续所有订单也都 >= t_b，直接退出
+            if arrival_time >= t_b:
+                break
+            
+            # 只处理arrival_time在区间[t_a, t_b)内的订单
+            if arrival_time >= t_a:
                 return True
         
         # 检查待处理的撤单
