@@ -6,13 +6,14 @@
 - 提供配置数据类，确保类型安全
 - 支持默认值和配置验证
 - 支持环境变量覆盖
+- 支持从外部XML文件加载合约字典配置
 """
 
 import os
 import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 
@@ -22,6 +23,59 @@ try:
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
+
+
+@dataclass
+class TradingHour:
+    """交易时段配置。
+    
+    表示一个交易时段的开始和结束时间。
+    时间格式为 "HH:MM:SS"，例如 "21:00:00" 或 "02:30:00"。
+    
+    注意：如果结束时间小于开始时间，表示跨越午夜。
+    例如 StartTime="21:00:00", EndTime="02:30:00" 表示从晚上9点到凌晨2点半。
+    
+    Attributes:
+        start_time: 开始时间，格式 "HH:MM:SS"
+        end_time: 结束时间，格式 "HH:MM:SS"
+    """
+    start_time: str = ""
+    end_time: str = ""
+
+
+@dataclass
+class ContractInfo:
+    """合约信息配置。
+    
+    存储从合约字典XML文件中读取的合约信息。
+    
+    Attributes:
+        contract_id: 合约ID
+        tick_size: 最小价格变动单位
+        exchange_code: 交易所代码
+        trading_hours: 交易时段列表
+    """
+    contract_id: str = ""
+    tick_size: float = 1.0
+    exchange_code: str = ""
+    trading_hours: List[TradingHour] = field(default_factory=list)
+
+
+@dataclass
+class ContractConfig:
+    """合约配置。
+    
+    用户在主配置文件中指定合约ID和合约字典XML文件路径，
+    系统会自动从合约字典中读取对应合约的详细信息。
+    
+    Attributes:
+        contract_id: 用户指定的合约ID
+        contract_dictionary_path: 合约字典XML文件路径
+        contract_info: 从合约字典中读取的合约详细信息（自动填充）
+    """
+    contract_id: str = ""
+    contract_dictionary_path: str = ""
+    contract_info: Optional[ContractInfo] = None
 
 
 @dataclass
@@ -150,6 +204,7 @@ class BacktestConfig:
     receipt_logger: ReceiptLoggerConfig = field(default_factory=ReceiptLoggerConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     snapshot: SnapshotConfig = field(default_factory=SnapshotConfig)
+    contract: ContractConfig = field(default_factory=ContractConfig)
 
 
 def _dict_to_dataclass(data_class, data: Dict[str, Any]):
@@ -323,6 +378,109 @@ def _convert_xml_value(value: str) -> Any:
     return value
 
 
+def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optional[ContractInfo]:
+    """从合约字典XML文件中加载指定合约的信息。
+    
+    合约字典XML格式：
+    <ContractDictionaryConfig>
+        <Contract>
+            <ContractId>...</ContractId>
+            <TickSize>...</TickSize>
+            <ExchangeCode>...</ExchangeCode>
+            <TradingHours>
+                <TradingHour>
+                    <StartTime>21:00:00</StartTime>
+                    <EndTime>02:30:00</EndTime>
+                </TradingHour>
+                ...
+            </TradingHours>
+        </Contract>
+        ...
+    </ContractDictionaryConfig>
+    
+    Args:
+        dictionary_path: 合约字典XML文件路径
+        contract_id: 要查找的合约ID
+        
+    Returns:
+        找到的合约信息，如果未找到则返回None
+        
+    Raises:
+        FileNotFoundError: 合约字典文件不存在
+        ValueError: XML解析错误
+    """
+    if not dictionary_path or not contract_id:
+        return None
+    
+    if not os.path.exists(dictionary_path):
+        raise FileNotFoundError(f"Contract dictionary file not found: {dictionary_path}")
+    
+    try:
+        tree = ET.parse(dictionary_path)
+        root = tree.getroot()
+        
+        # 查找匹配的合约
+        for contract_elem in root.findall("Contract"):
+            cid_elem = contract_elem.find("ContractId")
+            if cid_elem is None or cid_elem.text is None:
+                continue
+            
+            if cid_elem.text.strip() == contract_id:
+                # 找到匹配的合约，解析信息
+                tick_size = 1.0
+                exchange_code = ""
+                trading_hours: List[TradingHour] = []
+                
+                # 解析 TickSize
+                tick_size_elem = contract_elem.find("TickSize")
+                if tick_size_elem is not None and tick_size_elem.text:
+                    try:
+                        tick_size = float(tick_size_elem.text.strip())
+                    except ValueError:
+                        pass
+                
+                # 解析 ExchangeCode
+                exchange_code_elem = contract_elem.find("ExchangeCode")
+                if exchange_code_elem is not None and exchange_code_elem.text:
+                    exchange_code = exchange_code_elem.text.strip()
+                
+                # 解析 TradingHours
+                trading_hours_elem = contract_elem.find("TradingHours")
+                if trading_hours_elem is not None:
+                    for th_elem in trading_hours_elem.findall("TradingHour"):
+                        start_time_elem = th_elem.find("StartTime")
+                        end_time_elem = th_elem.find("EndTime")
+                        
+                        start_time = ""
+                        end_time = ""
+                        
+                        if start_time_elem is not None and start_time_elem.text:
+                            start_time = start_time_elem.text.strip()
+                        if end_time_elem is not None and end_time_elem.text:
+                            end_time = end_time_elem.text.strip()
+                        
+                        if start_time and end_time:
+                            trading_hours.append(TradingHour(
+                                start_time=start_time,
+                                end_time=end_time
+                            ))
+                
+                return ContractInfo(
+                    contract_id=contract_id,
+                    tick_size=tick_size,
+                    exchange_code=exchange_code,
+                    trading_hours=trading_hours
+                )
+        
+        # 未找到匹配的合约
+        return None
+        
+    except ET.ParseError as e:
+        raise ValueError(f"XML parsing error in {dictionary_path}: {e}")
+    except Exception as e:
+        raise ValueError(f"Error reading contract dictionary {dictionary_path}: {e}")
+
+
 def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
     """解析原始配置字典。
     
@@ -353,6 +511,22 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
         params=strategy_params
     )
     
+    # 解析合约配置
+    contract_raw = raw_config.get("contract", {})
+    contract_id = contract_raw.get("contract_id", "") if contract_raw else ""
+    contract_dictionary_path = contract_raw.get("contract_dictionary_path", "") if contract_raw else ""
+    
+    # 如果提供了合约ID和字典路径，则从字典中加载合约信息
+    contract_info = None
+    if contract_id and contract_dictionary_path:
+        contract_info = _load_contract_dictionary(contract_dictionary_path, contract_id)
+    
+    contract_config = ContractConfig(
+        contract_id=contract_id,
+        contract_dictionary_path=contract_dictionary_path,
+        contract_info=contract_info
+    )
+    
     return BacktestConfig(
         data=data_config,
         tape=tape_config,
@@ -363,6 +537,7 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
         receipt_logger=receipt_logger_config,
         logging=logging_config,
         snapshot=snapshot_config,
+        contract=contract_config,
     )
 
 
@@ -532,5 +707,19 @@ def print_config(config: BacktestConfig) -> None:
     print("\n[Snapshot]")
     print(f"  min_interval_tick: {config.snapshot.min_interval_tick}")
     print(f"  tolerance_tick: {config.snapshot.tolerance_tick}")
+    
+    print("\n[Contract]")
+    print(f"  contract_id: {config.contract.contract_id or '(not set)'}")
+    print(f"  contract_dictionary_path: {config.contract.contract_dictionary_path or '(not set)'}")
+    if config.contract.contract_info:
+        info = config.contract.contract_info
+        print(f"  Contract Info (loaded from dictionary):")
+        print(f"    tick_size: {info.tick_size}")
+        print(f"    exchange_code: {info.exchange_code or '(not set)'}")
+        print(f"    trading_hours: {len(info.trading_hours)} session(s)")
+        for i, th in enumerate(info.trading_hours, 1):
+            print(f"      Session {i}: {th.start_time} - {th.end_time}")
+    else:
+        print(f"  contract_info: (not loaded)")
     
     print("=" * 60)

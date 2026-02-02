@@ -136,4 +136,34 @@ BackTestSys 回测系统配置文件
              10ms = 100,000 ticks -->
         <tolerance_tick>100000</tolerance_tick>
     </snapshot>
+
+    <!-- ============================================================================
+         合约配置 (Contract Configuration)
+         ============================================================================ -->
+    <contract>
+        <!-- 合约ID (用于从合约字典中查找对应合约信息) -->
+        <contract_id></contract_id>
+        
+        <!-- 合约字典XML文件路径 (包含所有合约的详细信息)
+             XML格式示例：
+             <ContractDictionaryConfig>
+                 <Contract>
+                     <ContractId>IF2401</ContractId>
+                     <TickSize>0.2</TickSize>
+                     <ExchangeCode>CFFEX</ExchangeCode>
+                     <TradingHours>
+                         <TradingHour>
+                             <StartTime>09:30:00</StartTime>
+                             <EndTime>11:30:00</EndTime>
+                         </TradingHour>
+                         <TradingHour>
+                             <StartTime>13:00:00</StartTime>
+                             <EndTime>15:00:00</EndTime>
+                         </TradingHour>
+                     </TradingHours>
+                 </Contract>
+             </ContractDictionaryConfig>
+        -->
+        <contract_dictionary_path></contract_dictionary_path>
+    </contract>
 </config>
