@@ -122,6 +122,16 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Precomputed X rates per segment for fast fill time calculation
         self._x_rates: Dict[Tuple[Side, Price, int], float] = {}
         self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
+
+    def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
+        """Validate fill delta to avoid negative fill quantities."""
+        if delta < 0:
+            logger.warning(
+                f"[Exchange] Advance: skip negative fill delta for {order_id}, "
+                f"filled_qty={filled_qty}, original_qty={original_qty}"
+            )
+            return False
+        return True
     
     def reset(self) -> None:
         """Reset simulator state for new interval."""
@@ -1153,21 +1163,33 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         # Update cache before changing
                         level._active_shadow_qty -= shadow.remaining_qty
                         
+                        remaining_to_fill = shadow.original_qty - shadow.filled_qty
+                        if remaining_to_fill <= 0:
+                            continue
+                        if not self._validate_fill_delta(
+                            shadow.order_id,
+                            remaining_to_fill,
+                            shadow.filled_qty,
+                            shadow.original_qty,
+                        ):
+                            continue
+                        
                         shadow.filled_qty = shadow.original_qty
                         shadow.remaining_qty = 0
                         shadow.status = "FILLED"
                         
+                        # Emit only the remaining delta to avoid double-counting in multi-partial fills
                         receipt = OrderReceipt(
                             order_id=shadow.order_id,
                             receipt_type="FILL",
                             timestamp=fill_time,
-                            fill_qty=shadow.original_qty,
+                            fill_qty=remaining_to_fill,
                             fill_price=shadow.price,
                             remaining_qty=0,
                         )
                         logger.debug(
                             f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                            f"fill_qty={shadow.original_qty}, price={shadow.price}, time={fill_time}"
+                            f"fill_qty={remaining_to_fill}, price={shadow.price}, time={fill_time}"
                         )
                         receipts.append(receipt)
                 elif x_t_to > shadow.pos:
@@ -1176,8 +1198,45 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     if current_fill > shadow.filled_qty:
                         new_fill = current_fill - shadow.filled_qty
                         
+                        # Validate fill delta before checking completion
+                        if new_fill <= 0:
+                            continue
+                        if not self._validate_fill_delta(
+                            shadow.order_id,
+                            new_fill,
+                            shadow.filled_qty,
+                            shadow.original_qty,
+                        ):
+                            continue
+                        
+                        # If this fill completes the order, emit a FILL receipt
+                        # Cap final fill to remaining qty if interpolation overshoots remaining depth
+                        completes_order = new_fill >= shadow.remaining_qty
+                        if completes_order:
+                            new_fill = shadow.remaining_qty
+                        
                         # Update cache for the qty change
                         level._active_shadow_qty -= new_fill
+                        
+                        if completes_order:
+                            shadow.filled_qty += new_fill
+                            shadow.remaining_qty = 0
+                            shadow.status = "FILLED"
+                            
+                            receipt = OrderReceipt(
+                                order_id=shadow.order_id,
+                                receipt_type="FILL",
+                                timestamp=t_to,
+                                fill_qty=new_fill,
+                                fill_price=shadow.price,
+                                remaining_qty=0,
+                            )
+                            logger.debug(
+                                f"[Exchange] Advance: FILL for {shadow.order_id}, "
+                                f"fill_qty={new_fill}, price={shadow.price}, time={t_to}"
+                            )
+                            receipts.append(receipt)
+                            continue
                         
                         shadow.filled_qty = current_fill
                         shadow.remaining_qty = shadow.original_qty - current_fill

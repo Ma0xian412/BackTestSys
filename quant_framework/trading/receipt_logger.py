@@ -9,7 +9,7 @@ import csv
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Set
 from datetime import datetime
 
 from ..core.types import OrderReceipt, ReceiptType
@@ -96,6 +96,7 @@ class ReceiptLogger:
         self._full_fill_counts: Dict[str, int] = {}  # 全部成交次数
         self._cancel_counts: Dict[str, int] = {}  # 撤单次数
         self._reject_counts: Dict[str, int] = {}  # 拒绝次数
+        self._canceled_orders: Set[str] = set()  # Track canceled order IDs to exclude from full-fill stats
     
     def register_order(self, order_id: str, qty: int) -> None:
         """注册新订单，用于计算成交率。
@@ -176,6 +177,7 @@ class ReceiptLogger:
                 
         elif receipt.receipt_type == "CANCELED":
             self._cancel_counts[order_id] = self._cancel_counts.get(order_id, 0) + 1
+            self._canceled_orders.add(order_id)
             # 撤单时，如果有部分成交，fill_qty表示撤单前的已成交量
             if order_id in self.order_filled_qty and receipt.fill_qty > 0:
                 # 撤单回执的fill_qty是累计已成交量
@@ -256,6 +258,29 @@ class ReceiptLogger:
         total_orders = len(self.order_total_qty)
         total_qty = sum(self.order_total_qty.values())
         filled_qty = sum(self.order_filled_qty.values())
+        fully_filled_orders = 0
+        partially_filled_orders = 0
+        unfilled_orders = 0
+        for oid, total_qty in self.order_total_qty.items():
+            if total_qty <= 0:
+                # Skip invalid/non-tradable quantities (0 or negative; defensive guard)
+                continue
+            order_filled_qty = self.order_filled_qty.get(oid, 0)
+            if oid in self._canceled_orders:
+                if order_filled_qty > 0:
+                    partially_filled_orders += 1
+                else:
+                    unfilled_orders += 1
+                continue
+            if order_filled_qty >= total_qty:
+                fully_filled_orders += 1
+            elif order_filled_qty > 0:
+                partially_filled_orders += 1
+            else:
+                unfilled_orders += 1
+        countable_orders = fully_filled_orders + partially_filled_orders + unfilled_orders
+        full_fill_rate = fully_filled_orders / countable_orders if countable_orders else 0.0
+        partial_fill_rate = partially_filled_orders / countable_orders if countable_orders else 0.0
         
         return {
             'total_receipts': len(self.records),
@@ -264,19 +289,15 @@ class ReceiptLogger:
             'total_filled_qty': filled_qty,
             'fill_rate_by_qty': self.calculate_fill_rate(),
             'fill_rate_by_count': self.calculate_fill_rate_by_count(),
+            'full_fill_rate': full_fill_rate,
+            'partial_fill_rate': partial_fill_rate,
             'partial_fill_count': sum(self._partial_fill_counts.values()),
             'full_fill_count': sum(self._full_fill_counts.values()),
             'cancel_count': sum(self._cancel_counts.values()),
             'reject_count': sum(self._reject_counts.values()),
-            'fully_filled_orders': len(self._full_fill_counts),
-            'partially_filled_orders': len([
-                oid for oid in self.order_filled_qty 
-                if 0 < self.order_filled_qty[oid] < self.order_total_qty.get(oid, 0)
-            ]),
-            'unfilled_orders': len([
-                oid for oid in self.order_total_qty 
-                if self.order_filled_qty.get(oid, 0) == 0
-            ]),
+            'fully_filled_orders': fully_filled_orders,
+            'partially_filled_orders': partially_filled_orders,
+            'unfilled_orders': unfilled_orders,
         }
     
     def print_summary(self) -> None:
@@ -287,12 +308,18 @@ class ReceiptLogger:
         - Total Orders: 已注册的总订单数
         - Total Order Qty: 所有订单的总下单数量
         - Total Filled Qty: 所有订单的总成交数量
-        - Receipt Type Distribution: 按回执类型分布统计（一个订单可能产生多条回执）
+        - Receipt Type Distribution: 按回执类型分布统计（一个订单可能产生多条回执，统计的是回执条数）
+          - Full Fill回执数 != 完全成交订单数：部分成交后撤单或最终未满量的订单不会产生Full Fill回执
         - Order Final Status Distribution: 按订单最终状态分布统计
           - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
           - Unfilled: 未成交的订单数
-        - Fill Rate: 成交率统计
+        - Final Fill Rate: 最终成交率统计（按订单最终状态，拆分完全/部分，仅统计数量>0的订单）
+          - Partial Fill Rate = 最终部分成交订单数 / (完全成交 + 部分成交 + 未成交)
+            - 撤单订单若有成交计入部分成交，数量<=0的订单不计入
+          - Final Fill Rate: order-final-status rates (full vs partial), quantity>0 only
+        - Fill Rate: 成交率统计（按数量/按订单数，订单数口径仅统计完全成交）
+          - Fill Rate: quantity-based fill rate + order-count fill rate (full fills only)
         """
         stats = self.get_statistics()
         
@@ -305,8 +332,10 @@ class ReceiptLogger:
         print(f"Total Filled Qty (总成交数量): {stats['total_filled_qty']}")
         print()
         print("回执类型分布 (Receipt Type Distribution):")
-        print(f"  - Partial Fill (部分成交): {stats['partial_fill_count']}")
-        print(f"  - Full Fill (全部成交): {stats['full_fill_count']}")
+        print(f"  - Partial Fill (部分成交回执数): {stats['partial_fill_count']}")
+        print(f"  - Full Fill (全部成交回执数): {stats['full_fill_count']}")
+        if stats['full_fill_count'] != stats['fully_filled_orders']:
+            print(f"    * 注: 部分成交后撤单/未满量的订单只会产生Partial Fill回执，不会产生Full Fill回执")
         print(f"  - Canceled (已撤单): {stats['cancel_count']}")
         print(f"  - Rejected (已拒绝): {stats['reject_count']}")
         print()
@@ -314,6 +343,10 @@ class ReceiptLogger:
         print(f"  - Fully Filled (完全成交): {stats['fully_filled_orders']}")
         print(f"  - Partially Filled (仅部分成交): {stats['partially_filled_orders']}")
         print(f"  - Unfilled (未成交): {stats['unfilled_orders']}")
+        print()
+        print("最终成交率 (Final Fill Rate):")
+        print(f"  - Full Fill Rate (完全成交率): {stats['full_fill_rate']:.2%}")
+        print(f"  - Partial Fill Rate (部分成交率): {stats['partial_fill_rate']:.2%}")
         print()
         print("成交率 (Fill Rate):")
         print(f"  - By Quantity (按数量): {stats['fill_rate_by_qty']:.2%}")
@@ -363,3 +396,4 @@ class ReceiptLogger:
         self._full_fill_counts.clear()
         self._cancel_counts.clear()
         self._reject_counts.clear()
+        self._canceled_orders.clear()

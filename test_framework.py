@@ -423,6 +423,46 @@ def test_exchange_simulator_fill():
     print("✓ Exchange simulator fill test passed")
 
 
+def test_exchange_simulator_multi_partial_to_fill():
+    """验证多次部分成交后最终返回FILL回执。"""
+    print("\n--- Test 7b: Exchange Simulator Multi-Partial to Fill ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    seg = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=1304 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 4},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 0},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg], 1000 * TICK_PER_MS, 1304 * TICK_PER_MS)
+    
+    order = Order(order_id="multi-fill", side=Side.BUY, price=100.0, qty=4)
+    exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
+    
+    receipt_1 = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
+    receipt_2 = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
+    receipt_3 = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
+    
+    receipts = receipt_1 + receipt_2 + receipt_3
+    fill_types = [r.receipt_type for r in receipts]
+    fill_qtys = [r.fill_qty for r in receipts]
+    
+    assert receipts, "应该产生回执"
+    assert fill_types[-1] == "FILL", f"最后一笔应为FILL回执，实际: {fill_types[-1]}"
+    assert sum(fill_qtys) == 4, f"总成交数量应为4，实际: {sum(fill_qtys)}"
+    
+    print("✓ Exchange simulator multi-partial to fill test passed")
+
+
 def test_oms():
     """Test order manager."""
     print("\n--- Test 8: Order Manager ---")
@@ -2219,9 +2259,10 @@ def test_receipt_logger():
         logger.register_order("order-1", 100)
         logger.register_order("order-2", 50)
         logger.register_order("order-3", 30)
+        logger.register_order("order-4", 0)
         
-        assert len(logger.order_total_qty) == 3
-        print(f"  ✓ 注册3个订单成功")
+        assert len(logger.order_total_qty) == 4
+        print(f"  ✓ 注册4个订单成功")
         
         # 记录回执 - 部分成交
         receipt1 = OrderReceipt(
@@ -2259,6 +2300,8 @@ def test_receipt_logger():
         receipt3.recv_time = 3010
         logger.log_receipt(receipt3)
         
+        # 撤单后不应被判为完全成交（不修改订单的累计成交量）
+        
         # 记录回执 - 拒绝
         receipt4 = OrderReceipt(
             order_id="order-3",
@@ -2277,11 +2320,16 @@ def test_receipt_logger():
         # 验证统计
         stats = logger.get_statistics()
         assert stats['total_receipts'] == 4
-        assert stats['total_orders'] == 3
+        assert stats['total_orders'] == 4
         assert stats['partial_fill_count'] == 1
         assert stats['full_fill_count'] == 1
         assert stats['cancel_count'] == 1
         assert stats['reject_count'] == 1
+        assert abs(stats['full_fill_rate'] - (1 / 3)) < 0.01
+        assert abs(stats['partial_fill_rate'] - (1 / 3)) < 0.01
+        assert stats['fully_filled_orders'] == 1
+        assert stats['partially_filled_orders'] == 1
+        assert stats['unfilled_orders'] == 1
         print(f"  ✓ 回执类型统计正确")
         
         # 验证成交量统计
@@ -2299,8 +2347,8 @@ def test_receipt_logger():
         print(f"  ✓ 按数量成交率: {fill_rate_qty:.2%}")
         
         fill_rate_count = logger.calculate_fill_rate_by_count()
-        # 3个订单中1个完全成交
-        expected_rate_count = 1 / 3
+        # 4个订单中1个完全成交（包含一个0数量订单）
+        expected_rate_count = 1 / 4
         assert abs(fill_rate_count - expected_rate_count) < 0.01
         print(f"  ✓ 按订单数成交率: {fill_rate_count:.2%}")
         
@@ -3555,6 +3603,7 @@ def run_all_tests():
         test_exchange_simulator_ioc,
         test_exchange_simulator_coordinate_axis,
         test_exchange_simulator_fill,
+        test_exchange_simulator_multi_partial_to_fill,
         test_oms,
         test_strategy,
         test_two_timeline,
