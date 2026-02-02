@@ -315,6 +315,8 @@ class ReceiptLogger:
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
           - Unfilled: 未成交的订单数
         - Final Fill Rate: 最终成交率统计（按订单最终状态，拆分完全/部分，仅统计数量>0的订单）
+          - Partial Fill Rate = 最终部分成交订单数 / (完全成交 + 部分成交 + 未成交)
+            - 撤单订单若有成交计入部分成交，数量<=0的订单不计入
           - Final Fill Rate: order-final-status rates (full vs partial), quantity>0 only
         - Fill Rate: 成交率统计（按数量/按订单数，订单数口径仅统计完全成交）
           - Fill Rate: quantity-based fill rate + order-count fill rate (full fills only)
