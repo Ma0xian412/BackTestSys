@@ -24,6 +24,7 @@ from enum import Enum, auto
 
 from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
 from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest
+from ..core.trading_hours import TradingHoursHelper
 
 if TYPE_CHECKING:
     from ..trading.receipt_logger import ReceiptLogger
@@ -206,10 +207,6 @@ class EventLoopRunner:
     - 交易时段支持：订单/撤单到达时间基于交易时段调整
     """
 
-    # 时间转换常量
-    TICKS_PER_SECOND = 10_000_000  # 每秒tick数（1 tick = 100ns）
-    SECONDS_PER_DAY = 86400  # 每天秒数
-
     def __init__(
         self,
         feed: IMarketDataFeed,
@@ -244,6 +241,9 @@ class EventLoopRunner:
         self.config = config or RunnerConfig()
         self.receipt_logger = receipt_logger
         self.trading_hours = trading_hours or []
+        
+        # 使用TradingHoursHelper处理交易时段相关逻辑
+        self._trading_hours_helper = TradingHoursHelper(self.trading_hours)
 
         # 当前状态（统一使用recv time）
         self.current_time = 0  # 统一时间（ts_recv）
@@ -265,217 +265,6 @@ class EventLoopRunner:
         }
     
     # ========== 交易时段相关方法 ==========
-    
-    def _parse_time_to_seconds(self, time_str: str) -> int:
-        """将时间字符串解析为一天内的秒数。
-        
-        Args:
-            time_str: 时间字符串，格式 "HH:MM:SS"
-            
-        Returns:
-            一天内的秒数 (0-86399)
-        """
-        parts = time_str.split(":")
-        if len(parts) != 3:
-            return 0
-        try:
-            hours = int(parts[0])
-            minutes = int(parts[1])
-            seconds = int(parts[2])
-            return hours * 3600 + minutes * 60 + seconds
-        except (ValueError, IndexError):
-            return 0
-    
-    def _tick_to_day_seconds(self, tick: int) -> int:
-        """将tick时间戳转换为一天内的秒数。
-        
-        Args:
-            tick: tick时间戳（每tick=100ns）
-            
-        Returns:
-            一天内的秒数 (0-86399)
-        """
-        total_seconds = tick // self.TICKS_PER_SECOND
-        return total_seconds % self.SECONDS_PER_DAY
-    
-    def _seconds_to_tick_offset(self, seconds: int) -> int:
-        """将秒数转换为tick偏移量。
-        
-        Args:
-            seconds: 秒数
-            
-        Returns:
-            tick偏移量
-        """
-        return seconds * self.TICKS_PER_SECOND
-    
-    def _is_within_trading_session(self, start_seconds: int, end_seconds: int, 
-                                    time_seconds: int) -> bool:
-        """检查时间是否在一个交易时段内。
-        
-        支持跨越午夜的时段，例如 start=21:00:00, end=02:30:00。
-        
-        Args:
-            start_seconds: 时段开始时间（一天内的秒数）
-            end_seconds: 时段结束时间（一天内的秒数）
-            time_seconds: 要检查的时间（一天内的秒数）
-            
-        Returns:
-            是否在时段内
-        """
-        if start_seconds <= end_seconds:
-            # 正常时段（如 09:00:00 - 15:00:00）
-            return start_seconds <= time_seconds <= end_seconds
-        else:
-            # 跨越午夜的时段（如 21:00:00 - 02:30:00）
-            return time_seconds >= start_seconds or time_seconds <= end_seconds
-    
-    def _find_trading_session_index(self, time_seconds: int) -> int:
-        """查找时间所在的交易时段索引。
-        
-        Args:
-            time_seconds: 一天内的秒数 (0-86399)
-            
-        Returns:
-            交易时段的索引（从0开始），如果不在任何时段内则返回-1
-        """
-        for i, th in enumerate(self.trading_hours):
-            start_str = getattr(th, 'start_time', '')
-            end_str = getattr(th, 'end_time', '')
-            if not start_str or not end_str:
-                continue
-            start_sec = self._parse_time_to_seconds(start_str)
-            end_sec = self._parse_time_to_seconds(end_str)
-            if self._is_within_trading_session(start_sec, end_sec, time_seconds):
-                return i
-        return -1
-    
-    def _is_in_any_trading_session(self, time_seconds: int) -> bool:
-        """检查时间是否在任何一个交易时段内。
-        
-        Args:
-            time_seconds: 要检查的时间（一天内的秒数）
-            
-        Returns:
-            是否在任何交易时段内
-        """
-        if not self.trading_hours:
-            return True  # 未配置交易时段，默认都在交易时间内
-        
-        return self._find_trading_session_index(time_seconds) >= 0
-    
-    def _get_next_trading_session_start(self, time_seconds: int) -> Optional[int]:
-        """获取下一个交易时段的开始时间（秒）。
-        
-        搜索所有交易时段，找到时间上在time_seconds之后最近的开始时间。
-        
-        Args:
-            time_seconds: 当前时间（一天内的秒数）
-            
-        Returns:
-            下一个交易时段的开始时间（秒），如果没有则返回None
-        """
-        if not self.trading_hours:
-            return None
-        
-        # 收集所有交易时段的开始时间
-        session_starts = []
-        for th in self.trading_hours:
-            start_str = getattr(th, 'start_time', '')
-            if start_str:
-                start_sec = self._parse_time_to_seconds(start_str)
-                session_starts.append(start_sec)
-        
-        if not session_starts:
-            return None
-        
-        # 排序
-        session_starts.sort()
-        
-        # 找到下一个开始时间（严格大于当前时间）
-        for start in session_starts:
-            if start > time_seconds:
-                return start
-        
-        # 如果没有找到，说明当前时间已经过了所有时段的开始时间
-        # 这意味着在当天最后一个时段之后，不应该有下一个时段
-        return None
-    
-    def _is_after_last_trading_session(self, time_seconds: int) -> bool:
-        """检查时间是否在最后一个交易时段结束之后。
-        
-        对于跨越午夜的交易时段（如21:00-02:30），此方法将：
-        - 将结束时间02:30视为当天的最后时段结束
-        - 时间03:00-08:59之间被视为"在最后时段之后"（假设没有其他日盘时段）
-        
-        注意：此方法假设交易日内的时段按照配置顺序排列。
-        对于复杂的跨日场景，需要额外的逻辑处理。
-        
-        Args:
-            time_seconds: 当前时间（一天内的秒数）
-            
-        Returns:
-            是否在最后一个交易时段结束之后
-        """
-        if not self.trading_hours:
-            return False  # 未配置交易时段，永远不会"在最后时段之后"
-        
-        # 首先，如果当前时间在任何交易时段内，则不是"在最后时段之后"
-        # 这个检查在调用方法前已经做过，但为了安全起见再次检查
-        if self._is_in_any_trading_session(time_seconds):
-            return False
-        
-        # 收集所有交易时段的结束时间（考虑跨夜时段）
-        session_ends_non_overnight = []  # 非跨夜时段的结束时间
-        has_overnight_session = False
-        overnight_end = 0  # 跨夜时段的结束时间
-        
-        for th in self.trading_hours:
-            end_str = getattr(th, 'end_time', '')
-            start_str = getattr(th, 'start_time', '')
-            if end_str and start_str:
-                end_sec = self._parse_time_to_seconds(end_str)
-                start_sec = self._parse_time_to_seconds(start_str)
-                
-                if end_sec >= start_sec:  # 非跨夜时段
-                    session_ends_non_overnight.append(end_sec)
-                else:  # 跨夜时段
-                    has_overnight_session = True
-                    overnight_end = end_sec  # 记录跨夜时段的结束时间
-        
-        # 如果只有跨夜时段，没有日盘时段
-        if not session_ends_non_overnight and has_overnight_session:
-            # 跨夜时段的结束时间之后，到下一天的开始之前，都是"最后时段之后"
-            # 例如：21:00-02:30，则03:00-20:59都是"最后时段之后"
-            return time_seconds > overnight_end
-        
-        # 如果有非跨夜时段
-        if session_ends_non_overnight:
-            max_end = max(session_ends_non_overnight)
-            # 如果当前时间大于最大的非跨夜时段结束时间，则是"最后时段之后"
-            # 但需要排除跨夜时段的夜间部分（例如21:00之后）
-            if has_overnight_session:
-                # 有跨夜时段，需要考虑夜盘开始前的时间
-                # 例如：日盘15:00结束，夜盘21:00开始
-                # 则15:01-20:59是"两个时段之间"，不是"最后时段之后"
-                # 获取夜盘开始时间
-                for th in self.trading_hours:
-                    end_str = getattr(th, 'end_time', '')
-                    start_str = getattr(th, 'start_time', '')
-                    if end_str and start_str:
-                        end_sec = self._parse_time_to_seconds(end_str)
-                        start_sec = self._parse_time_to_seconds(start_str)
-                        if end_sec < start_sec:  # 跨夜时段
-                            # 如果当前时间在日盘结束后、夜盘开始前
-                            if max_end < time_seconds < start_sec:
-                                return False  # 这是"两个时段之间"
-                            # 如果当前时间在跨夜时段结束后、日盘开始前
-                            # 这种情况已经被_is_in_any_trading_session排除了
-                            break
-            
-            return time_seconds > max_end
-        
-        return False
     
     def _adjust_arrival_time_for_trading_hours(
         self, 
@@ -503,18 +292,19 @@ class EventLoopRunner:
         if not self.trading_hours:
             return (arrival_tick, True)  # 未配置交易时段，不做调整
         
-        time_seconds = self._tick_to_day_seconds(arrival_tick)
+        helper = self._trading_hours_helper
+        time_seconds = helper.tick_to_day_seconds(arrival_tick)
         
         # 检查是否在交易时段内
-        if self._is_in_any_trading_session(time_seconds):
+        if helper.is_in_any_trading_session(time_seconds):
             return (arrival_tick, True)  # 在交易时段内，不做调整
         
         # 检查是否在最后一个交易时段之后
-        if self._is_after_last_trading_session(time_seconds):
+        if helper.is_after_last_trading_session(time_seconds):
             return (None, False)  # 在最后时段之后，拒绝
         
         # 在两个交易时段之间，找下一个交易时段的开始
-        next_start_seconds = self._get_next_trading_session_start(time_seconds)
+        next_start_seconds = helper.get_next_trading_session_start(time_seconds)
         
         if next_start_seconds is None:
             # 理论上不应该到这里（因为前面已经检查了是否在最后时段之后）
@@ -523,9 +313,9 @@ class EventLoopRunner:
         
         # 计算调整后的到达时间
         # 需要保持同一天，只调整到下一个时段开始
-        ticks_per_day = self.SECONDS_PER_DAY * self.TICKS_PER_SECOND
+        ticks_per_day = helper.SECONDS_PER_DAY * helper.TICKS_PER_SECOND
         current_day_start_tick = (arrival_tick // ticks_per_day) * ticks_per_day
-        adjusted_tick = current_day_start_tick + self._seconds_to_tick_offset(next_start_seconds)
+        adjusted_tick = current_day_start_tick + helper.seconds_to_tick_offset(next_start_seconds)
         
         return (adjusted_tick, True)
 

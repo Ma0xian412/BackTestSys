@@ -3707,21 +3707,22 @@ def test_trading_hours_session_detection():
     ]
     
     feed = SnapshotDuplicatingFeed(MockFeed(), trading_hours=trading_hours)
+    helper = feed._trading_hours_helper  # 使用TradingHoursHelper
     
     # 测试1: 时间解析
     print("\n测试1: 时间解析...")
-    assert feed._parse_time_to_seconds("09:30:00") == 9 * 3600 + 30 * 60
-    assert feed._parse_time_to_seconds("21:00:00") == 21 * 3600
-    assert feed._parse_time_to_seconds("02:30:00") == 2 * 3600 + 30 * 60
+    assert helper.parse_time_to_seconds("09:30:00") == 9 * 3600 + 30 * 60
+    assert helper.parse_time_to_seconds("21:00:00") == 21 * 3600
+    assert helper.parse_time_to_seconds("02:30:00") == 2 * 3600 + 30 * 60
     print("  ✓ 时间解析正确")
     
     # 测试2: 正常时段内的检测
     print("\n测试2: 正常时段内的检测...")
-    assert feed._is_in_any_trading_session(9 * 3600 + 30 * 60)  # 09:30:00
-    assert feed._is_in_any_trading_session(10 * 3600)  # 10:00:00
-    assert feed._is_in_any_trading_session(11 * 3600 + 30 * 60)  # 11:30:00
-    assert feed._is_in_any_trading_session(13 * 3600)  # 13:00:00
-    assert not feed._is_in_any_trading_session(12 * 3600)  # 12:00:00 (午休)
+    assert helper.is_in_any_trading_session(9 * 3600 + 30 * 60)  # 09:30:00
+    assert helper.is_in_any_trading_session(10 * 3600)  # 10:00:00
+    assert helper.is_in_any_trading_session(11 * 3600 + 30 * 60)  # 11:30:00
+    assert helper.is_in_any_trading_session(13 * 3600)  # 13:00:00
+    assert not helper.is_in_any_trading_session(12 * 3600)  # 12:00:00 (午休)
     print("  ✓ 正常时段检测正确")
     
     # 测试3: 跨越午夜的时段
@@ -3732,16 +3733,17 @@ def test_trading_hours_session_detection():
     ]
     
     feed2 = SnapshotDuplicatingFeed(MockFeed(), trading_hours=night_hours)
+    helper2 = feed2._trading_hours_helper  # 使用TradingHoursHelper
     
     # 夜盘时间
-    assert feed2._is_in_any_trading_session(21 * 3600)  # 21:00:00
-    assert feed2._is_in_any_trading_session(23 * 3600)  # 23:00:00
-    assert feed2._is_in_any_trading_session(1 * 3600)   # 01:00:00 (次日凌晨)
-    assert feed2._is_in_any_trading_session(2 * 3600 + 30 * 60)  # 02:30:00
+    assert helper2.is_in_any_trading_session(21 * 3600)  # 21:00:00
+    assert helper2.is_in_any_trading_session(23 * 3600)  # 23:00:00
+    assert helper2.is_in_any_trading_session(1 * 3600)   # 01:00:00 (次日凌晨)
+    assert helper2.is_in_any_trading_session(2 * 3600 + 30 * 60)  # 02:30:00
     
     # 非交易时间
-    assert not feed2._is_in_any_trading_session(3 * 3600)  # 03:00:00
-    assert not feed2._is_in_any_trading_session(8 * 3600)  # 08:00:00
+    assert not helper2.is_in_any_trading_session(3 * 3600)  # 03:00:00
+    assert not helper2.is_in_any_trading_session(8 * 3600)  # 08:00:00
     
     print("  ✓ 跨越午夜时段检测正确")
     
@@ -3997,6 +3999,82 @@ def test_order_arrival_trading_hours_adjustment():
     print("✓ Order arrival trading hours adjustment test passed")
 
 
+def test_trading_hours_helper_class():
+    """测试TradingHoursHelper类的独立功能。
+    
+    验证TradingHoursHelper作为独立类的复用性和正确性。
+    """
+    print("\n--- Test: TradingHoursHelper Class ---")
+    
+    from quant_framework.core.trading_hours import TradingHoursHelper
+    from quant_framework.config import TradingHour
+    
+    # 测试1: 创建空配置的helper
+    print("\n测试1: 空配置的TradingHoursHelper...")
+    empty_helper = TradingHoursHelper([])
+    assert empty_helper.is_in_any_trading_session(10 * 3600) == True  # 未配置时默认都在交易时间
+    assert empty_helper.spans_trading_session_gap(100, 200) == False  # 未配置时不跨越间隔
+    assert empty_helper.is_after_last_trading_session(16 * 3600) == False
+    print("  ✓ 空配置正确处理")
+    
+    # 测试2: 正常时段配置
+    print("\n测试2: 正常时段配置...")
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    helper = TradingHoursHelper(trading_hours)
+    
+    # 验证常量
+    assert helper.TICKS_PER_SECOND == 10_000_000
+    assert helper.SECONDS_PER_DAY == 86400
+    print("  ✓ 常量正确")
+    
+    # 测试3: 时间转换方法
+    print("\n测试3: 时间转换方法...")
+    assert helper.parse_time_to_seconds("09:30:00") == 9 * 3600 + 30 * 60
+    assert helper.parse_time_to_seconds("invalid") == 0  # 无效格式返回0
+    assert helper.seconds_to_tick_offset(1) == 10_000_000
+    
+    tick_at_10am = 10 * 3600 * helper.TICKS_PER_SECOND
+    assert helper.tick_to_day_seconds(tick_at_10am) == 10 * 3600
+    print("  ✓ 时间转换正确")
+    
+    # 测试4: 交易时段检测
+    print("\n测试4: 交易时段检测...")
+    # 正常时段
+    assert helper.is_within_trading_session(9 * 3600, 11 * 3600, 10 * 3600) == True
+    assert helper.is_within_trading_session(9 * 3600, 11 * 3600, 12 * 3600) == False
+    # 跨夜时段
+    assert helper.is_within_trading_session(21 * 3600, 2 * 3600, 22 * 3600) == True
+    assert helper.is_within_trading_session(21 * 3600, 2 * 3600, 1 * 3600) == True
+    assert helper.is_within_trading_session(21 * 3600, 2 * 3600, 10 * 3600) == False
+    print("  ✓ 交易时段检测正确")
+    
+    # 测试5: 查找交易时段索引
+    print("\n测试5: 查找交易时段索引...")
+    assert helper.find_trading_session_index(10 * 3600) == 0  # 上午时段
+    assert helper.find_trading_session_index(14 * 3600) == 1  # 下午时段
+    assert helper.find_trading_session_index(12 * 3600) == -1  # 午休
+    print("  ✓ 交易时段索引查找正确")
+    
+    # 测试6: 获取下一个交易时段开始时间
+    print("\n测试6: 获取下一个交易时段开始时间...")
+    assert helper.get_next_trading_session_start(8 * 3600) == 9 * 3600 + 30 * 60  # 09:30
+    assert helper.get_next_trading_session_start(12 * 3600) == 13 * 3600  # 13:00
+    assert helper.get_next_trading_session_start(16 * 3600) is None  # 无下一个时段
+    print("  ✓ 下一个交易时段开始时间查找正确")
+    
+    # 测试7: 判断是否在最后时段之后
+    print("\n测试7: 判断是否在最后时段之后...")
+    assert helper.is_after_last_trading_session(16 * 3600) == True
+    assert helper.is_after_last_trading_session(14 * 3600) == False  # 仍在交易时段
+    assert helper.is_after_last_trading_session(12 * 3600) == False  # 午休不是"最后时段之后"
+    print("  ✓ 最后时段判断正确")
+    
+    print("✓ TradingHoursHelper class test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4057,6 +4135,7 @@ def run_all_tests():
         test_trading_hours_session_detection,
         test_snapshot_duplication_with_trading_hours,
         test_order_arrival_trading_hours_adjustment,
+        test_trading_hours_helper_class,
     ]
     
     passed = 0
