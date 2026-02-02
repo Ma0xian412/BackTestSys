@@ -9,7 +9,7 @@ import csv
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Set
 from datetime import datetime
 
 from ..core.types import OrderReceipt, ReceiptType
@@ -96,7 +96,7 @@ class ReceiptLogger:
         self._full_fill_counts: Dict[str, int] = {}  # 全部成交次数
         self._cancel_counts: Dict[str, int] = {}  # 撤单次数
         self._reject_counts: Dict[str, int] = {}  # 拒绝次数
-        self._canceled_orders: Dict[str, bool] = {}  # Track canceled orders (order_id -> flag) to exclude from full-fill stats
+        self._canceled_orders: Set[str] = set()  # Track canceled order IDs to exclude from full-fill stats
     
     def register_order(self, order_id: str, qty: int) -> None:
         """注册新订单，用于计算成交率。
@@ -177,7 +177,7 @@ class ReceiptLogger:
                 
         elif receipt.receipt_type == "CANCELED":
             self._cancel_counts[order_id] = self._cancel_counts.get(order_id, 0) + 1
-            self._canceled_orders[order_id] = True
+            self._canceled_orders.add(order_id)
             # 撤单时，如果有部分成交，fill_qty表示撤单前的已成交量
             if order_id in self.order_filled_qty and receipt.fill_qty > 0:
                 # 撤单回执的fill_qty是累计已成交量
@@ -266,7 +266,7 @@ class ReceiptLogger:
                 # Skip invalid/non-tradable quantities (0 or negative; defensive guard)
                 continue
             order_filled_qty = self.order_filled_qty.get(oid, 0)
-            if self._canceled_orders.get(oid):
+            if oid in self._canceled_orders:
                 if order_filled_qty > 0:
                     partially_filled_orders += 1
                 else:

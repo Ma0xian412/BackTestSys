@@ -131,7 +131,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 f"filled_qty={filled_qty}, original_qty={original_qty}"
             )
             return False
-        return True
+        return delta > 0
     
     def reset(self) -> None:
         """Reset simulator state for new interval."""
@@ -1171,8 +1171,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             shadow.original_qty,
                         ):
                             continue
-                        if remaining_to_fill == 0:
-                            continue
                         
                         shadow.filled_qty = shadow.original_qty
                         shadow.remaining_qty = 0
@@ -1204,8 +1202,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             shadow.filled_qty,
                             shadow.original_qty,
                         ):
-                            continue
-                        if new_fill == 0:
                             continue
                         
                         # If this fill completes the order, emit a FILL receipt
