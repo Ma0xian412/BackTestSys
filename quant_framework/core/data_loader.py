@@ -437,6 +437,26 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
             # 跨越午夜的时段（如 21:00:00 - 02:30:00）
             return time_seconds >= start_seconds or time_seconds <= end_seconds
     
+    def _find_trading_session_index(self, time_seconds: int) -> int:
+        """查找时间所在的交易时段索引。
+        
+        Args:
+            time_seconds: 一天内的秒数 (0-86399)
+            
+        Returns:
+            交易时段的索引（从0开始），如果不在任何时段内则返回-1
+        """
+        for i, th in enumerate(self.trading_hours):
+            start_str = getattr(th, 'start_time', '')
+            end_str = getattr(th, 'end_time', '')
+            if not start_str or not end_str:
+                continue
+            start_sec = self._parse_time_to_seconds(start_str)
+            end_sec = self._parse_time_to_seconds(end_str)
+            if self._is_within_trading_session(start_sec, end_sec, time_seconds):
+                return i
+        return -1
+    
     def _is_in_any_trading_session(self, time_seconds: int) -> bool:
         """检查时间是否在任何一个交易时段内。
         
@@ -449,25 +469,16 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
         if not self.trading_hours:
             return True  # 未配置交易时段，默认都在交易时间内
         
-        for th in self.trading_hours:
-            start_str = getattr(th, 'start_time', '')
-            end_str = getattr(th, 'end_time', '')
-            if not start_str or not end_str:
-                continue
-            
-            start_seconds = self._parse_time_to_seconds(start_str)
-            end_seconds = self._parse_time_to_seconds(end_str)
-            
-            if self._is_within_trading_session(start_seconds, end_seconds, time_seconds):
-                return True
-        
-        return False
+        return self._find_trading_session_index(time_seconds) >= 0
     
     def _spans_trading_session_gap(self, t_prev: int, t_curr: int) -> bool:
         """检查两个时间戳之间是否跨越了交易时段间隔。
         
         如果两个时间点不在同一个交易时段内，或者中间存在非交易时间，
         则认为跨越了交易时段间隔。
+        
+        注意：此方法使用日内时间进行比较，假设回测数据在同一交易日内。
+        对于跨越多个自然日的数据，应确保数据按日分割处理。
         
         Args:
             t_prev: 前一个快照的tick时间戳
@@ -483,32 +494,16 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
         curr_seconds = self._tick_to_day_seconds(t_curr)
         
         # 检查两个时间点是否都在交易时段内
-        prev_in_session = self._is_in_any_trading_session(prev_seconds)
-        curr_in_session = self._is_in_any_trading_session(curr_seconds)
+        prev_session = self._find_trading_session_index(prev_seconds)
+        curr_session = self._find_trading_session_index(curr_seconds)
         
         # 如果两者都不在交易时段内，不需要复制
-        if not prev_in_session and not curr_in_session:
+        if prev_session < 0 and curr_session < 0:
             return True
         
         # 如果任一不在交易时段内，跨越了间隔
-        if not prev_in_session or not curr_in_session:
+        if prev_session < 0 or curr_session < 0:
             return True
-        
-        # 找出prev和curr各自所在的交易时段
-        def find_session_index(time_seconds: int) -> int:
-            for i, th in enumerate(self.trading_hours):
-                start_str = getattr(th, 'start_time', '')
-                end_str = getattr(th, 'end_time', '')
-                if not start_str or not end_str:
-                    continue
-                start_sec = self._parse_time_to_seconds(start_str)
-                end_sec = self._parse_time_to_seconds(end_str)
-                if self._is_within_trading_session(start_sec, end_sec, time_seconds):
-                    return i
-            return -1
-        
-        prev_session = find_session_index(prev_seconds)
-        curr_session = find_session_index(curr_seconds)
         
         # 如果在不同的交易时段，跨越了间隔
         if prev_session != curr_session:
@@ -572,25 +567,29 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
         # 生成复制的快照
         for i in range(num_copies):
             copy_time = t_prev + (i + 1) * self.min_interval
-            if copy_time < t_curr:
-                # 检查复制快照的时间是否在交易时段内
-                copy_seconds = self._tick_to_day_seconds(copy_time)
-                if not self._is_in_any_trading_session(copy_seconds):
-                    continue  # 跳过非交易时间的复制快照
-                
-                # 创建复制快照，last_vol_split为空
-                copy_snap = NormalizedSnapshot(
-                    ts_recv=copy_time,
-                    bids=list(self._prev_snapshot.bids),  # 复制档位列表
-                    asks=list(self._prev_snapshot.asks),
-                    last_vol_split=[],  # 复制快照的last_vol_split为空
-                    ts_exch=self._prev_snapshot.ts_exch,
-                    last=self._prev_snapshot.last,
-                    volume=self._prev_snapshot.volume,
-                    turnover=self._prev_snapshot.turnover,
-                    average_price=self._prev_snapshot.average_price,
-                )
-                self._buffer.append(copy_snap)
+            
+            # 首先检查时间边界，确保复制快照不超过当前快照时间
+            if copy_time >= t_curr:
+                break  # 超出时间边界，停止生成复制快照
+            
+            # 检查复制快照的时间是否在交易时段内
+            copy_seconds = self._tick_to_day_seconds(copy_time)
+            if not self._is_in_any_trading_session(copy_seconds):
+                continue  # 跳过非交易时间的复制快照
+            
+            # 创建复制快照，last_vol_split为空
+            copy_snap = NormalizedSnapshot(
+                ts_recv=copy_time,
+                bids=list(self._prev_snapshot.bids),  # 复制档位列表
+                asks=list(self._prev_snapshot.asks),
+                last_vol_split=[],  # 复制快照的last_vol_split为空
+                ts_exch=self._prev_snapshot.ts_exch,
+                last=self._prev_snapshot.last,
+                volume=self._prev_snapshot.volume,
+                turnover=self._prev_snapshot.turnover,
+                average_price=self._prev_snapshot.average_price,
+            )
+            self._buffer.append(copy_snap)
         
         # 最后添加当前快照
         self._buffer.append(curr)
