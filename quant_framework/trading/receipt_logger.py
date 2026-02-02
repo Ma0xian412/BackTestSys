@@ -262,10 +262,10 @@ class ReceiptLogger:
         for oid, total_qty in self.order_total_qty.items():
             if total_qty <= 0:
                 continue
-            filled_qty = self.order_filled_qty.get(oid, 0)
-            if filled_qty >= total_qty:
+            order_filled_qty = self.order_filled_qty.get(oid, 0)
+            if order_filled_qty >= total_qty:
                 fully_filled_orders += 1
-            elif filled_qty > 0:
+            elif order_filled_qty > 0:
                 partially_filled_orders += 1
             else:
                 unfilled_orders += 1
