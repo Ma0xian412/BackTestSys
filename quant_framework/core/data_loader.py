@@ -2,10 +2,14 @@ import pickle
 import csv
 import ast
 import math
+import logging
 from typing import List, Any, Optional, Tuple
 from .interfaces import IMarketDataFeed
 from .types import NormalizedSnapshot, Level
 from .trading_hours import TradingHoursHelper
+
+# 设置模块级logger
+logger = logging.getLogger(__name__)
 
 
 class CsvMarketDataFeed(IMarketDataFeed):
@@ -437,6 +441,7 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
         num_copies = max(0, num_copies)
         
         # 生成复制的快照
+        copies_count = 0
         for i in range(num_copies):
             copy_time = t_prev + (i + 1) * self.min_interval
             
@@ -462,6 +467,13 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
                 average_price=self._prev_snapshot.average_price,
             )
             self._buffer.append(copy_snap)
+            copies_count += 1
+        
+        # 输出快照复制的debug信息
+        if copies_count > 0:
+            logger.debug(
+                f"[SnapshotDuplicatingFeed] Snapshot copy: start={t_prev}, end={t_curr}, copies={copies_count}"
+            )
         
         # 最后添加当前快照
         self._buffer.append(curr)
