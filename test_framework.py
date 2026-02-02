@@ -3838,6 +3838,165 @@ def test_snapshot_duplication_with_trading_hours():
     print("✓ Snapshot duplication with trading hours test passed")
 
 
+def test_order_arrival_trading_hours_adjustment():
+    """测试订单到达时间根据交易时段调整的功能。
+    
+    验证：
+    1. 交易时段内的订单到达时间不变
+    2. 交易时段之间的订单到达时间调整到下一个时段开始
+    3. 最后一个交易时段之后的订单被拒绝
+    """
+    print("\n--- Test: Order Arrival Trading Hours Adjustment ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner
+    from quant_framework.config import TradingHour
+    
+    # 创建交易时段配置
+    trading_hours = [
+        TradingHour(start_time="09:30:00", end_time="11:30:00"),
+        TradingHour(start_time="13:00:00", end_time="15:00:00"),
+    ]
+    
+    # 创建一个最小的runner来测试到达时间调整
+    class MinimalRunner:
+        TICKS_PER_SECOND = 10_000_000
+        SECONDS_PER_DAY = 86400
+        
+        def __init__(self, trading_hours):
+            self.trading_hours = trading_hours
+        
+        def _parse_time_to_seconds(self, time_str):
+            parts = time_str.split(":")
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        
+        def _tick_to_day_seconds(self, tick):
+            total_seconds = tick // self.TICKS_PER_SECOND
+            return total_seconds % self.SECONDS_PER_DAY
+        
+        def _seconds_to_tick_offset(self, seconds):
+            return seconds * self.TICKS_PER_SECOND
+        
+        def _is_within_trading_session(self, start_seconds, end_seconds, time_seconds):
+            if start_seconds <= end_seconds:
+                return start_seconds <= time_seconds <= end_seconds
+            else:
+                return time_seconds >= start_seconds or time_seconds <= end_seconds
+        
+        def _find_trading_session_index(self, time_seconds):
+            for i, th in enumerate(self.trading_hours):
+                start_str = getattr(th, 'start_time', '')
+                end_str = getattr(th, 'end_time', '')
+                if not start_str or not end_str:
+                    continue
+                start_sec = self._parse_time_to_seconds(start_str)
+                end_sec = self._parse_time_to_seconds(end_str)
+                if self._is_within_trading_session(start_sec, end_sec, time_seconds):
+                    return i
+            return -1
+        
+        def _is_in_any_trading_session(self, time_seconds):
+            return self._find_trading_session_index(time_seconds) >= 0
+        
+        def _get_next_trading_session_start(self, time_seconds):
+            session_starts = []
+            for th in self.trading_hours:
+                start_str = getattr(th, 'start_time', '')
+                if start_str:
+                    start_sec = self._parse_time_to_seconds(start_str)
+                    session_starts.append(start_sec)
+            session_starts.sort()
+            for start in session_starts:
+                if start > time_seconds:
+                    return start
+            return None
+        
+        def _is_after_last_trading_session(self, time_seconds):
+            session_ends = []
+            for th in self.trading_hours:
+                end_str = getattr(th, 'end_time', '')
+                start_str = getattr(th, 'start_time', '')
+                if end_str and start_str:
+                    end_sec = self._parse_time_to_seconds(end_str)
+                    start_sec = self._parse_time_to_seconds(start_str)
+                    if end_sec >= start_sec:
+                        session_ends.append(end_sec)
+            if not session_ends:
+                return False
+            return time_seconds > max(session_ends)
+        
+        def _adjust_arrival_time_for_trading_hours(self, arrival_tick, is_order=True):
+            if not self.trading_hours:
+                return (arrival_tick, True)
+            
+            time_seconds = self._tick_to_day_seconds(arrival_tick)
+            
+            if self._is_in_any_trading_session(time_seconds):
+                return (arrival_tick, True)
+            
+            if self._is_after_last_trading_session(time_seconds):
+                return (None, False)
+            
+            next_start_seconds = self._get_next_trading_session_start(time_seconds)
+            
+            if next_start_seconds is None:
+                return (None, False)
+            
+            current_day_start_tick = (arrival_tick // (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)) * (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)
+            adjusted_tick = current_day_start_tick + self._seconds_to_tick_offset(next_start_seconds)
+            
+            return (adjusted_tick, True)
+    
+    runner = MinimalRunner(trading_hours)
+    
+    def time_to_tick(hours, minutes, seconds):
+        """将时间转换为tick"""
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        return total_seconds * 10_000_000
+    
+    # 测试1: 交易时段内的到达时间不变
+    print("\n测试1: 交易时段内的到达时间不变...")
+    arrival_tick = time_to_tick(10, 0, 0)  # 10:00:00 在上午时段内
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert success, "交易时段内应成功"
+    assert adjusted == arrival_tick, f"交易时段内不应调整，期望{arrival_tick}，实际{adjusted}"
+    print(f"  ✓ 10:00:00 (交易时段内) 到达时间不变")
+    
+    # 测试2: 两个时段之间的到达时间调整到下一个时段开始
+    print("\n测试2: 两个时段之间的到达时间调整到下一个时段开始...")
+    arrival_tick = time_to_tick(12, 0, 0)  # 12:00:00 在两个时段之间
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert success, "两个时段之间应成功（调整）"
+    expected_tick = time_to_tick(13, 0, 0)  # 应调整到下午时段开始 13:00:00
+    assert adjusted == expected_tick, f"应调整到13:00:00，期望{expected_tick}，实际{adjusted}"
+    print(f"  ✓ 12:00:00 (时段之间) 调整到 13:00:00 (下一个时段开始)")
+    
+    # 测试3: 最后一个时段之后的到达时间应被拒绝
+    print("\n测试3: 最后一个时段之后的订单应被拒绝...")
+    arrival_tick = time_to_tick(16, 0, 0)  # 16:00:00 在最后时段之后
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert not success, "最后时段之后应失败"
+    assert adjusted is None, "失败时应返回None"
+    print(f"  ✓ 16:00:00 (最后时段之后) 订单被拒绝")
+    
+    # 测试4: 撤单在最后时段之后也应失败
+    print("\n测试4: 撤单在最后时段之后也应失败...")
+    arrival_tick = time_to_tick(15, 30, 0)  # 15:30:00 在最后时段之后
+    adjusted, success = runner._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=False)
+    assert not success, "撤单在最后时段之后应失败"
+    print(f"  ✓ 15:30:00 (最后时段之后) 撤单失败")
+    
+    # 测试5: 无交易时段配置时不做任何调整
+    print("\n测试5: 无交易时段配置时不做任何调整...")
+    runner_no_hours = MinimalRunner([])
+    arrival_tick = time_to_tick(12, 0, 0)
+    adjusted, success = runner_no_hours._adjust_arrival_time_for_trading_hours(arrival_tick, is_order=True)
+    assert success, "无交易时段配置应成功"
+    assert adjusted == arrival_tick, "无交易时段配置不应调整"
+    print(f"  ✓ 无交易时段配置时到达时间不变")
+    
+    print("✓ Order arrival trading hours adjustment test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -3897,6 +4056,7 @@ def run_all_tests():
         test_contract_config_loading,
         test_trading_hours_session_detection,
         test_snapshot_duplication_with_trading_hours,
+        test_order_arrival_trading_hours_adjustment,
     ]
     
     passed = 0

@@ -267,13 +267,18 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     oms = create_oms(config)
     runner_config = create_runner_config(config)
     
+    # 获取交易时段配置（如果有的话）
+    trading_hours = None
+    if config.contract.contract_info and config.contract.contract_info.trading_hours:
+        trading_hours = config.contract.contract_info.trading_hours
+    
     # Create receipt logger for observability
     receipt_logger = ReceiptLogger(
         output_file=receipt_output_file,
         verbose=config.receipt_logger.verbose,
     )
     
-    # Create runner with receipt logger
+    # Create runner with receipt logger and trading hours
     runner = EventLoopRunner(
         feed=feed,
         tape_builder=tape_builder,
@@ -282,6 +287,7 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         oms=oms,
         config=runner_config,
         receipt_logger=receipt_logger,
+        trading_hours=trading_hours,
     )
     
     # Run backtest

@@ -203,7 +203,12 @@ class EventLoopRunner:
     主要功能：
     - 单一时间线：所有事件使用ts_recv
     - 延迟处理：delay_out（策略->交易所），delay_in（交易所->策略）
+    - 交易时段支持：订单/撤单到达时间基于交易时段调整
     """
+
+    # 时间转换常量
+    TICKS_PER_SECOND = 10_000_000  # 每秒tick数（1 tick = 100ns）
+    SECONDS_PER_DAY = 86400  # 每天秒数
 
     def __init__(
         self,
@@ -214,6 +219,7 @@ class EventLoopRunner:
         oms: IOrderManager,
         config: RunnerConfig = None,
         receipt_logger: Optional[IReceiptLogger] = None,
+        trading_hours: List = None,
     ):
         """初始化运行器。
 
@@ -225,6 +231,10 @@ class EventLoopRunner:
             oms: 订单管理器
             config: 运行器配置
             receipt_logger: 回执记录器（可选）
+            trading_hours: 交易时段列表，每个元素是一个TradingHour对象。
+                          用于调整订单/撤单到达时间：
+                          - 如果到达时间在交易时段之间，则调整到下一个交易时段开始
+                          - 如果在最后一个交易时段结束之后，挂单直接失败，撤单也失败
         """
         self.feed = feed
         self.tape_builder = tape_builder
@@ -233,6 +243,7 @@ class EventLoopRunner:
         self.oms = oms
         self.config = config or RunnerConfig()
         self.receipt_logger = receipt_logger
+        self.trading_hours = trading_hours or []
 
         # 当前状态（统一使用recv time）
         self.current_time = 0  # 统一时间（ts_recv）
@@ -249,7 +260,230 @@ class EventLoopRunner:
             "orders_filled": 0,
             "receipts_generated": 0,
             "cancels_submitted": 0,
+            "orders_rejected_after_trading": 0,
+            "cancels_failed_after_trading": 0,
         }
+    
+    # ========== 交易时段相关方法 ==========
+    
+    def _parse_time_to_seconds(self, time_str: str) -> int:
+        """将时间字符串解析为一天内的秒数。
+        
+        Args:
+            time_str: 时间字符串，格式 "HH:MM:SS"
+            
+        Returns:
+            一天内的秒数 (0-86399)
+        """
+        parts = time_str.split(":")
+        if len(parts) != 3:
+            return 0
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = int(parts[2])
+            return hours * 3600 + minutes * 60 + seconds
+        except (ValueError, IndexError):
+            return 0
+    
+    def _tick_to_day_seconds(self, tick: int) -> int:
+        """将tick时间戳转换为一天内的秒数。
+        
+        Args:
+            tick: tick时间戳（每tick=100ns）
+            
+        Returns:
+            一天内的秒数 (0-86399)
+        """
+        total_seconds = tick // self.TICKS_PER_SECOND
+        return total_seconds % self.SECONDS_PER_DAY
+    
+    def _seconds_to_tick_offset(self, seconds: int) -> int:
+        """将秒数转换为tick偏移量。
+        
+        Args:
+            seconds: 秒数
+            
+        Returns:
+            tick偏移量
+        """
+        return seconds * self.TICKS_PER_SECOND
+    
+    def _is_within_trading_session(self, start_seconds: int, end_seconds: int, 
+                                    time_seconds: int) -> bool:
+        """检查时间是否在一个交易时段内。
+        
+        支持跨越午夜的时段，例如 start=21:00:00, end=02:30:00。
+        
+        Args:
+            start_seconds: 时段开始时间（一天内的秒数）
+            end_seconds: 时段结束时间（一天内的秒数）
+            time_seconds: 要检查的时间（一天内的秒数）
+            
+        Returns:
+            是否在时段内
+        """
+        if start_seconds <= end_seconds:
+            # 正常时段（如 09:00:00 - 15:00:00）
+            return start_seconds <= time_seconds <= end_seconds
+        else:
+            # 跨越午夜的时段（如 21:00:00 - 02:30:00）
+            return time_seconds >= start_seconds or time_seconds <= end_seconds
+    
+    def _find_trading_session_index(self, time_seconds: int) -> int:
+        """查找时间所在的交易时段索引。
+        
+        Args:
+            time_seconds: 一天内的秒数 (0-86399)
+            
+        Returns:
+            交易时段的索引（从0开始），如果不在任何时段内则返回-1
+        """
+        for i, th in enumerate(self.trading_hours):
+            start_str = getattr(th, 'start_time', '')
+            end_str = getattr(th, 'end_time', '')
+            if not start_str or not end_str:
+                continue
+            start_sec = self._parse_time_to_seconds(start_str)
+            end_sec = self._parse_time_to_seconds(end_str)
+            if self._is_within_trading_session(start_sec, end_sec, time_seconds):
+                return i
+        return -1
+    
+    def _is_in_any_trading_session(self, time_seconds: int) -> bool:
+        """检查时间是否在任何一个交易时段内。
+        
+        Args:
+            time_seconds: 要检查的时间（一天内的秒数）
+            
+        Returns:
+            是否在任何交易时段内
+        """
+        if not self.trading_hours:
+            return True  # 未配置交易时段，默认都在交易时间内
+        
+        return self._find_trading_session_index(time_seconds) >= 0
+    
+    def _get_next_trading_session_start(self, time_seconds: int) -> Optional[int]:
+        """获取下一个交易时段的开始时间（秒）。
+        
+        搜索所有交易时段，找到时间上在time_seconds之后最近的开始时间。
+        
+        Args:
+            time_seconds: 当前时间（一天内的秒数）
+            
+        Returns:
+            下一个交易时段的开始时间（秒），如果没有则返回None
+        """
+        if not self.trading_hours:
+            return None
+        
+        # 收集所有交易时段的开始时间
+        session_starts = []
+        for th in self.trading_hours:
+            start_str = getattr(th, 'start_time', '')
+            if start_str:
+                start_sec = self._parse_time_to_seconds(start_str)
+                session_starts.append(start_sec)
+        
+        if not session_starts:
+            return None
+        
+        # 排序
+        session_starts.sort()
+        
+        # 找到下一个开始时间（严格大于当前时间）
+        for start in session_starts:
+            if start > time_seconds:
+                return start
+        
+        # 如果没有找到，说明当前时间已经过了所有时段的开始时间
+        # 这意味着在当天最后一个时段之后，不应该有下一个时段
+        return None
+    
+    def _is_after_last_trading_session(self, time_seconds: int) -> bool:
+        """检查时间是否在最后一个交易时段结束之后。
+        
+        Args:
+            time_seconds: 当前时间（一天内的秒数）
+            
+        Returns:
+            是否在最后一个交易时段结束之后
+        """
+        if not self.trading_hours:
+            return False  # 未配置交易时段，永远不会"在最后时段之后"
+        
+        # 收集所有交易时段的结束时间
+        session_ends = []
+        for th in self.trading_hours:
+            end_str = getattr(th, 'end_time', '')
+            start_str = getattr(th, 'start_time', '')
+            if end_str and start_str:
+                end_sec = self._parse_time_to_seconds(end_str)
+                start_sec = self._parse_time_to_seconds(start_str)
+                # 处理跨越午夜的情况：如果end < start，则end实际上是第二天的时间
+                # 对于判断"最后时段"，我们只关心非跨夜时段的结束时间
+                if end_sec >= start_sec:  # 非跨夜时段
+                    session_ends.append(end_sec)
+        
+        if not session_ends:
+            return False
+        
+        # 找到最大的结束时间
+        max_end = max(session_ends)
+        
+        # 如果当前时间严格大于最大结束时间，则在最后时段之后
+        return time_seconds > max_end
+    
+    def _adjust_arrival_time_for_trading_hours(
+        self, 
+        arrival_tick: int,
+        is_order: bool = True
+    ) -> Tuple[Optional[int], bool]:
+        """根据交易时段调整到达时间。
+        
+        规则：
+        1. 如果到达时间在交易时段内，保持不变
+        2. 如果到达时间在两个交易时段之间，调整到下一个交易时段的开始
+        3. 如果到达时间在最后一个交易时段结束之后：
+           - 挂单：返回None表示订单被拒绝
+           - 撤单：返回None表示撤单失败
+        
+        Args:
+            arrival_tick: 原始到达时间（tick单位）
+            is_order: True表示是挂单，False表示是撤单
+            
+        Returns:
+            (adjusted_tick, success): 
+            - adjusted_tick: 调整后的到达时间，如果应该被拒绝则为None
+            - success: 是否成功（用于区分正常调整和被拒绝的情况）
+        """
+        if not self.trading_hours:
+            return (arrival_tick, True)  # 未配置交易时段，不做调整
+        
+        time_seconds = self._tick_to_day_seconds(arrival_tick)
+        
+        # 检查是否在交易时段内
+        if self._is_in_any_trading_session(time_seconds):
+            return (arrival_tick, True)  # 在交易时段内，不做调整
+        
+        # 检查是否在最后一个交易时段之后
+        if self._is_after_last_trading_session(time_seconds):
+            return (None, False)  # 在最后时段之后，拒绝
+        
+        # 在两个交易时段之间，找下一个交易时段的开始
+        next_start_seconds = self._get_next_trading_session_start(time_seconds)
+        
+        if next_start_seconds is None:
+            # 理论上不应该到这里（因为前面已经检查了是否在最后时段之后）
+            return (None, False)
+        
+        # 计算调整后的到达时间
+        # 需要保持同一天，只调整到下一个时段开始
+        current_day_start_tick = (arrival_tick // (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)) * (self.SECONDS_PER_DAY * self.TICKS_PER_SECOND)
+        adjusted_tick = current_day_start_tick + self._seconds_to_tick_offset(next_start_seconds)
+        
+        return (adjusted_tick, True)
 
     def run(self) -> Dict[str, Any]:
         """运行回测。
@@ -402,6 +636,28 @@ class EventLoopRunner:
         for order in pending_orders:
             # 计算订单到达交易所的时间（统一时间线）
             arrival_time = int(order.create_time) + int(self.config.delay_out)
+            
+            # 根据交易时段调整到达时间
+            adjusted_arrival, success = self._adjust_arrival_time_for_trading_hours(
+                arrival_time, is_order=True
+            )
+            
+            if not success:
+                # 到达时间在最后交易时段之后，订单被拒绝
+                self.diagnostics["orders_rejected_after_trading"] += 1
+                # 生成拒绝回执
+                reject_receipt = OrderReceipt(
+                    order_id=order.order_id,
+                    receipt_type="REJECTED",
+                    timestamp=arrival_time,
+                    fill_qty=0,
+                    fill_price=0.0,
+                    remaining_qty=order.qty,
+                )
+                self._schedule_receipt(reject_receipt, event_queue, t_b)
+                continue
+            
+            arrival_time = adjusted_arrival
             
             # 只处理到达时间在区间内的订单
             if arrival_time >= t_a and arrival_time < t_b:
@@ -642,6 +898,10 @@ class EventLoopRunner:
         
         使用统一时间线。将撤单到达时间落在区间[t_a, t_b)内的撤单请求加入事件队列。
         
+        根据交易时段调整到达时间：
+        - 如果到达时间在交易时段之间，调整到下一个交易时段开始
+        - 如果在最后一个交易时段结束之后，撤单失败
+        
         Args:
             event_queue: 事件队列
             t_a: 区间开始时间
@@ -652,6 +912,28 @@ class EventLoopRunner:
         for cancel_sent_time, cancel_request in self._pending_cancels:
             # 计算撤单到达时间（统一时间线）
             arrival_time = cancel_sent_time + self.config.delay_out
+            
+            # 根据交易时段调整到达时间
+            adjusted_arrival, success = self._adjust_arrival_time_for_trading_hours(
+                arrival_time, is_order=False
+            )
+            
+            if not success:
+                # 到达时间在最后交易时段之后，撤单失败
+                self.diagnostics["cancels_failed_after_trading"] += 1
+                # 生成撤单失败回执
+                reject_receipt = OrderReceipt(
+                    order_id=cancel_request.order_id,
+                    receipt_type="REJECTED",
+                    timestamp=arrival_time,
+                    fill_qty=0,
+                    fill_price=0.0,
+                    remaining_qty=0,
+                )
+                self._schedule_receipt(reject_receipt, event_queue, t_b)
+                continue
+            
+            arrival_time = adjusted_arrival
             
             if arrival_time >= t_a and arrival_time < t_b:
                 # 撤单到达时间在区间内，加入事件队列
