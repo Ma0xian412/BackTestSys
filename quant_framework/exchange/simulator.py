@@ -228,6 +228,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._interval_end = t_b
         self._current_seg_idx = 0
         
+        # Restore active shadow orders from registry to levels
+        # This is necessary because reset() clears _levels but orders may span
+        # multiple intervals
+        self._restore_active_orders_to_levels()
+        
         # Precompute X rates for each (side, price, segment)
         self._x_rates.clear()
         self._x_at_seg_start.clear()
@@ -254,6 +259,32 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     # X rate: (M + phi * C) / duration
                     x_rate = (m_si + self.cancel_front_ratio * c_si) / seg_duration
                     self._x_rates[key] = x_rate
+    
+    def _restore_active_orders_to_levels(self) -> None:
+        """Restore active shadow orders from _orders registry to _levels.
+        
+        This is called after reset() when starting a new interval to ensure
+        that orders placed in previous intervals can still be processed.
+        
+        Each active shadow order is added to the appropriate price level's queue.
+        The order's pos value should have been adjusted by align_at_boundary()
+        at the end of the previous interval.
+        """
+        for order_id, shadow in self._orders.items():
+            if shadow.status != "ACTIVE":
+                continue
+            
+            # Get or create the level for this order
+            level = self._get_level(shadow.side, shadow.price)
+            
+            # Check if order is already in the queue (avoid duplicates)
+            if shadow not in level.queue:
+                level.queue.append(shadow)
+                level._active_shadow_qty += shadow.remaining_qty
+                logger.debug(
+                    f"[Exchange] Restored order {order_id} to level "
+                    f"({shadow.side.value}, {shadow.price}), pos={shadow.pos}"
+                )
     
     def _is_in_activation_window(self, side: Side, price: Price, seg_idx: int) -> bool:
         """Check if price is in activation window for given segment."""
