@@ -343,6 +343,92 @@ def _xml_element_to_dict(element: ET.Element) -> Dict[str, Any]:
     return result
 
 
+def _is_integer_string(s: str) -> bool:
+    """检查字符串是否是有效的整数格式。
+    
+    有效格式: 可选的正负号 + 一个或多个数字
+    例如: "123", "-456", "+789"
+    
+    Args:
+        s: 要检查的字符串
+        
+    Returns:
+        如果是有效的整数格式返回True
+    """
+    if not s:
+        return False
+    
+    # 去掉可选的正负号
+    if s[0] in '+-':
+        s = s[1:]
+    
+    # 剩余部分必须是非空的纯数字
+    return len(s) > 0 and s.isdigit()
+
+
+def _is_float_string(s: str) -> bool:
+    """检查字符串是否是有效的浮点数格式。
+    
+    有效格式: 
+    - 可选正负号
+    - 数字（至少一个）
+    - 可选的小数点和小数部分
+    - 可选的科学计数法 (e/E 后跟可选正负号和数字)
+    
+    例如: "3.14", "-1.5", "1e10", "1.5e-3"
+    
+    Args:
+        s: 要检查的字符串
+        
+    Returns:
+        如果是有效的浮点数格式返回True
+    """
+    if not s:
+        return False
+    
+    # 使用状态机方式验证
+    i = 0
+    n = len(s)
+    
+    # 可选的正负号
+    if i < n and s[i] in '+-':
+        i += 1
+    
+    # 必须有数字（小数点前或小数点后）
+    has_digits = False
+    
+    # 整数部分的数字
+    while i < n and s[i].isdigit():
+        has_digits = True
+        i += 1
+    
+    # 可选的小数点和小数部分
+    if i < n and s[i] == '.':
+        i += 1
+        while i < n and s[i].isdigit():
+            has_digits = True
+            i += 1
+    
+    # 如果没有任何数字，不是有效浮点数
+    if not has_digits:
+        return False
+    
+    # 可选的科学计数法部分
+    if i < n and s[i] in 'eE':
+        i += 1
+        # e/E 后可以有可选的正负号
+        if i < n and s[i] in '+-':
+            i += 1
+        # e/E 后必须有数字
+        if i >= n or not s[i].isdigit():
+            return False
+        while i < n and s[i].isdigit():
+            i += 1
+    
+    # 必须消耗完所有字符
+    return i == n
+
+
 def _convert_xml_value(value: str) -> Any:
     """将XML文本值转换为适当的Python类型。
     
@@ -350,7 +436,7 @@ def _convert_xml_value(value: str) -> Any:
     1. 空字符串 -> 空字符串
     2. "true"/"false"（不区分大小写）-> bool
     3. 纯整数字符串（可带正负号）-> int
-    4. 纯浮点数字符串（可带正负号）-> float
+    4. 纯浮点数字符串（可带正负号和科学计数法）-> float
     5. 其他 -> 保持为字符串（包括路径、日期等）
     
     Args:
@@ -368,36 +454,15 @@ def _convert_xml_value(value: str) -> Any:
     if value.lower() == "false":
         return False
     
-    # 尝试转换为整数（纯数字，可带正负号）
-    # 注意：不应该包含其他字符如路径分隔符
-    try:
-        # 检查是否是纯整数格式：可选的正负号 + 数字
-        stripped = value.strip()
-        if stripped and (stripped[0].isdigit() or (stripped[0] in '+-' and len(stripped) > 1 and stripped[1].isdigit())):
-            # 检查剩余部分是否都是数字
-            check_part = stripped[1:] if stripped[0] in '+-' else stripped
-            if check_part.isdigit():
-                return int(stripped)
-    except ValueError:
-        pass
+    stripped = value.strip()
+    
+    # 尝试转换为整数
+    if _is_integer_string(stripped):
+        return int(stripped)
     
     # 尝试转换为浮点数
-    # 必须是有效的浮点数格式：可选正负号，数字，最多一个小数点，可选科学计数法
-    try:
-        stripped = value.strip()
-        if stripped:
-            # 快速检查：必须以数字或正负号开头，且只包含数字、小数点、正负号和科学计数法字符
-            first_char = stripped[0]
-            if first_char.isdigit() or first_char in '+-':
-                # 检查是否只包含浮点数允许的字符
-                valid_float_chars = set('0123456789.+-eE')
-                if all(c in valid_float_chars for c in stripped):
-                    # 额外检查：小数点最多一个
-                    if stripped.count('.') <= 1:
-                        result = float(stripped)
-                        return result
-    except ValueError:
-        pass
+    if _is_float_string(stripped):
+        return float(stripped)
     
     # 返回字符串（包括路径、日期、时间等）
     return value
