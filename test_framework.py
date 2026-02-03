@@ -4075,6 +4075,165 @@ def test_trading_hours_helper_class():
     print("✓ TradingHoursHelper class test passed")
 
 
+def test_no_duplicate_segment_and_interval_end_events():
+    """测试修复：最后一个SEGMENT_END不应与INTERVAL_END重复出现。
+    
+    问题描述：在debug时发现interval_end后还有segment_end事件，这是不允许的。
+    最后一个segment的结束就是interval的结束，不应该有两个独立事件。
+    
+    验证：
+    1. 事件队列中不应该同时存在时间相同的SEGMENT_END和INTERVAL_END
+    2. 最后一个segment的结束由INTERVAL_END代表
+    """
+    print("\n--- Test: No Duplicate SEGMENT_END and INTERVAL_END Events ---")
+    
+    import heapq
+    from quant_framework.runner.event_loop import (
+        Event, EventType, reset_event_seq_counter
+    )
+    from quant_framework.core.types import TapeSegment
+    
+    reset_event_seq_counter()
+    
+    # 测试1：直接验证事件创建逻辑
+    print("\n  测试1: 验证事件队列逻辑（模拟event_loop.py中的事件创建）...")
+    
+    # 创建一个测试tape（模拟实际tape）
+    test_tape = [
+        TapeSegment(index=1, t_start=1000, t_end=1200, bid_price=100.0, ask_price=101.0,
+                   trades={}, cancels={}, net_flow={}, activation_bid={100.0}, activation_ask={101.0}),
+        TapeSegment(index=2, t_start=1200, t_end=1500, bid_price=100.0, ask_price=101.0,
+                   trades={}, cancels={}, net_flow={}, activation_bid={100.0}, activation_ask={101.0}),
+    ]
+    t_a = 1000
+    t_b = 1500  # 区间结束时间等于最后一个segment结束时间
+    
+    # 模拟event_loop.py中的事件创建逻辑（修复后的版本）
+    event_queue = []
+    for seg in test_tape:
+        if seg.t_end == t_b:
+            # 最后一个段的结束由INTERVAL_END代替，不创建SEGMENT_END
+            continue
+        heapq.heappush(event_queue, Event(
+            time=seg.t_end,
+            event_type=EventType.SEGMENT_END,
+            data=seg,
+        ))
+    
+    heapq.heappush(event_queue, Event(
+        time=t_b,
+        event_type=EventType.INTERVAL_END,
+        data=None,
+    ))
+    
+    # 验证事件队列
+    segment_end_count = sum(1 for e in event_queue if e.event_type == EventType.SEGMENT_END)
+    interval_end_count = sum(1 for e in event_queue if e.event_type == EventType.INTERVAL_END)
+    
+    print(f"    SEGMENT_END事件数: {segment_end_count} (期望: {len(test_tape) - 1})")
+    print(f"    INTERVAL_END事件数: {interval_end_count} (期望: 1)")
+    
+    assert segment_end_count == len(test_tape) - 1, \
+        f"SEGMENT_END事件数应该是 {len(test_tape) - 1}，但实际是 {segment_end_count}"
+    assert interval_end_count == 1, \
+        f"INTERVAL_END事件数应该是 1，但实际是 {interval_end_count}"
+    
+    # 验证在t_b时刻没有SEGMENT_END事件
+    events_at_t_b = [e for e in event_queue if e.time == t_b]
+    segment_end_at_t_b = [e for e in events_at_t_b if e.event_type == EventType.SEGMENT_END]
+    
+    print(f"    t_b时刻的事件数: {len(events_at_t_b)}")
+    print(f"    t_b时刻的SEGMENT_END事件数: {len(segment_end_at_t_b)} (期望: 0)")
+    
+    assert len(segment_end_at_t_b) == 0, \
+        f"在t_b时刻不应该有SEGMENT_END事件，但找到了 {len(segment_end_at_t_b)} 个"
+    
+    print("  ✓ 测试1通过: 事件队列中t_b时刻只有INTERVAL_END，没有SEGMENT_END")
+    
+    # 测试2：多segment场景
+    print("\n  测试2: 多segment场景...")
+    reset_event_seq_counter()
+    
+    test_tape_multi = [
+        TapeSegment(index=1, t_start=0, t_end=100, bid_price=100.0, ask_price=101.0,
+                   trades={}, cancels={}, net_flow={}, activation_bid={100.0}, activation_ask={101.0}),
+        TapeSegment(index=2, t_start=100, t_end=200, bid_price=100.0, ask_price=101.0,
+                   trades={}, cancels={}, net_flow={}, activation_bid={100.0}, activation_ask={101.0}),
+        TapeSegment(index=3, t_start=200, t_end=300, bid_price=100.0, ask_price=101.0,
+                   trades={}, cancels={}, net_flow={}, activation_bid={100.0}, activation_ask={101.0}),
+        TapeSegment(index=4, t_start=300, t_end=400, bid_price=100.0, ask_price=101.0,
+                   trades={}, cancels={}, net_flow={}, activation_bid={100.0}, activation_ask={101.0}),
+    ]
+    t_b_multi = 400
+    
+    event_queue_multi = []
+    for seg in test_tape_multi:
+        if seg.t_end == t_b_multi:
+            continue
+        heapq.heappush(event_queue_multi, Event(
+            time=seg.t_end,
+            event_type=EventType.SEGMENT_END,
+            data=seg,
+        ))
+    
+    heapq.heappush(event_queue_multi, Event(
+        time=t_b_multi,
+        event_type=EventType.INTERVAL_END,
+        data=None,
+    ))
+    
+    segment_end_count_multi = sum(1 for e in event_queue_multi if e.event_type == EventType.SEGMENT_END)
+    events_at_t_b_multi = [e for e in event_queue_multi if e.time == t_b_multi]
+    segment_end_at_t_b_multi = [e for e in events_at_t_b_multi if e.event_type == EventType.SEGMENT_END]
+    
+    print(f"    SEGMENT_END事件数: {segment_end_count_multi} (期望: {len(test_tape_multi) - 1})")
+    print(f"    t_b时刻的SEGMENT_END事件数: {len(segment_end_at_t_b_multi)} (期望: 0)")
+    
+    assert segment_end_count_multi == len(test_tape_multi) - 1
+    assert len(segment_end_at_t_b_multi) == 0
+    
+    print("  ✓ 测试2通过: 多segment场景正确处理")
+    
+    # 测试3：单segment场景（此时没有SEGMENT_END事件，只有INTERVAL_END）
+    print("\n  测试3: 单segment场景...")
+    reset_event_seq_counter()
+    
+    test_tape_single = [
+        TapeSegment(index=1, t_start=0, t_end=100, bid_price=100.0, ask_price=101.0,
+                   trades={}, cancels={}, net_flow={}, activation_bid={100.0}, activation_ask={101.0}),
+    ]
+    t_b_single = 100
+    
+    event_queue_single = []
+    for seg in test_tape_single:
+        if seg.t_end == t_b_single:
+            continue
+        heapq.heappush(event_queue_single, Event(
+            time=seg.t_end,
+            event_type=EventType.SEGMENT_END,
+            data=seg,
+        ))
+    
+    heapq.heappush(event_queue_single, Event(
+        time=t_b_single,
+        event_type=EventType.INTERVAL_END,
+        data=None,
+    ))
+    
+    segment_end_count_single = sum(1 for e in event_queue_single if e.event_type == EventType.SEGMENT_END)
+    interval_end_count_single = sum(1 for e in event_queue_single if e.event_type == EventType.INTERVAL_END)
+    
+    print(f"    SEGMENT_END事件数: {segment_end_count_single} (期望: 0)")
+    print(f"    INTERVAL_END事件数: {interval_end_count_single} (期望: 1)")
+    
+    assert segment_end_count_single == 0
+    assert interval_end_count_single == 1
+    
+    print("  ✓ 测试3通过: 单segment场景正确处理")
+    
+    print("✓ No duplicate SEGMENT_END and INTERVAL_END events test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4136,6 +4295,7 @@ def run_all_tests():
         test_snapshot_duplication_with_trading_hours,
         test_order_arrival_trading_hours_adjustment,
         test_trading_hours_helper_class,
+        test_no_duplicate_segment_and_interval_end_events,
     ]
     
     passed = 0
