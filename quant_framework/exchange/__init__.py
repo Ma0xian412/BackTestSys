@@ -1,5 +1,5 @@
 """Exchange simulator module for FIFO matching."""
 
-from .simulator import FIFOExchangeSimulator
+from .simulator import FIFOExchangeSimulator, OrderNotFoundError
 
-__all__ = ['FIFOExchangeSimulator']
+__all__ = ['FIFOExchangeSimulator', 'OrderNotFoundError']

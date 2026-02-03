@@ -4234,6 +4234,174 @@ def test_no_duplicate_segment_and_interval_end_events():
     print("✓ No duplicate SEGMENT_END and INTERVAL_END events test passed")
 
 
+def test_cancel_order_across_interval():
+    """Test canceling an order after exchange reset (across interval boundaries).
+    
+    This test verifies the fix for the critical bug where:
+    - exchange.reset() was clearing _levels which contained all ShadowOrder objects
+    - When trying to cancel an order placed in a previous interval, the order
+      couldn't be found because _levels was cleared
+    
+    The fix adds a separate _orders registry that persists across reset() calls.
+    """
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator, OrderNotFoundError
+    from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce
+    
+    print("\n--- Test: Cancel Order Across Interval (Reset Bug Fix) ---\n")
+    
+    # 测试1: 验证订单在reset后仍然可以被取消
+    print("  测试1: 订单在exchange.reset()后仍可被取消...")
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    
+    # 创建订单
+    order = Order(
+        order_id="test-cancel-1",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=10000000,
+    )
+    
+    # 创建tape并设置给交易所
+    tape = [
+        TapeSegment(
+            index=1,
+            t_start=10000000,
+            t_end=15000000,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={},
+            cancels={},
+            net_flow={},
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    
+    exchange.set_tape(tape, 10000000, 15000000)
+    
+    # 订单到达交易所
+    receipt = exchange.on_order_arrival(order, 10000000, market_qty=50)
+    assert receipt is None, "Order should be accepted to queue"
+    
+    # 验证订单在_orders注册表中
+    assert "test-cancel-1" in exchange._orders, "Order should be in registry"
+    print(f"    ✓ 订单已注册: {order.order_id}")
+    
+    # 现在模拟区间结束，reset交易所（这是导致bug的操作）
+    exchange.reset()
+    print("    ✓ exchange.reset() 已调用")
+    
+    # 验证_levels被清空但_orders仍然存在
+    assert len(exchange._levels) == 0, "Levels should be cleared after reset"
+    assert "test-cancel-1" in exchange._orders, "Order registry should persist after reset"
+    print("    ✓ _levels已清空，_orders仍保留订单")
+    
+    # 设置新的tape（模拟新区间开始）
+    new_tape = [
+        TapeSegment(
+            index=1,
+            t_start=15000000,
+            t_end=20000000,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={},
+            cancels={},
+            net_flow={},
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    exchange.set_tape(new_tape, 15000000, 20000000)
+    
+    # 现在尝试取消订单（在新区间中）
+    cancel_receipt = exchange.on_cancel_arrival("test-cancel-1", 16000000)
+    
+    assert cancel_receipt.receipt_type == "CANCELED", \
+        f"Order should be canceled, got {cancel_receipt.receipt_type}"
+    print(f"    ✓ 订单成功取消: receipt_type={cancel_receipt.receipt_type}")
+    
+    # 验证订单状态已更新
+    shadow = exchange._orders["test-cancel-1"]
+    assert shadow.status == "CANCELED", f"Shadow order status should be CANCELED, got {shadow.status}"
+    print("    ✓ Shadow order状态已更新为CANCELED")
+    
+    print("  ✓ 测试1通过: reset后订单仍可被取消")
+    
+    # 测试2: 验证取消不存在的订单会抛出OrderNotFoundError
+    print("\n  测试2: 取消不存在的订单应抛出OrderNotFoundError...")
+    
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2.set_tape(tape, 10000000, 15000000)
+    
+    try:
+        exchange2.on_cancel_arrival("non-existent-order", 12000000)
+        assert False, "Should have raised OrderNotFoundError"
+    except OrderNotFoundError as e:
+        assert e.order_id == "non-existent-order"
+        print(f"    ✓ 正确抛出OrderNotFoundError: {e}")
+    
+    print("  ✓ 测试2通过: 取消不存在的订单抛出异常")
+    
+    # 测试3: 验证已取消的订单再次取消返回REJECTED
+    print("\n  测试3: 已取消的订单再次取消应返回REJECTED...")
+    
+    exchange3 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange3.set_tape(tape, 10000000, 15000000)
+    
+    order3 = Order(
+        order_id="test-cancel-3",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=10000000,
+    )
+    exchange3.on_order_arrival(order3, 10000000, market_qty=50)
+    
+    # 第一次取消
+    receipt1 = exchange3.on_cancel_arrival("test-cancel-3", 11000000)
+    assert receipt1.receipt_type == "CANCELED"
+    
+    # 第二次取消应返回REJECTED
+    receipt2 = exchange3.on_cancel_arrival("test-cancel-3", 12000000)
+    assert receipt2.receipt_type == "REJECTED", \
+        f"Second cancel should be REJECTED, got {receipt2.receipt_type}"
+    print(f"    ✓ 第二次取消返回REJECTED")
+    
+    print("  ✓ 测试3通过: 已取消的订单再次取消返回REJECTED")
+    
+    # 测试4: 验证full_reset会清空订单注册表
+    print("\n  测试4: full_reset应清空订单注册表...")
+    
+    exchange4 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange4.set_tape(tape, 10000000, 15000000)
+    
+    order4 = Order(
+        order_id="test-cancel-4",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=10000000,
+    )
+    exchange4.on_order_arrival(order4, 10000000, market_qty=50)
+    
+    assert "test-cancel-4" in exchange4._orders
+    
+    # 调用full_reset
+    exchange4.full_reset()
+    
+    assert len(exchange4._orders) == 0, "Order registry should be empty after full_reset"
+    print("    ✓ full_reset后订单注册表已清空")
+    
+    print("  ✓ 测试4通过: full_reset正确清空订单注册表")
+    
+    print("✓ Cancel order across interval test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4296,6 +4464,7 @@ def run_all_tests():
         test_order_arrival_trading_hours_adjustment,
         test_trading_hours_helper_class,
         test_no_duplicate_segment_and_interval_end_events,
+        test_cancel_order_across_interval,
     ]
     
     passed = 0
