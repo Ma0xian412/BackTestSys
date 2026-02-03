@@ -157,6 +157,15 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
         Returns:
             The ShadowOrder if found, None otherwise
+            
+        Note:
+            This is O(n*m) where n is number of price levels and m is average queue size.
+            This is acceptable because:
+            1. Cancel operations are infrequent compared to fills
+            2. Number of active price levels and orders is typically small
+            3. Simplicity of single data source outweighs performance cost
+            
+            If cancels become a bottleneck, consider adding an order_id index.
         """
         for level in self._levels.values():
             for shadow in level.queue:
