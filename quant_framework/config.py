@@ -425,7 +425,7 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
             if cid_elem is None or cid_elem.text is None:
                 continue
             
-            if cid_elem.text.strip() == contract_id:
+            if cid_elem.text.strip() == str(contract_id):
                 # 找到匹配的合约，解析信息
                 tick_size = 1.0
                 exchange_code = ""
