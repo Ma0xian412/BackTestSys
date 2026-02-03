@@ -165,6 +165,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         3. Reset x_coord to 0
         
         So we only need to clear tape-related caches here.
+        
+        Note: This method is typically called after align_at_boundary() which
+        already resets x_coord. The x_coord reset here is for completeness.
         """
         # Reset interval-specific state
         self.current_time = 0
@@ -173,8 +176,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._x_rates.clear()
         self._x_at_seg_start.clear()
         
-        # Reset X coordinate for all levels (already done in align_at_boundary,
-        # but do it here too for safety when reset is called standalone)
+        # Reset X coordinate for all levels
+        # (align_at_boundary already does this, but included here for completeness)
         for level in self._levels.values():
             level.x_coord = 0.0
         
@@ -189,13 +192,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         Call this when starting a new backtest session to clear all state
         including the order registry.
         """
+        # First do interval reset
+        self.reset()
+        # Then clear persistent state
         self._levels.clear()
         self._orders.clear()
-        self.current_time = 0
-        self._current_tape = []
-        self._current_seg_idx = 0
-        self._x_rates.clear()
-        self._x_at_seg_start.clear()
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
         """Get or create price level state."""
