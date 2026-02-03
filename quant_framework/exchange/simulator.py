@@ -26,6 +26,20 @@ logger = logging.getLogger(__name__)
 EPSILON = 1e-12
 
 
+class OrderNotFoundError(Exception):
+    """Exception raised when attempting to cancel an order that doesn't exist.
+    
+    This exception is raised during cancel operations when the order_id
+    cannot be found in the exchange's order registry. This typically indicates
+    a bug in order management or an invalid cancel request.
+    """
+    def __init__(self, order_id: str, message: str = None):
+        self.order_id = order_id
+        if message is None:
+            message = f"Order not found: {order_id}"
+        super().__init__(message)
+
+
 @dataclass
 class ShadowOrder:
     """A shadow order in the exchange queue.
@@ -122,6 +136,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Precomputed X rates per segment for fast fill time calculation
         self._x_rates: Dict[Tuple[Side, Price, int], float] = {}
         self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
+        
+        # Track order IDs that were fully filled immediately (crossing orders)
+        # This allows cancel requests to return REJECTED instead of OrderNotFoundError
+        # Note: Order IDs are removed from this set after being referenced in a cancel,
+        # preventing unbounded growth. full_reset() also clears this set.
+        self._filled_order_ids: set = set()
 
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
@@ -133,14 +153,77 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             return False
         return True
     
+    def _find_order_by_id(self, order_id: str) -> Optional[ShadowOrder]:
+        """Find a shadow order by its ID.
+        
+        Searches through all price levels to find the order.
+        
+        Args:
+            order_id: The order ID to search for
+            
+        Returns:
+            The ShadowOrder if found, None otherwise
+            
+        Note:
+            This is O(n*m) where n is number of price levels and m is average queue size.
+            This is acceptable because:
+            1. Cancel operations are infrequent compared to fills
+            2. Number of active price levels and orders is typically small
+            3. Simplicity of single data source outweighs performance cost
+            
+            If cancels become a bottleneck, consider adding an order_id index.
+        """
+        for level in self._levels.values():
+            for shadow in level.queue:
+                if shadow.order_id == order_id:
+                    return shadow
+        return None
+    
     def reset(self) -> None:
-        """Reset simulator state for new interval."""
-        self._levels.clear()
+        """Reset simulator state for new interval.
+        
+        This resets interval-specific state (tape, coordinates, X rates) but
+        preserves the price levels (_levels) including shadow orders, allowing
+        orders to span multiple intervals naturally.
+        
+        The key insight is that align_at_boundary() has already:
+        1. Updated q_mkt from the new snapshot
+        2. Adjusted shadow order pos values relative to X=0
+        3. Reset x_coord to 0
+        
+        So we only need to clear tape-related caches here.
+        
+        Note: This method is typically called after align_at_boundary() which
+        already resets x_coord. The x_coord reset here is for completeness.
+        """
+        # Reset interval-specific state
         self.current_time = 0
         self._current_tape = []
         self._current_seg_idx = 0
         self._x_rates.clear()
         self._x_at_seg_start.clear()
+        
+        # Reset X coordinate for all levels
+        # (align_at_boundary already does this, but included here for completeness)
+        for level in self._levels.values():
+            level.x_coord = 0.0
+        
+        # Note: _levels is intentionally NOT cleared to preserve shadow orders
+        # across interval boundaries. Their pos values were adjusted by
+        # align_at_boundary() at the end of the previous interval.
+        # Note: _filled_order_ids is also NOT cleared as orders may be canceled
+        # in later intervals
+    
+    def full_reset(self) -> None:
+        """Fully reset simulator state including levels.
+        
+        Call this when starting a new backtest session to clear all state.
+        """
+        # First do interval reset
+        self.reset()
+        # Then clear persistent state
+        self._levels.clear()
+        self._filled_order_ids.clear()
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
         """Get or create price level state."""
@@ -192,6 +275,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._interval_start = t_a
         self._interval_end = t_b
         self._current_seg_idx = 0
+        
+        # No need to restore orders - reset() now preserves _levels
+        # Shadow orders remain in their price levels across intervals
         
         # Precompute X rates for each (side, price, segment)
         self._x_rates.clear()
@@ -533,6 +619,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         else:
             # Fully filled immediately
             if immediate_fill_qty > 0:
+                # Track this order as fully filled for cancel handling
+                self._filled_order_ids.add(order.order_id)
+                
                 receipt = OrderReceipt(
                     order_id=order.order_id,
                     receipt_type="FILL",
@@ -840,57 +929,77 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
         Returns:
             Receipt for the cancel operation
+            
+        Raises:
+            OrderNotFoundError: If the order_id is not found in price levels
+                and was not previously fully filled immediately.
+                This indicates a bug in order management or an invalid cancel request.
         """
         logger.debug(f"[Exchange] Cancel arrival: order_id={order_id}, arrival_time={arrival_time}")
         
-        # Find order in all levels
-        for level in self._levels.values():
-            for shadow in level.queue:
-                if shadow.order_id == order_id:
-                    if shadow.status == "FILLED":
-                        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already filled)")
-                        return OrderReceipt(
-                            order_id=order_id,
-                            receipt_type="REJECTED",
-                            timestamp=arrival_time,
-                        )
-                    
-                    if shadow.status == "CANCELED":
-                        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already canceled)")
-                        return OrderReceipt(
-                            order_id=order_id,
-                            receipt_type="REJECTED",
-                            timestamp=arrival_time,
-                        )
-                    
-                    # Calculate fill up to cancel time
-                    x_t = self._get_x_coord(shadow.side, shadow.price, arrival_time)
-                    fill_at_cancel = max(0, min(shadow.original_qty, int(x_t - shadow.pos)))
-                    
-                    # Update cache before changing status
-                    level._active_shadow_qty -= shadow.remaining_qty
-                    
-                    shadow.filled_qty = fill_at_cancel
-                    shadow.remaining_qty = 0
-                    shadow.status = "CANCELED"
-                    
-                    logger.debug(
-                        f"[Exchange] Cancel {order_id}: CANCELED successfully, "
-                        f"fill_at_cancel={fill_at_cancel}"
-                    )
-                    return OrderReceipt(
-                        order_id=order_id,
-                        receipt_type="CANCELED",
-                        timestamp=arrival_time,
-                        fill_qty=fill_at_cancel,
-                        remaining_qty=0,
-                    )
+        # Check if order was fully filled immediately (crossing order)
+        if order_id in self._filled_order_ids:
+            logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already filled immediately)")
+            # Remove from set after handling to prevent unbounded growth
+            self._filled_order_ids.discard(order_id)
+            return OrderReceipt(
+                order_id=order_id,
+                receipt_type="REJECTED",
+                timestamp=arrival_time,
+            )
         
-        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (order not found)")
+        # Look up order in price levels
+        shadow = self._find_order_by_id(order_id)
+        
+        if shadow is None:
+            logger.error(f"[Exchange] Cancel {order_id}: order not found")
+            raise OrderNotFoundError(order_id)
+        
+        if shadow.status == "FILLED":
+            logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already filled)")
+            return OrderReceipt(
+                order_id=order_id,
+                receipt_type="REJECTED",
+                timestamp=arrival_time,
+            )
+        
+        if shadow.status == "CANCELED":
+            logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already canceled)")
+            return OrderReceipt(
+                order_id=order_id,
+                receipt_type="REJECTED",
+                timestamp=arrival_time,
+            )
+        
+        # Calculate fill up to cancel time
+        x_t = self._get_x_coord(shadow.side, shadow.price, arrival_time)
+        fill_at_cancel = max(0, min(shadow.original_qty, int(x_t - shadow.pos)))
+        
+        # Save remaining_qty before updating for cache update
+        old_remaining_qty = shadow.remaining_qty
+        
+        # Update shadow order status
+        shadow.filled_qty = fill_at_cancel
+        shadow.remaining_qty = 0
+        shadow.status = "CANCELED"
+        
+        # Update level cache
+        level_key = (shadow.side, round(float(shadow.price), 8))
+        if level_key in self._levels:
+            level = self._levels[level_key]
+            if shadow in level.queue:
+                level._active_shadow_qty -= old_remaining_qty
+        
+        logger.debug(
+            f"[Exchange] Cancel {order_id}: CANCELED successfully, "
+            f"fill_at_cancel={fill_at_cancel}"
+        )
         return OrderReceipt(
             order_id=order_id,
-            receipt_type="REJECTED",
+            receipt_type="CANCELED",
             timestamp=arrival_time,
+            fill_qty=fill_at_cancel,
+            remaining_qty=0,
         )
     
     def _find_segment(self, t: int) -> int:

@@ -4234,6 +4234,384 @@ def test_no_duplicate_segment_and_interval_end_events():
     print("✓ No duplicate SEGMENT_END and INTERVAL_END events test passed")
 
 
+def test_cancel_order_across_interval():
+    """Test canceling an order after exchange reset (across interval boundaries).
+    
+    This test verifies that:
+    - exchange.reset() preserves _levels which contain ShadowOrder objects
+    - Orders placed in a previous interval can still be canceled in the next interval
+    """
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator, OrderNotFoundError
+    from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce
+    
+    print("\n--- Test: Cancel Order Across Interval (Reset Bug Fix) ---\n")
+    
+    # 测试1: 验证订单在reset后仍然可以被取消
+    print("  测试1: 订单在exchange.reset()后仍可被取消...")
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    
+    # 创建订单
+    order = Order(
+        order_id="test-cancel-1",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=10000000,
+    )
+    
+    # 创建tape并设置给交易所
+    tape = [
+        TapeSegment(
+            index=1,
+            t_start=10000000,
+            t_end=15000000,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={},
+            cancels={},
+            net_flow={},
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    
+    exchange.set_tape(tape, 10000000, 15000000)
+    
+    # 订单到达交易所
+    receipt = exchange.on_order_arrival(order, 10000000, market_qty=50)
+    assert receipt is None, "Order should be accepted to queue"
+    
+    # 验证订单在levels中
+    shadow = exchange._find_order_by_id("test-cancel-1")
+    assert shadow is not None, "Order should be in levels"
+    print(f"    ✓ 订单已注册: {order.order_id}")
+    
+    # 现在模拟区间结束，reset交易所
+    exchange.reset()
+    print("    ✓ exchange.reset() 已调用")
+    
+    # 新设计：reset不清空_levels，订单仍在levels中
+    assert len(exchange._levels) > 0, "Levels should be preserved after reset"
+    shadow = exchange._find_order_by_id("test-cancel-1")
+    assert shadow is not None, "Order should still be in levels after reset"
+    print("    ✓ _levels保留了订单（新设计）")
+    
+    # 设置新的tape（模拟新区间开始）
+    new_tape = [
+        TapeSegment(
+            index=1,
+            t_start=15000000,
+            t_end=20000000,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={},
+            cancels={},
+            net_flow={},
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    exchange.set_tape(new_tape, 15000000, 20000000)
+    
+    # 现在尝试取消订单（在新区间中）
+    cancel_receipt = exchange.on_cancel_arrival("test-cancel-1", 16000000)
+    
+    assert cancel_receipt.receipt_type == "CANCELED", \
+        f"Order should be canceled, got {cancel_receipt.receipt_type}"
+    print(f"    ✓ 订单成功取消: receipt_type={cancel_receipt.receipt_type}")
+    
+    # 验证订单状态已更新
+    shadow = exchange._find_order_by_id("test-cancel-1")
+    assert shadow.status == "CANCELED", f"Shadow order status should be CANCELED, got {shadow.status}"
+    print("    ✓ Shadow order状态已更新为CANCELED")
+    
+    print("  ✓ 测试1通过: reset后订单仍可被取消")
+    
+    # 测试2: 验证取消不存在的订单会抛出OrderNotFoundError
+    print("\n  测试2: 取消不存在的订单应抛出OrderNotFoundError...")
+    
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2.set_tape(tape, 10000000, 15000000)
+    
+    try:
+        exchange2.on_cancel_arrival("non-existent-order", 12000000)
+        assert False, "Should have raised OrderNotFoundError"
+    except OrderNotFoundError as e:
+        assert e.order_id == "non-existent-order"
+        print(f"    ✓ 正确抛出OrderNotFoundError: {e}")
+    
+    print("  ✓ 测试2通过: 取消不存在的订单抛出异常")
+    
+    # 测试3: 验证已取消的订单再次取消返回REJECTED
+    print("\n  测试3: 已取消的订单再次取消应返回REJECTED...")
+    
+    exchange3 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange3.set_tape(tape, 10000000, 15000000)
+    
+    order3 = Order(
+        order_id="test-cancel-3",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=10000000,
+    )
+    exchange3.on_order_arrival(order3, 10000000, market_qty=50)
+    
+    # 第一次取消
+    receipt1 = exchange3.on_cancel_arrival("test-cancel-3", 11000000)
+    assert receipt1.receipt_type == "CANCELED"
+    
+    # 第二次取消应返回REJECTED
+    receipt2 = exchange3.on_cancel_arrival("test-cancel-3", 12000000)
+    assert receipt2.receipt_type == "REJECTED", \
+        f"Second cancel should be REJECTED, got {receipt2.receipt_type}"
+    print(f"    ✓ 第二次取消返回REJECTED")
+    
+    print("  ✓ 测试3通过: 已取消的订单再次取消返回REJECTED")
+    
+    # 测试4: 验证full_reset会清空levels
+    print("\n  测试4: full_reset应清空levels...")
+    
+    exchange4 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange4.set_tape(tape, 10000000, 15000000)
+    
+    order4 = Order(
+        order_id="test-cancel-4",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=10000000,
+    )
+    exchange4.on_order_arrival(order4, 10000000, market_qty=50)
+    
+    shadow = exchange4._find_order_by_id("test-cancel-4")
+    assert shadow is not None, "Order should be in levels"
+    
+    # 调用full_reset
+    exchange4.full_reset()
+    
+    assert len(exchange4._levels) == 0, "Levels should be empty after full_reset"
+    shadow = exchange4._find_order_by_id("test-cancel-4")
+    assert shadow is None, "Order should not be found after full_reset"
+    print("    ✓ full_reset后levels已清空")
+    
+    print("  ✓ 测试4通过: full_reset正确清空levels")
+    
+    print("✓ Cancel order across interval test passed")
+
+
+def test_cross_interval_order_fill():
+    """Test order fill across multiple intervals.
+    
+    Scenario:
+    - ABCD are 4 consecutive snapshots
+    - Order arrives in interval [A,B] with pos=100, qty=10 (threshold=110)
+    - Interval [A,B]: X increases by 30 (cumulative: 30)
+    - Interval [B,C]: X increases by 30 (cumulative: 60)
+    - Interval [C,D]: X increases by 60 (cumulative: 120)
+    - Order should fill in interval [C,D] when X reaches 110
+    
+    This test verifies that shadow orders properly carry over across interval
+    boundaries and that their pos values are correctly adjusted.
+    """
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
+    from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce, NormalizedSnapshot, Level
+    
+    print("\n--- Test: Cross-Interval Order Fill ---\n")
+    
+    # 时间设置（单位tick）
+    t_A = 10_000_000
+    t_B = 15_000_000
+    t_C = 20_000_000
+    t_D = 25_000_000
+    
+    # 创建交易所
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    
+    # ========== 区间 [A, B] ==========
+    print("  区间 [A, B]:")
+    
+    # 快照A
+    snapshot_A = NormalizedSnapshot(
+        ts_recv=t_A,
+        bids=[Level(100.0, 100)],  # bid@100有100手队列
+        asks=[Level(101.0, 100)],
+    )
+    
+    # Tape [A,B]: 成交30手, 撤单0手 → X增长30
+    tape_AB = [
+        TapeSegment(
+            index=1,
+            t_start=t_A,
+            t_end=t_B,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={(Side.BUY, 100.0): 30},
+            cancels={},
+            net_flow={(Side.BUY, 100.0): -30},  # 净流出30（被消耗）
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    
+    exchange.set_tape(tape_AB, t_A, t_B)
+    
+    # 订单在区间中间到达，pos=100（排在队列末尾），qty=10
+    order = Order(
+        order_id="cross-interval-order",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=t_A,
+    )
+    
+    # 订单在t_A时刻到达，market_qty=100（队列深度）
+    receipt = exchange.on_order_arrival(order, t_A, market_qty=100)
+    assert receipt is None, "Order should be accepted"
+    
+    # 验证订单位置
+    shadow = exchange._find_order_by_id("cross-interval-order")
+    print(f"    订单pos={shadow.pos}, qty={shadow.original_qty}, threshold={shadow.pos + shadow.original_qty}")
+    assert shadow.pos == 100, f"Expected pos=100, got {shadow.pos}"
+    assert shadow.original_qty == 10
+    
+    # 推进区间 [A, B]
+    receipts = exchange.advance(t_A, t_B, tape_AB[0])
+    print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_B)}")
+    print(f"    生成回执数: {len(receipts)}")
+    assert len(receipts) == 0, "Should not fill yet (X=30 < threshold=110)"
+    
+    # 边界对齐
+    snapshot_B = NormalizedSnapshot(
+        ts_recv=t_B,
+        bids=[Level(100.0, 70)],  # 队列深度减少到70
+        asks=[Level(101.0, 100)],
+    )
+    exchange.align_at_boundary(snapshot_B)
+    
+    print(f"    align后shadow.pos={shadow.pos}")
+    # 期望：pos从100调整为100-30=70（因为X消耗了30）
+    assert shadow.pos == 70, f"Expected pos=70 after align, got {shadow.pos}"
+    
+    print("  ✓ 区间[A,B]完成: X增长30, 订单pos调整为70")
+    
+    # ========== 区间 [B, C] ==========
+    print("\n  区间 [B, C]:")
+    
+    # Reset for new interval
+    exchange.reset()
+    
+    # 验证订单是否仍在levels中
+    shadow = exchange._find_order_by_id("cross-interval-order")
+    assert shadow is not None, "Order should still be in levels"
+    print(f"    reset后shadow.status={shadow.status}, pos={shadow.pos}")
+    
+    # Tape [B,C]: 成交30手, 撤单0手 → X增长30
+    tape_BC = [
+        TapeSegment(
+            index=1,
+            t_start=t_B,
+            t_end=t_C,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={(Side.BUY, 100.0): 30},
+            cancels={},
+            net_flow={(Side.BUY, 100.0): -30},
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    
+    exchange.set_tape(tape_BC, t_B, t_C)
+    
+    # 需要将shadow订单恢复到_levels中才能被advance处理
+    # 这是当前实现的bug - reset清空了_levels，advance找不到订单
+    
+    # 尝试推进 - 期望订单能被找到并处理
+    receipts = exchange.advance(t_B, t_C, tape_BC[0])
+    print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_C)}")
+    print(f"    生成回执数: {len(receipts)}")
+    
+    # 如果实现正确：
+    # - X从0累加到30
+    # - shadow.pos=70, threshold=80
+    # - X=30 < 80，不应成交
+    # 但由于reset清空了_levels，advance根本找不到订单！
+    
+    # 边界对齐
+    snapshot_C = NormalizedSnapshot(
+        ts_recv=t_C,
+        bids=[Level(100.0, 40)],
+        asks=[Level(101.0, 100)],
+    )
+    
+    # 检查_levels是否有订单
+    level_key = (Side.BUY, 100.0)
+    if level_key in exchange._levels:
+        level = exchange._levels[level_key]
+        print(f"    _levels中的订单数: {len(level.queue)}")
+    else:
+        print(f"    _levels中没有该价位的level（这是bug！）")
+    
+    exchange.align_at_boundary(snapshot_C)
+    
+    print("  ✓ 区间[B,C]完成")
+    
+    # ========== 区间 [C, D] ==========
+    print("\n  区间 [C, D]:")
+    
+    exchange.reset()
+    
+    # Tape [C,D]: 成交60手, 撤单0手 → X增长60
+    tape_CD = [
+        TapeSegment(
+            index=1,
+            t_start=t_C,
+            t_end=t_D,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={(Side.BUY, 100.0): 60},
+            cancels={},
+            net_flow={(Side.BUY, 100.0): -60},
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    
+    exchange.set_tape(tape_CD, t_C, t_D)
+    
+    receipts = exchange.advance(t_C, t_D, tape_CD[0])
+    print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_D)}")
+    print(f"    生成回执数: {len(receipts)}")
+    
+    # 如果跨区间正确工作：
+    # - 累计X = 30 + 30 + 60 = 120
+    # - 但由于pos调整：
+    #   - 区间AB结束: pos 100 → 70
+    #   - 区间BC结束: pos 70 → 40
+    #   - 区间CD: X从0到60，threshold = 40+10 = 50
+    #   - X=60 >= 50，应该成交！
+    
+    shadow = exchange._find_order_by_id("cross-interval-order")
+    print(f"    最终shadow.status={shadow.status}")
+    
+    # 验证订单已成交
+    if shadow.status == "FILLED":
+        print("  ✓ 订单在区间[C,D]成交 - 跨区间逻辑正确！")
+    else:
+        print(f"  ✗ 订单未成交 (status={shadow.status}) - 存在跨区间bug！")
+    
+    assert shadow.status == "FILLED", \
+        f"Order should be FILLED after crossing threshold across intervals, but status is {shadow.status}"
+    
+    print("✓ Cross-interval order fill test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4296,6 +4674,8 @@ def run_all_tests():
         test_order_arrival_trading_hours_adjustment,
         test_trading_hours_helper_class,
         test_no_duplicate_segment_and_interval_end_events,
+        test_cancel_order_across_interval,
+        test_cross_interval_order_fill,
     ]
     
     passed = 0

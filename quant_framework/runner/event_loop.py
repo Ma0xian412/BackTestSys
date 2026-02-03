@@ -326,6 +326,14 @@ class EventLoopRunner:
             包含回测结果的字典
         """
         self.feed.reset()
+        
+        # Full reset the exchange to ensure clean state for new backtest session
+        # This clears both interval-specific state and the order registry
+        if hasattr(self.exchange, 'full_reset'):
+            self.exchange.full_reset()
+        else:
+            self.exchange.reset()
+        
         prev = self.feed.next()
 
         if prev is None:
