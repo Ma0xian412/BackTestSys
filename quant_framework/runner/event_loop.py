@@ -447,8 +447,9 @@ class EventLoopRunner:
         event_queue: List[Event] = []
 
         # 添加段结束事件（最后一个段的结束由INTERVAL_END代替，避免重复事件）
-        for seg in tape:
-            if seg.t_end == t_b:
+        for i, seg in enumerate(tape):
+            is_last_segment = (i == len(tape) - 1)
+            if is_last_segment and seg.t_end == t_b:
                 # 最后一个段的结束时间等于区间结束时间，跳过SEGMENT_END事件
                 # 因为INTERVAL_END已经代表了区间和最后一个段的结束
                 continue
