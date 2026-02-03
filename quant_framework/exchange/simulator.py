@@ -136,11 +136,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Precomputed X rates per segment for fast fill time calculation
         self._x_rates: Dict[Tuple[Side, Price, int], float] = {}
         self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
-        
-        # Order registry: maps order_id to ShadowOrder
-        # This persists across reset() to allow order lookup for cancellation
-        # even after interval boundaries when levels are cleared
-        self._orders: Dict[str, ShadowOrder] = {}
 
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
@@ -151,6 +146,23 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             )
             return False
         return True
+    
+    def _find_order_by_id(self, order_id: str) -> Optional[ShadowOrder]:
+        """Find a shadow order by its ID.
+        
+        Searches through all price levels to find the order.
+        
+        Args:
+            order_id: The order ID to search for
+            
+        Returns:
+            The ShadowOrder if found, None otherwise
+        """
+        for level in self._levels.values():
+            for shadow in level.queue:
+                if shadow.order_id == order_id:
+                    return shadow
+        return None
     
     def reset(self) -> None:
         """Reset simulator state for new interval.
@@ -184,19 +196,16 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Note: _levels is intentionally NOT cleared to preserve shadow orders
         # across interval boundaries. Their pos values were adjusted by
         # align_at_boundary() at the end of the previous interval.
-        # Note: _orders is also preserved for order lookup (e.g., cancellation)
     
     def full_reset(self) -> None:
-        """Fully reset simulator state including levels and order registry.
+        """Fully reset simulator state including levels.
         
-        Call this when starting a new backtest session to clear all state
-        including the order registry.
+        Call this when starting a new backtest session to clear all state.
         """
         # First do interval reset
         self.reset()
         # Then clear persistent state
         self._levels.clear()
-        self._orders.clear()
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
         """Get or create price level state."""
@@ -888,9 +897,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         level.queue.append(shadow)
         level._active_shadow_qty += remaining_qty
         
-        # Register order in the order registry for cross-interval lookup
-        self._orders[order.order_id] = shadow
-        
         return None
     
     def on_cancel_arrival(self, order_id: str, arrival_time: int) -> OrderReceipt:
@@ -904,16 +910,16 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             Receipt for the cancel operation
             
         Raises:
-            OrderNotFoundError: If the order_id is not found in the order registry.
+            OrderNotFoundError: If the order_id is not found in price levels.
                 This indicates a bug in order management or an invalid cancel request.
         """
         logger.debug(f"[Exchange] Cancel arrival: order_id={order_id}, arrival_time={arrival_time}")
         
-        # Look up order in the order registry (persists across reset())
-        shadow = self._orders.get(order_id)
+        # Look up order in price levels
+        shadow = self._find_order_by_id(order_id)
         
         if shadow is None:
-            logger.error(f"[Exchange] Cancel {order_id}: order not found in registry")
+            logger.error(f"[Exchange] Cancel {order_id}: order not found")
             raise OrderNotFoundError(order_id)
         
         if shadow.status == "FILLED":
@@ -944,11 +950,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         shadow.remaining_qty = 0
         shadow.status = "CANCELED"
         
-        # Try to update level cache if level still exists
+        # Update level cache
         level_key = (shadow.side, round(float(shadow.price), 8))
         if level_key in self._levels:
             level = self._levels[level_key]
-            # Find shadow in level queue and update cache
             if shadow in level.queue:
                 level._active_shadow_qty -= old_remaining_qty
         

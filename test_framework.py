@@ -4237,12 +4237,9 @@ def test_no_duplicate_segment_and_interval_end_events():
 def test_cancel_order_across_interval():
     """Test canceling an order after exchange reset (across interval boundaries).
     
-    This test verifies the fix for the critical bug where:
-    - exchange.reset() was clearing _levels which contained all ShadowOrder objects
-    - When trying to cancel an order placed in a previous interval, the order
-      couldn't be found because _levels was cleared
-    
-    The fix adds a separate _orders registry that persists across reset() calls.
+    This test verifies that:
+    - exchange.reset() preserves _levels which contain ShadowOrder objects
+    - Orders placed in a previous interval can still be canceled in the next interval
     """
     from quant_framework.exchange.simulator import FIFOExchangeSimulator, OrderNotFoundError
     from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce
@@ -4286,8 +4283,9 @@ def test_cancel_order_across_interval():
     receipt = exchange.on_order_arrival(order, 10000000, market_qty=50)
     assert receipt is None, "Order should be accepted to queue"
     
-    # 验证订单在_orders注册表中
-    assert "test-cancel-1" in exchange._orders, "Order should be in registry"
+    # 验证订单在levels中
+    shadow = exchange._find_order_by_id("test-cancel-1")
+    assert shadow is not None, "Order should be in levels"
     print(f"    ✓ 订单已注册: {order.order_id}")
     
     # 现在模拟区间结束，reset交易所
@@ -4295,11 +4293,10 @@ def test_cancel_order_across_interval():
     print("    ✓ exchange.reset() 已调用")
     
     # 新设计：reset不清空_levels，订单仍在levels中
-    # 验证_orders仍然存在
-    assert "test-cancel-1" in exchange._orders, "Order registry should persist after reset"
-    # 验证订单仍在_levels中（新设计）
-    assert len(exchange._levels) > 0, "Levels should be preserved after reset (new design)"
-    print("    ✓ _levels和_orders都保留了订单（新设计）")
+    assert len(exchange._levels) > 0, "Levels should be preserved after reset"
+    shadow = exchange._find_order_by_id("test-cancel-1")
+    assert shadow is not None, "Order should still be in levels after reset"
+    print("    ✓ _levels保留了订单（新设计）")
     
     # 设置新的tape（模拟新区间开始）
     new_tape = [
@@ -4326,7 +4323,7 @@ def test_cancel_order_across_interval():
     print(f"    ✓ 订单成功取消: receipt_type={cancel_receipt.receipt_type}")
     
     # 验证订单状态已更新
-    shadow = exchange._orders["test-cancel-1"]
+    shadow = exchange._find_order_by_id("test-cancel-1")
     assert shadow.status == "CANCELED", f"Shadow order status should be CANCELED, got {shadow.status}"
     print("    ✓ Shadow order状态已更新为CANCELED")
     
@@ -4375,8 +4372,8 @@ def test_cancel_order_across_interval():
     
     print("  ✓ 测试3通过: 已取消的订单再次取消返回REJECTED")
     
-    # 测试4: 验证full_reset会清空订单注册表
-    print("\n  测试4: full_reset应清空订单注册表...")
+    # 测试4: 验证full_reset会清空levels
+    print("\n  测试4: full_reset应清空levels...")
     
     exchange4 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
     exchange4.set_tape(tape, 10000000, 15000000)
@@ -4391,15 +4388,18 @@ def test_cancel_order_across_interval():
     )
     exchange4.on_order_arrival(order4, 10000000, market_qty=50)
     
-    assert "test-cancel-4" in exchange4._orders
+    shadow = exchange4._find_order_by_id("test-cancel-4")
+    assert shadow is not None, "Order should be in levels"
     
     # 调用full_reset
     exchange4.full_reset()
     
-    assert len(exchange4._orders) == 0, "Order registry should be empty after full_reset"
-    print("    ✓ full_reset后订单注册表已清空")
+    assert len(exchange4._levels) == 0, "Levels should be empty after full_reset"
+    shadow = exchange4._find_order_by_id("test-cancel-4")
+    assert shadow is None, "Order should not be found after full_reset"
+    print("    ✓ full_reset后levels已清空")
     
-    print("  ✓ 测试4通过: full_reset正确清空订单注册表")
+    print("  ✓ 测试4通过: full_reset正确清空levels")
     
     print("✓ Cancel order across interval test passed")
 
@@ -4475,7 +4475,7 @@ def test_cross_interval_order_fill():
     assert receipt is None, "Order should be accepted"
     
     # 验证订单位置
-    shadow = exchange._orders["cross-interval-order"]
+    shadow = exchange._find_order_by_id("cross-interval-order")
     print(f"    订单pos={shadow.pos}, qty={shadow.original_qty}, threshold={shadow.pos + shadow.original_qty}")
     assert shadow.pos == 100, f"Expected pos=100, got {shadow.pos}"
     assert shadow.original_qty == 10
@@ -4506,10 +4506,9 @@ def test_cross_interval_order_fill():
     # Reset for new interval
     exchange.reset()
     
-    # 问题：reset后_levels被清空，shadow订单丢失！
-    # 验证订单是否仍在_orders中
-    assert "cross-interval-order" in exchange._orders, "Order should still be in registry"
-    shadow = exchange._orders["cross-interval-order"]
+    # 验证订单是否仍在levels中
+    shadow = exchange._find_order_by_id("cross-interval-order")
+    assert shadow is not None, "Order should still be in levels"
     print(f"    reset后shadow.status={shadow.status}, pos={shadow.pos}")
     
     # Tape [B,C]: 成交30手, 撤单0手 → X增长30
@@ -4598,7 +4597,7 @@ def test_cross_interval_order_fill():
     #   - 区间CD: X从0到60，threshold = 40+10 = 50
     #   - X=60 >= 50，应该成交！
     
-    shadow = exchange._orders["cross-interval-order"]
+    shadow = exchange._find_order_by_id("cross-interval-order")
     print(f"    最终shadow.status={shadow.status}")
     
     # 验证订单已成交
@@ -4606,11 +4605,7 @@ def test_cross_interval_order_fill():
         print("  ✓ 订单在区间[C,D]成交 - 跨区间逻辑正确！")
     else:
         print(f"  ✗ 订单未成交 (status={shadow.status}) - 存在跨区间bug！")
-        print("    原因分析：reset()清空_levels后，shadow订单没有被恢复到levels中")
-        print("    导致advance()无法找到订单进行处理")
     
-    # 这个测试用于暴露bug，预期会失败
-    # 一旦修复后，断言应该通过
     assert shadow.status == "FILLED", \
         f"Order should be FILLED after crossing threshold across intervals, but status is {shadow.status}"
     
