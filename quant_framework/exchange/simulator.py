@@ -136,6 +136,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Precomputed X rates per segment for fast fill time calculation
         self._x_rates: Dict[Tuple[Side, Price, int], float] = {}
         self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
+        
+        # Track order IDs that were fully filled immediately (crossing orders)
+        # This allows cancel requests to return REJECTED instead of OrderNotFoundError
+        self._filled_order_ids: set = set()
 
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
@@ -205,6 +209,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Note: _levels is intentionally NOT cleared to preserve shadow orders
         # across interval boundaries. Their pos values were adjusted by
         # align_at_boundary() at the end of the previous interval.
+        # Note: _filled_order_ids is also NOT cleared as orders may be canceled
+        # in later intervals
     
     def full_reset(self) -> None:
         """Fully reset simulator state including levels.
@@ -215,6 +221,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self.reset()
         # Then clear persistent state
         self._levels.clear()
+        self._filled_order_ids.clear()
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
         """Get or create price level state."""
@@ -610,6 +617,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         else:
             # Fully filled immediately
             if immediate_fill_qty > 0:
+                # Track this order as fully filled for cancel handling
+                self._filled_order_ids.add(order.order_id)
+                
                 receipt = OrderReceipt(
                     order_id=order.order_id,
                     receipt_type="FILL",
@@ -919,10 +929,20 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             Receipt for the cancel operation
             
         Raises:
-            OrderNotFoundError: If the order_id is not found in price levels.
+            OrderNotFoundError: If the order_id is not found in price levels
+                and was not previously fully filled immediately.
                 This indicates a bug in order management or an invalid cancel request.
         """
         logger.debug(f"[Exchange] Cancel arrival: order_id={order_id}, arrival_time={arrival_time}")
+        
+        # Check if order was fully filled immediately (crossing order)
+        if order_id in self._filled_order_ids:
+            logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already filled immediately)")
+            return OrderReceipt(
+                order_id=order_id,
+                receipt_type="REJECTED",
+                timestamp=arrival_time,
+            )
         
         # Look up order in price levels
         shadow = self._find_order_by_id(order_id)
