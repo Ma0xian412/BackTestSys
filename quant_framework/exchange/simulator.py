@@ -83,10 +83,6 @@ class PriceLevelState:
         """Total quantity in active shadow orders."""
         return self._active_shadow_qty
     
-    def _recompute_active_qty(self) -> None:
-        """Recompute cached active shadow qty (call after status changes)."""
-        self._active_shadow_qty = sum(o.remaining_qty for o in self.queue if o.status == "ACTIVE")
-    
     def shadow_qty_at_time(self, t: int) -> int:
         """Shadow order qty at coordinate for orders arriving before t."""
         return sum(o.remaining_qty for o in self.queue 
@@ -121,7 +117,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         # Precomputed X rates per segment for fast fill time calculation
         self._x_rates: Dict[Tuple[Side, Price, int], float] = {}
-        self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
+        
+        # Pending cancel requests (cached when order hasn't arrived yet)
+        self._pending_cancels: Dict[str, int] = {}  # order_id -> cancel_arrival_time
 
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
@@ -140,7 +138,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._current_tape = []
         self._current_seg_idx = 0
         self._x_rates.clear()
-        self._x_at_seg_start.clear()
+        # Note: Don't clear _pending_cancels as cancel requests may span intervals
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
         """Get or create price level state."""
@@ -195,7 +193,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         # Precompute X rates for each (side, price, segment)
         self._x_rates.clear()
-        self._x_at_seg_start.clear()
         
         for seg_idx, seg in enumerate(tape):
             seg_duration = seg.t_end - seg.t_start
@@ -205,7 +202,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # For each activated price in this segment
             for side in [Side.BUY, Side.SELL]:
                 activation_set = seg.activation_bid if side == Side.BUY else seg.activation_ask
-                best_price = seg.bid_price if side == Side.BUY else seg.ask_price
                 
                 for price in activation_set:
                     key = (side, round(price, 8), seg_idx)
@@ -394,14 +390,15 @@ class FIFOExchangeSimulator(IExchangeSimulator):
     def on_order_arrival(self, order: Order, arrival_time: int, market_qty: Qty) -> Optional[OrderReceipt]:
         """Handle order arrival at exchange.
         
-        处理流程：
-        1. 首先检查订单是否会立即成交（crossing check）
-           - BUY订单: 如果 price >= ask_best，可立即成交
-           - SELL订单: 如果 price <= bid_best，可立即成交
-        2. 如果会crossing，按对手方从最优档开始逐档吃掉流动性
-        3. 对于IOC订单：吃完能吃的就结束，剩余直接取消
-        4. 对于非IOC订单：如果还有剩余，按FIFO坐标轴模型挂到本方队列
-        5. 如果不crossing，直接走现有的队列逻辑
+        Processing flow:
+        0. First check if there's a pending cancel request; if so, cancel immediately
+        1. Check if order will immediately execute (crossing check)
+           - BUY order: if price >= ask_best, can execute immediately
+           - SELL order: if price <= bid_best, can execute immediately
+        2. If crossing, consume opposite side liquidity from best price
+        3. For IOC orders: take what's available and cancel the rest
+        4. For non-IOC orders: if any remaining, queue using FIFO coordinate-axis model
+        5. If not crossing, use existing queue logic
         
         Args:
             order: The arriving order
@@ -416,6 +413,23 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             f"side={order.side.value}, price={order.price}, qty={order.qty}, "
             f"arrival_time={arrival_time}, market_qty={market_qty}"
         )
+        
+        # Check if there's a pending cancel request for this order
+        if order.order_id in self._pending_cancels:
+            cancel_time = self._pending_cancels.pop(order.order_id)
+            logger.debug(
+                f"[Exchange] Order {order.order_id}: found pending cancel from time {cancel_time}, "
+                f"canceling immediately upon arrival"
+            )
+            # Order canceled upon arrival, no fills
+            return OrderReceipt(
+                order_id=order.order_id,
+                receipt_type="CANCELED",
+                timestamp=arrival_time,  # Use order arrival time as cancel time
+                fill_qty=0,
+                fill_price=0.0,
+                remaining_qty=0,
+            )
         
         side = order.side
         price = float(order.price)
@@ -831,15 +845,19 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         return None
     
-    def on_cancel_arrival(self, order_id: str, arrival_time: int) -> OrderReceipt:
+    def on_cancel_arrival(self, order_id: str, arrival_time: int) -> Optional[OrderReceipt]:
         """Handle cancel request.
+        
+        If the order has not yet arrived at the exchange, the cancel request is
+        cached in _pending_cancels and will be applied when the order arrives.
         
         Args:
             order_id: ID of order to cancel
             arrival_time: Time of cancel arrival (exchtime)
             
         Returns:
-            Receipt for the cancel operation
+            Receipt for the cancel operation (CANCELED or REJECTED), or None if
+            the order has not arrived yet and the cancel request is cached.
         """
         logger.debug(f"[Exchange] Cancel arrival: order_id={order_id}, arrival_time={arrival_time}")
         
@@ -886,12 +904,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         remaining_qty=0,
                     )
         
-        logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (order not found)")
-        return OrderReceipt(
-            order_id=order_id,
-            receipt_type="REJECTED",
-            timestamp=arrival_time,
-        )
+        # Order not found, may not have arrived at exchange yet
+        # Cache the cancel request to apply when the order arrives
+        logger.debug(f"[Exchange] Cancel {order_id}: order not found, caching cancel request for later")
+        self._pending_cancels[order_id] = arrival_time
+        return None
     
     def _find_segment(self, t: int) -> int:
         """Find segment index containing time t."""
