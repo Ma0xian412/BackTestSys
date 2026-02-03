@@ -155,27 +155,47 @@ class FIFOExchangeSimulator(IExchangeSimulator):
     def reset(self) -> None:
         """Reset simulator state for new interval.
         
-        This resets interval-specific state (levels, tape, coordinates) but
-        preserves the order registry (_orders) to allow order lookup across
-        interval boundaries for operations like cancellation.
+        This resets interval-specific state (tape, coordinates, X rates) but
+        preserves the price levels (_levels) including shadow orders, allowing
+        orders to span multiple intervals naturally.
+        
+        The key insight is that align_at_boundary() has already:
+        1. Updated q_mkt from the new snapshot
+        2. Adjusted shadow order pos values relative to X=0
+        3. Reset x_coord to 0
+        
+        So we only need to clear tape-related caches here.
         """
-        self._levels.clear()
+        # Reset interval-specific state
         self.current_time = 0
         self._current_tape = []
         self._current_seg_idx = 0
         self._x_rates.clear()
         self._x_at_seg_start.clear()
-        # Note: _orders is intentionally NOT cleared to preserve order references
-        # across interval boundaries for cancellation and other operations
+        
+        # Reset X coordinate for all levels (already done in align_at_boundary,
+        # but do it here too for safety when reset is called standalone)
+        for level in self._levels.values():
+            level.x_coord = 0.0
+        
+        # Note: _levels is intentionally NOT cleared to preserve shadow orders
+        # across interval boundaries. Their pos values were adjusted by
+        # align_at_boundary() at the end of the previous interval.
+        # Note: _orders is also preserved for order lookup (e.g., cancellation)
     
     def full_reset(self) -> None:
-        """Fully reset simulator state including order registry.
+        """Fully reset simulator state including levels and order registry.
         
         Call this when starting a new backtest session to clear all state
         including the order registry.
         """
-        self.reset()
+        self._levels.clear()
         self._orders.clear()
+        self.current_time = 0
+        self._current_tape = []
+        self._current_seg_idx = 0
+        self._x_rates.clear()
+        self._x_at_seg_start.clear()
     
     def _get_level(self, side: Side, price: Price) -> PriceLevelState:
         """Get or create price level state."""
@@ -228,10 +248,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._interval_end = t_b
         self._current_seg_idx = 0
         
-        # Restore active shadow orders from registry to levels
-        # This is necessary because reset() clears _levels but orders may span
-        # multiple intervals
-        self._restore_active_orders_to_levels()
+        # No need to restore orders - reset() now preserves _levels
+        # Shadow orders remain in their price levels across intervals
         
         # Precompute X rates for each (side, price, segment)
         self._x_rates.clear()
@@ -259,32 +277,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     # X rate: (M + phi * C) / duration
                     x_rate = (m_si + self.cancel_front_ratio * c_si) / seg_duration
                     self._x_rates[key] = x_rate
-    
-    def _restore_active_orders_to_levels(self) -> None:
-        """Restore active shadow orders from _orders registry to _levels.
-        
-        This is called after reset() when starting a new interval to ensure
-        that orders placed in previous intervals can still be processed.
-        
-        Each active shadow order is added to the appropriate price level's queue.
-        The order's pos value should have been adjusted by align_at_boundary()
-        at the end of the previous interval.
-        """
-        for order_id, shadow in self._orders.items():
-            if shadow.status != "ACTIVE":
-                continue
-            
-            # Get or create the level for this order
-            level = self._get_level(shadow.side, shadow.price)
-            
-            # Check if order is already in the queue (avoid duplicates)
-            if shadow not in level.queue:
-                level.queue.append(shadow)
-                level._active_shadow_qty += shadow.remaining_qty
-                logger.debug(
-                    f"[Exchange] Restored order {order_id} to level "
-                    f"({shadow.side.value}, {shadow.price}), pos={shadow.pos}"
-                )
     
     def _is_in_activation_window(self, side: Side, price: Price, seg_idx: int) -> bool:
         """Check if price is in activation window for given segment."""

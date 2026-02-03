@@ -4290,14 +4290,16 @@ def test_cancel_order_across_interval():
     assert "test-cancel-1" in exchange._orders, "Order should be in registry"
     print(f"    ✓ 订单已注册: {order.order_id}")
     
-    # 现在模拟区间结束，reset交易所（这是导致bug的操作）
+    # 现在模拟区间结束，reset交易所
     exchange.reset()
     print("    ✓ exchange.reset() 已调用")
     
-    # 验证_levels被清空但_orders仍然存在
-    assert len(exchange._levels) == 0, "Levels should be cleared after reset"
+    # 新设计：reset不清空_levels，订单仍在levels中
+    # 验证_orders仍然存在
     assert "test-cancel-1" in exchange._orders, "Order registry should persist after reset"
-    print("    ✓ _levels已清空，_orders仍保留订单")
+    # 验证订单仍在_levels中（新设计）
+    assert len(exchange._levels) > 0, "Levels should be preserved after reset (new design)"
+    print("    ✓ _levels和_orders都保留了订单（新设计）")
     
     # 设置新的tape（模拟新区间开始）
     new_tape = [
