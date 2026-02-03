@@ -464,12 +464,19 @@ class EventLoopRunner:
         self._schedule_pending_receipts(event_queue, t_a, t_b)
 
         # 获取OMS中的待到达订单并调度到达事件
-        # 直接使用get_pending_orders()，无需再检查arrival_time
-        pending_orders = self.oms.get_pending_orders()
+        # 优化：按create_time排序，支持早退出优化
+        # 按create_time排序（等同于按arrival_time排序，因为delay_out是常量）
+        pending_orders = sorted(self.oms.get_pending_orders(), key=lambda o: o.create_time)
 
         for order in pending_orders:
             # 计算订单到达交易所的时间（统一时间线）
             arrival_time = int(order.create_time) + int(self.config.delay_out)
+            
+            # 优化：如果arrival_time >= t_b，后续所有订单的arrival_time也都 >= t_b
+            # 因为订单已按create_time排序，而arrival_time = create_time + delay_out（常量）
+            # 这些订单将在后续区间处理
+            if arrival_time >= t_b:
+                break
             
             # 根据交易时段调整到达时间
             adjusted_arrival, success = self._adjust_arrival_time_for_trading_hours(
