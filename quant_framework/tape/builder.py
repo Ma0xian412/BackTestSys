@@ -684,14 +684,19 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         # Step 2: Distribute volumes evenly for each price across its occurrences
         # Use _largest_remainder_round to preserve total volume when dividing
+        # Round price to 6 decimals (matching data loader normalization) for O(1) lookup
         for price, total_vol in last_vol_split:
             if total_vol <= 0:
                 continue
             
-            if price not in price_segment_indices:
+            # Round price to 6 decimals to match data loader normalization
+            # e.g., price=1050.199999999 rounds to 1050.2
+            rounded_price = round(price, 6)
+            
+            if rounded_price not in price_segment_indices:
                 continue
             
-            indices = price_segment_indices[price]
+            indices = price_segment_indices[rounded_price]
             count = len(indices)
             if count == 0:
                 continue
