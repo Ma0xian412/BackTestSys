@@ -139,6 +139,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         # Track order IDs that were fully filled immediately (crossing orders)
         # This allows cancel requests to return REJECTED instead of OrderNotFoundError
+        # Note: Order IDs are removed from this set after being referenced in a cancel,
+        # preventing unbounded growth. full_reset() also clears this set.
         self._filled_order_ids: set = set()
 
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
@@ -938,6 +940,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Check if order was fully filled immediately (crossing order)
         if order_id in self._filled_order_ids:
             logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already filled immediately)")
+            # Remove from set after handling to prevent unbounded growth
+            self._filled_order_ids.discard(order_id)
             return OrderReceipt(
                 order_id=order_id,
                 receipt_type="REJECTED",
