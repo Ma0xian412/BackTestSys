@@ -591,7 +591,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
             seg = TapeSegment(
                 index=seg_idx,
                 t_start=seg_t_start,
-                t_end=t_b,  # 最后一个段的结束时间精确等于 t_b
+                t_end=t_b,
                 bid_price=current_bid,
                 ask_price=current_ask,
             )
@@ -755,7 +755,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         dt = t_b - t_a
         result = []
         for i, seg in enumerate(segments):
-            # 确保第一个段的开始时间精确等于 t_a，最后一个段的结束时间精确等于 t_b
+            # 确保第一个段的开始时间精确等于 t_a, 最后一个段的结束时间精确等于 t_b
             # 避免浮点数精度问题导致的时间偏差
             if i == 0:
                 new_t_start = t_a
