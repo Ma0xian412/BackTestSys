@@ -314,6 +314,51 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         activation_set = seg.activation_bid if side == Side.BUY else seg.activation_ask
         return round(price, 8) in {round(p, 8) for p in activation_set}
     
+    def _is_at_best_price(self, side: Side, price: Price, seg_idx: int) -> bool:
+        """Check if price is at the best price level for given segment.
+        
+        Only orders at the best price can be filled during advance.
+        - BUY orders: price must equal segment.bid_price (best bid)
+        - SELL orders: price must equal segment.ask_price (best ask)
+        
+        Args:
+            side: Order side
+            price: Order price
+            seg_idx: Segment index
+            
+        Returns:
+            True if price is at the best price level
+        """
+        if seg_idx < 0 or seg_idx >= len(self._current_tape):
+            return False
+        seg = self._current_tape[seg_idx]
+        best_price = seg.bid_price if side == Side.BUY else seg.ask_price
+        return abs(price - best_price) < EPSILON
+    
+    def _is_at_opposite_best_price(self, side: Side, price: Price, seg_idx: int) -> bool:
+        """Check if price is at the opposite side's best price level.
+        
+        For post-crossing orders, which are filled based on opposite-side liquidity:
+        - SELL post-crossing orders: price must equal segment.bid_price (best bid)
+        - BUY post-crossing orders: price must equal segment.ask_price (best ask)
+        
+        Args:
+            side: Order side (the order's side, not the opposite)
+            price: Order price
+            seg_idx: Segment index
+            
+        Returns:
+            True if price is at the opposite side's best price level
+        """
+        if seg_idx < 0 or seg_idx >= len(self._current_tape):
+            return False
+        seg = self._current_tape[seg_idx]
+        # For post-crossing orders, we check the opposite side's best price
+        # SELL orders crossed bid, so check bid_price
+        # BUY orders crossed ask, so check ask_price
+        opposite_best_price = seg.bid_price if side == Side.SELL else seg.ask_price
+        return abs(price - opposite_best_price) < EPSILON
+    
     def _get_x_coord(self, side: Side, price: Price, t: int) -> float:
         """Get X coordinate at time t for given side and price.
         
@@ -1202,6 +1247,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # Note: Post-crossing orders may need processing even if not in activation window
             in_activation = seg_idx < 0 or self._is_in_activation_window(side, price, seg_idx)
             
+            # Check if this price level is at the best price
+            # Only orders at the best price can be filled during advance
+            at_best_price = seg_idx < 0 or self._is_at_best_price(side, price, seg_idx)
+            
+            # For post-crossing orders, check if price is at the opposite side's best price
+            # Post-crossing orders wait for opposite-side liquidity replenishment
+            at_opposite_best_price = seg_idx < 0 or self._is_at_opposite_best_price(side, price, seg_idx)
+            
             # Get X at t_to (only if in activation)
             x_t_to = self._get_x_coord(side, price, t_to) if in_activation else 0
             
@@ -1215,7 +1268,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # Handle post-crossing orders differently
                 # Post-crossing orders are filled based on opposite-side net increment
                 # They don't require the price to be in activation window
+                # But they need to be at the opposite side's best price to be filled
                 if shadow.is_post_crossing:
+                    # Skip if not at opposite side's best price
+                    if not at_opposite_best_price:
+                        continue
+                    
                     fill_qty, fill_time = self._compute_post_crossing_fill(
                         shadow, segment, t_from, t_to
                     )
@@ -1261,6 +1319,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # Normal fill logic for non-post-crossing orders
                 # Skip if not in activation window
                 if not in_activation:
+                    continue
+                
+                # Skip if not at best price - only best price orders can be filled
+                if not at_best_price:
                     continue
                 
                 # Fill threshold
