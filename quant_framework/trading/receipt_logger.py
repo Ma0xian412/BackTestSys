@@ -178,10 +178,16 @@ class ReceiptLogger:
         elif receipt.receipt_type == "CANCELED":
             self._cancel_counts[order_id] = self._cancel_counts.get(order_id, 0) + 1
             self._canceled_orders.add(order_id)
-            # 撤单时，如果有部分成交，fill_qty表示撤单前的已成交量
-            if order_id in self.order_filled_qty and receipt.fill_qty > 0:
-                # 撤单回执的fill_qty是累计已成交量
-                self.order_filled_qty[order_id] = receipt.fill_qty
+            # 撤单回执的fill_qty应该等于之前PARTIAL回执累积的成交量
+            # 这里不更新order_filled_qty，因为它已经通过PARTIAL回执正确累积
+            # 一致性检查：如果不匹配则记录警告，帮助发现潜在的bug
+            if order_id in self.order_filled_qty:
+                expected_filled = self.order_filled_qty[order_id]
+                if receipt.fill_qty != expected_filled:
+                    logger.warning(
+                        f"[ReceiptLogger] Cancel fill_qty mismatch for {order_id}: "
+                        f"receipt.fill_qty={receipt.fill_qty}, accumulated={expected_filled}"
+                    )
                 
         elif receipt.receipt_type == "REJECTED":
             self._reject_counts[order_id] = self._reject_counts.get(order_id, 0) + 1
@@ -310,9 +316,7 @@ class ReceiptLogger:
         - Total Filled Qty: 所有订单的总成交数量
         - Receipt Type Distribution: 按回执类型分布统计（一个订单可能产生多条回执，统计的是回执条数）
           - Full Fill回执数 != 完全成交订单数：部分成交后撤单或最终未满量的订单不会产生Full Fill回执
-          - Partial Fill回执数可能 != 部分成交订单数：
-            * 撤单时直接返回CANCELED回执（带累计成交量），不会先发送PARTIAL回执
-            * 所以"有部分成交后被撤单"的订单计入部分成交订单数，但不会增加PARTIAL回执数
+          - Partial Fill回执数 >= 部分成交订单数：一个订单可能产生多个PARTIAL回执（多次部分成交）
         - Order Final Status Distribution: 按订单最终状态分布统计
           - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
           - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
@@ -344,7 +348,7 @@ class ReceiptLogger:
         # 说明部分成交回执数和部分成交订单数的区别
         if stats['partial_fill_count'] != stats['partially_filled_orders']:
             print(f"    * 注: 部分成交回执数({stats['partial_fill_count']}) != 部分成交订单数({stats['partially_filled_orders']})")
-            print(f"      原因: 撤单时直接返回CANCELED回执(带累计成交量)，不会先发送PARTIAL回执")
+            print(f"      原因: 一个订单可能产生多个PARTIAL回执（多次部分成交）")
         print()
         print("订单最终状态分布 (Order Final Status Distribution):")
         print(f"  - Fully Filled (完全成交): {stats['fully_filled_orders']}")

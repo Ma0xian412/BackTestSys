@@ -972,14 +972,17 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             )
         
         # Calculate fill up to cancel time
-        x_t = self._get_x_coord(shadow.side, shadow.price, arrival_time)
-        fill_at_cancel = max(0, min(shadow.original_qty, int(x_t - shadow.pos)))
+        # Use shadow.filled_qty which represents fills that have already been
+        # reported via PARTIAL receipts, rather than recalculating from x_t - shadow.pos
+        # This ensures consistency: if an order has partial fills, they should have been
+        # reported via PARTIAL receipts during advance(). The cancel receipt should use
+        # the same filled_qty that was accumulated from those PARTIAL receipts.
+        fill_at_cancel = shadow.filled_qty
         
         # Save remaining_qty before updating for cache update
         old_remaining_qty = shadow.remaining_qty
         
-        # Update shadow order status
-        shadow.filled_qty = fill_at_cancel
+        # Update shadow order status (filled_qty already contains the correct value)
         shadow.remaining_qty = 0
         shadow.status = "CANCELED"
         

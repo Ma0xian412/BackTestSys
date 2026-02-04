@@ -2289,12 +2289,25 @@ def test_receipt_logger():
         receipt2.recv_time = 2010
         logger.log_receipt(receipt2)
         
-        # 记录回执 - 撤单
+        # 记录回执 - 部分成交后撤单（先发送PARTIAL回执，再发送CANCELED回执）
+        # 根据正确的行为：如果有部分成交，必须先发送PARTIAL回执
+        receipt2b = OrderReceipt(
+            order_id="order-2",
+            receipt_type="PARTIAL",
+            timestamp=2500,
+            fill_qty=20,  # 部分成交
+            fill_price=99.0,
+            remaining_qty=30,
+        )
+        receipt2b.recv_time = 2510
+        logger.log_receipt(receipt2b)
+        
+        # 然后发送撤单回执，fill_qty应该等于之前PARTIAL累积的值
         receipt3 = OrderReceipt(
             order_id="order-2",
             receipt_type="CANCELED",
             timestamp=3000,
-            fill_qty=20,  # 撤单前有部分成交
+            fill_qty=20,  # 等于之前PARTIAL累积的值
             fill_price=99.0,
             remaining_qty=30,
         )
@@ -2315,14 +2328,14 @@ def test_receipt_logger():
         receipt4.recv_time = 4010
         logger.log_receipt(receipt4)
         
-        assert len(logger.records) == 4
-        print(f"  ✓ 记录4条回执成功")
+        assert len(logger.records) == 5  # 多了一条PARTIAL回执
+        print(f"  ✓ 记录5条回执成功")
         
         # 验证统计
         stats = logger.get_statistics()
-        assert stats['total_receipts'] == 4
+        assert stats['total_receipts'] == 5  # 多了一条PARTIAL回执
         assert stats['total_orders'] == 4
-        assert stats['partial_fill_count'] == 1
+        assert stats['partial_fill_count'] == 2  # 2条PARTIAL回执
         assert stats['full_fill_count'] == 1
         assert stats['cancel_count'] == 1
         assert stats['reject_count'] == 1
@@ -2360,7 +2373,7 @@ def test_receipt_logger():
         # 验证文件内容
         with open(output_file, 'r') as f:
             lines = f.readlines()
-        assert len(lines) == 5  # 1 header + 4 records
+        assert len(lines) == 6  # 1 header + 5 records
         print(f"  ✓ CSV文件保存成功，共{len(lines)-1}条记录")
         
         # 打印统计摘要
