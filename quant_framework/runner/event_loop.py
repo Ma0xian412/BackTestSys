@@ -524,7 +524,9 @@ class EventLoopRunner:
         # 事件循环 - 使用"peek, advance, pop batch"范式
         # 避免"生成过去事件"的因果反转问题
         current_seg_idx = 0
-        last_time = t_a
+        # 使用tape[0].t_start作为初始时间，因为TapeBuilder可能使用effective_t_a
+        # （当快照间隔大于min_interval时，effective_t_a = t_b - min_interval > t_a）
+        last_time = tape[0].t_start
         
         # 调度区间内的撤单请求
         self._schedule_pending_cancels(event_queue, t_a, t_b)
