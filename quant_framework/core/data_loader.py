@@ -161,6 +161,9 @@ class CsvMarketDataFeed(IMarketDataFeed):
                     p2 = _to_float(p)
                     q2 = _to_int(q)
                     if p2 is not None and q2 is not None:
+                        # Round price to 6 decimal places to fix floating-point precision issues
+                        # e.g., 1050.199999999 -> 1050.2
+                        p2 = round(p2, 6)
                         lvs.append((p2, q2))
                 except Exception:
                     continue
@@ -314,6 +317,9 @@ class PickleMarketDataFeed(IMarketDataFeed):
                         p2 = _to_float(p)
                         q2 = _to_int(q)
                         if p2 is not None and q2 is not None:
+                            # Round price to 6 decimal places to fix floating-point precision issues
+                            # e.g., 1050.199999999 -> 1050.2
+                            p2 = round(p2, 6)
                             lvs.append((p2, q2))
                     except Exception:
                         continue

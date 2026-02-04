@@ -4612,6 +4612,136 @@ def test_cross_interval_order_fill():
     print("✓ Cross-interval order fill test passed")
 
 
+def test_floating_point_precision_in_last_vol_split():
+    """测试浮点精度问题的修复。
+    
+    场景：last_vol_split中的价格可能有浮点精度问题，例如：
+    - 1050.199999999 (应该是 1050.2)
+    - 1050.360000000001 (应该是 1050.36)
+    
+    这个测试验证dataloader和builder能正确处理这种情况。
+    """
+    print("\n--- Test: Floating Point Precision in last_vol_split ---")
+    
+    from quant_framework.core.types import TICK_PER_MS, Side
+    from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+    
+    # 测试1: 使用带有浮点精度误差的价格
+    print("\n  测试1: 验证builder能处理带有浮点误差的last_vol_split价格...")
+    
+    # 创建快照：bid_price = ask_price = 100.0
+    prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
+    
+    # last_vol_split中使用带有浮点误差的价格
+    # 100.000000001 应该匹配 segment中的 100.0
+    curr = create_test_snapshot(
+        1500 * TICK_PER_MS, 
+        100.0, 
+        101.0, 
+        last_vol_split=[(100.000000001, 50), (100.999999999, 30)]  # 浮点误差
+    )
+    
+    config = TapeConfig()
+    builder = UnifiedTapeBuilder(config=config, tick_size=1.0)
+    
+    tape = builder.build(prev, curr)
+    
+    # 验证成交量被正确分配
+    total_buy_volume = sum(
+        qty for seg in tape 
+        for (side, _), qty in seg.trades.items() 
+        if side == Side.BUY
+    )
+    total_sell_volume = sum(
+        qty for seg in tape 
+        for (side, _), qty in seg.trades.items() 
+        if side == Side.SELL
+    )
+    
+    print(f"    总买入成交量: {total_buy_volume}")
+    print(f"    总卖出成交量: {total_sell_volume}")
+    
+    # 验证成交量被正确分配（不应该因为浮点精度问题被丢弃）
+    # 注意：只有bid_price==ask_price的segment才能分配成交量
+    # 在这个测试中，100.0和101.0的segment有成交
+    assert total_buy_volume > 0, "成交量不应该为0（浮点精度问题导致匹配失败）"
+    assert total_buy_volume == total_sell_volume, "买卖成交量应该相等"
+    print("  ✓ 测试1通过: 带有浮点误差的价格被正确匹配")
+    
+    # 测试2: 验证dataloader的价格舍入
+    print("\n  测试2: 验证dataloader的价格舍入...")
+    
+    from quant_framework.core.data_loader import CsvMarketDataFeed
+    import tempfile
+    import os
+    
+    # 创建临时CSV文件
+    csv_content = '''RecvTick,Bid,BidVol,Ask,AskVol,LastVolSplit
+10000000,100.0,50,101.0,50,"[(100.199999999, 10), (100.360000000001, 20)]"
+'''
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        f.write(csv_content)
+        temp_path = f.name
+    
+    try:
+        feed = CsvMarketDataFeed(temp_path)
+        snapshot = feed.next()
+        
+        if snapshot is not None:
+            print(f"    解析后的last_vol_split: {snapshot.last_vol_split}")
+            
+            # 验证价格被正确舍入
+            for price, qty in snapshot.last_vol_split:
+                # 验证价格没有过多的小数位（已被舍入到6位）
+                rounded = round(price, 6)
+                assert abs(price - rounded) < 1e-10, \
+                    f"价格应该被舍入到6位小数: {price} vs {rounded}"
+            
+            print("  ✓ 测试2通过: dataloader正确舍入了价格")
+        else:
+            raise AssertionError("无法解析CSV快照")
+    finally:
+        os.unlink(temp_path)
+    
+    # 测试3: 更极端的浮点误差
+    print("\n  测试3: 测试更极端的浮点误差...")
+    
+    prev3 = create_multi_level_snapshot(
+        1000 * TICK_PER_MS,
+        bids=[(100.0, 100), (99.0, 100)],
+        asks=[(101.0, 100), (102.0, 100)]
+    )
+    
+    # 使用更极端的浮点误差
+    curr3 = create_multi_level_snapshot(
+        1500 * TICK_PER_MS,
+        bids=[(100.0, 100), (99.0, 100)],
+        asks=[(100.0, 100), (101.0, 100)],  # ask降到100
+        last_vol_split=[
+            (99.99999999999, 25),   # 应该匹配 100.0
+            (100.00000000001, 25),  # 应该匹配 100.0
+        ]
+    )
+    
+    tape3 = builder.build(prev3, curr3)
+    
+    total_volume = sum(
+        qty for seg in tape3 
+        for (side, _), qty in seg.trades.items() 
+        if side == Side.BUY
+    )
+    
+    print(f"    总成交量: {total_volume}")
+    # 注意：100.0的segment应该收到50手成交（25+25）
+    # 但99.99999999999实际上和100.0的差值是1e-11，
+    # 这小于我们的容差1e-6，所以应该匹配成功
+    assert total_volume > 0, "成交量不应该为0"
+    print("  ✓ 测试3通过: 极端浮点误差被正确处理")
+    
+    print("✓ Floating point precision test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4676,6 +4806,7 @@ def run_all_tests():
         test_no_duplicate_segment_and_interval_end_events,
         test_cancel_order_across_interval,
         test_cross_interval_order_fill,
+        test_floating_point_precision_in_last_vol_split,
     ]
     
     passed = 0
