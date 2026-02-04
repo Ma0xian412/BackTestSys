@@ -1310,6 +1310,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     continue
                 
                 # Skip if not at best price - only best price orders can be filled
+                # Note: When not at best price, there are no trades at this level,
+                # only limit orders and cancels. The order's pos doesn't need updating
+                # because X only reflects consumption from trades (which don't happen
+                # at non-best price levels).
                 if not at_best_price:
                     continue
                 
