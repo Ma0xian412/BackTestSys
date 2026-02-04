@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple, Set, Optional
 import math
 
 from ..core.interfaces import ITapeBuilder
-from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
+from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS
 
 
 # Constants
@@ -81,12 +81,6 @@ class TapeConfig:
     
     # Top-5 constraint
     top_k: int = 5  # Number of price levels to track
-    
-    # 非均匀快照推送配置
-    # Snapshot推送最小间隔（tick单位）：快照实际上是在T_B-min_interval到T_B之间产生的变化
-    # 所以A快照的时间被视为T_B - min_interval
-    # 500ms = 5_000_000 ticks (100ns per tick)
-    snapshot_min_interval_tick: int = SNAPSHOT_MIN_INTERVAL_TICK
 
 
 class UnifiedTapeBuilder(ITapeBuilder):
@@ -119,9 +113,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         从A/B快照构建tape段。使用统一的recv timeline (ts_recv)。
         
-        非均匀快照时间处理（默认启用）：
-        快照只在关键字段变化时推送，最小间隔500ms (5_000_000 ticks)。
-        将A快照的时间视为T_B - 500ms，所有变化归因到[T_B-500ms, T_B]区间。
+        注意：快照间隔由feed层保证，tape始终从t_a开始到t_b结束。
         
         Args:
             prev: Previous snapshot (A) at time T_A / 前一个快照（A），在T_A时刻
@@ -167,7 +159,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # 确保bid_path和ask_path长度相同，segment数量一致
         bid_path, ask_path = self._build_aligned_paths(bid_a, bid_b, ask_a, ask_b, meeting_seq)
         
-        # 合并路径为全局段 - 使用effective_t_a作为开始时间
+        # 合并路径为全局段 - 使用t_a作为开始时间
         segments = self._merge_paths_to_segments(bid_path, ask_path, t_a, t_b)
         
         if not segments:

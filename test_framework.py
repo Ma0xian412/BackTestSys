@@ -2006,30 +2006,24 @@ def test_crossing_immediate_execution():
     print("✓ Crossing immediate execution test passed")
 
 
-def test_nonuniform_snapshot_timing():
-    """测试非均匀快照推送时间处理。
+def test_tape_start_time():
+    """测试tape始终从t_a开始。
     
-    验证场景：
-    1. A快照的时间被视为T_B - 500ms
-    2. 所有变化都在[T_B-500ms, T_B]区间内
-    3. 当间隔小于500ms时，使用原始T_A
+    验证：快照间隔由feed层保证，tape始终从t_a开始到t_b结束。
     
-    注意：时间单位为tick（每tick=100ns），500ms = 5_000_000 ticks
+    注意：时间单位为tick（每tick=100ns）
     """
-    print("\n--- Test 29: Non-uniform Snapshot Timing ---")
+    print("\n--- Test 29: Tape Start Time ---")
     
-    from quant_framework.core.types import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
+    from quant_framework.core.types import TICK_PER_MS
     
-    # 使用默认配置（非均匀快照时间处理默认启用）
-    # 使用tick单位
-    tape_config = TapeConfig(snapshot_min_interval_tick=SNAPSHOT_MIN_INTERVAL_TICK)
+    # 使用默认配置
+    tape_config = TapeConfig()
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
     
-    # 测试1: 间隔为1500ms的快照（超过500ms阈值）
-    # 转换为tick单位
+    # 测试1: 任意间隔的快照，tape始终从t_a开始
     t_a = 1000 * TICK_PER_MS
     t_b = 2500 * TICK_PER_MS
-    effective_t_a = t_b - SNAPSHOT_MIN_INTERVAL_TICK  # 2000ms in ticks
     
     prev = create_test_snapshot(t_a, 100.0, 101.0, bid_qty=50, ask_qty=60,
                                 last_vol_split=[])
@@ -2038,8 +2032,8 @@ def test_nonuniform_snapshot_timing():
     
     tape = builder.build(prev, curr)
     
-    print(f"快照间隔: 1500ms (超过500ms阈值)")
-    print(f"T_A={t_a}, T_B={t_b}, effective_t_a={effective_t_a}")
+    print(f"快照间隔: 1500ms")
+    print(f"T_A={t_a}, T_B={t_b}")
     print(f"生成了{len(tape)}个段")
     
     for seg in tape:
@@ -2049,17 +2043,17 @@ def test_nonuniform_snapshot_timing():
         if seg.trades:
             print(f"    trades: {dict(seg.trades)}")
     
-    # 验证：所有段都应该从effective_t_a开始
+    # 验证：第一段应从t_a开始
     first_seg = tape[0]
-    assert first_seg.t_start == effective_t_a, f"第一段应从{effective_t_a}开始，实际{first_seg.t_start}"
-    print(f"  ✓ 第一段正确从effective_t_a={effective_t_a}开始")
+    assert first_seg.t_start == t_a, f"第一段应从{t_a}开始，实际{first_seg.t_start}"
+    print(f"  ✓ 第一段正确从t_a={t_a}开始")
     
     # 最后一段应该到T_B结束
     last_seg = tape[-1]
     assert last_seg.t_end == t_b, f"最后一段应到{t_b}结束，实际{last_seg.t_end}"
     print(f"  ✓ 最后一段正确到T_B={t_b}结束")
     
-    # 测试2: 间隔小于500ms时，使用原始T_A
+    # 测试2: 短间隔快照，tape也从t_a开始
     print("\n测试短间隔快照...")
     t_a2 = 3000 * TICK_PER_MS
     t_b2 = 3400 * TICK_PER_MS
@@ -2067,16 +2061,16 @@ def test_nonuniform_snapshot_timing():
     curr2 = create_test_snapshot(t_b2, 100.5, 101.5, last_vol_split=[(100.5, 10)])
     
     tape2 = builder.build(prev2, curr2)
-    print(f"快照间隔: 400ms (小于500ms阈值)")
-    print(f"T_A={t_a2}, T_B={t_b2}, effective_t_a=max({t_a2}, {t_b2 - SNAPSHOT_MIN_INTERVAL_TICK})={t_a2}")
+    print(f"快照间隔: 400ms")
+    print(f"T_A={t_a2}, T_B={t_b2}")
     print(f"生成了{len(tape2)}个段")
     
-    # 间隔小于500ms时，effective_t_a = max(T_A, T_B-500ms) = T_A
+    # 验证：第一段应从t_a2开始
     first_seg_start = tape2[0].t_start
     assert first_seg_start == t_a2, f"第一段应从{t_a2}开始，实际{first_seg_start}"
-    print(f"  ✓ 短间隔正确处理，从{first_seg_start}开始")
+    print(f"  ✓ 短间隔快照正确处理，从{first_seg_start}开始")
     
-    print("✓ Non-uniform snapshot timing test passed")
+    print("✓ Tape start time test passed")
 
 
 def test_request_and_receipt_types():
@@ -4798,7 +4792,7 @@ def run_all_tests():
         test_segment_queue_zero_constraint,
         test_segment_price_change_queue_constraint_detailed,
         test_crossing_immediate_execution,
-        test_nonuniform_snapshot_timing,
+        test_tape_start_time,
         test_request_and_receipt_types,
         test_replay_strategy,
         test_receipt_logger,
