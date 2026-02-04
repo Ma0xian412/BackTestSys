@@ -335,30 +335,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         best_price = seg.bid_price if side == Side.BUY else seg.ask_price
         return abs(price - best_price) < EPSILON
     
-    def _is_at_opposite_best_price(self, side: Side, price: Price, seg_idx: int) -> bool:
-        """Check if price is at the opposite side's best price level.
-        
-        For post-crossing orders, which are filled based on opposite-side liquidity:
-        - SELL post-crossing orders: price must equal segment.bid_price (best bid)
-        - BUY post-crossing orders: price must equal segment.ask_price (best ask)
-        
-        Args:
-            side: Order side (the order's side, not the opposite)
-            price: Order price
-            seg_idx: Segment index
-            
-        Returns:
-            True if price is at the opposite side's best price level
-        """
-        if seg_idx < 0 or seg_idx >= len(self._current_tape):
-            return False
-        seg = self._current_tape[seg_idx]
-        # For post-crossing orders, we check the opposite side's best price
-        # SELL orders crossed bid, so check bid_price
-        # BUY orders crossed ask, so check ask_price
-        opposite_best_price = seg.bid_price if side == Side.SELL else seg.ask_price
-        return abs(price - opposite_best_price) < EPSILON
-    
     def _get_x_coord(self, side: Side, price: Price, t: int) -> float:
         """Get X coordinate at time t for given side and price.
         
@@ -1191,27 +1167,45 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         shadow: ShadowOrder,
         seg: TapeSegment
     ) -> int:
-        """计算所有crossed价位的聚合净增量N。
+        """计算所有越过订单价格的档位的聚合净增量N。
         
-        对于post-crossing订单，N应该是所有被crossed的对手方价位的净增量之和。
+        对于post-crossing订单，N应该是所有"越过订单价格"的对手方价位的净增量之和。
+        
+        例如：
+        - BUY@100 的 post-crossing 订单：汇总所有 ask price <= 100 的档位的净增量
+        - SELL@100 的 post-crossing 订单：汇总所有 bid price >= 100 的档位的净增量
+        
+        这样当市场价格变动时（如 ask 从 100 变到 99），post-crossing 订单可以
+        利用所有越过其价格的档位的流动性。
         
         Args:
             shadow: post-crossing的shadow订单
             seg: 当前segment
             
         Returns:
-            聚合净增量N（所有crossed价位的净增量之和）
+            聚合净增量N（所有越过订单价格的档位的净增量之和）
         """
-        if not shadow.crossed_prices:
-            # 如果没有记录crossed_prices，回退到单价位逻辑
-            opposite_side = Side.SELL if shadow.side == Side.BUY else Side.BUY
-            return seg.net_flow.get((opposite_side, shadow.price), 0)
+        order_price = shadow.price
+        opposite_side = Side.SELL if shadow.side == Side.BUY else Side.BUY
         
-        # 汇总所有crossed价位的净增量
+        # 收集所有越过订单价格的档位的净增量
         total_n = 0
-        for crossed_side, crossed_price in shadow.crossed_prices:
-            n = seg.net_flow.get((crossed_side, crossed_price), 0)
-            total_n += n
+        
+        for (flow_side, flow_price), n in seg.net_flow.items():
+            if flow_side != opposite_side:
+                continue
+            
+            # 判断该档位是否"越过"订单价格
+            # BUY订单：对手方是SELL/ask，越过条件是 ask_price <= order_price
+            # SELL订单：对手方是BUY/bid，越过条件是 bid_price >= order_price
+            if shadow.side == Side.BUY:
+                # BUY@100，对手方ask，越过条件：ask_price <= 100
+                if flow_price <= order_price + EPSILON:
+                    total_n += n
+            else:
+                # SELL@100，对手方bid，越过条件：bid_price >= 100
+                if flow_price >= order_price - EPSILON:
+                    total_n += n
         
         return total_n
     
@@ -1251,10 +1245,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # Only orders at the best price can be filled during advance
             at_best_price = seg_idx < 0 or self._is_at_best_price(side, price, seg_idx)
             
-            # For post-crossing orders, check if price is at the opposite side's best price
-            # Post-crossing orders wait for opposite-side liquidity replenishment
-            at_opposite_best_price = seg_idx < 0 or self._is_at_opposite_best_price(side, price, seg_idx)
-            
             # Get X at t_to (only if in activation)
             x_t_to = self._get_x_coord(side, price, t_to) if in_activation else 0
             
@@ -1266,14 +1256,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     continue
                 
                 # Handle post-crossing orders differently
-                # Post-crossing orders are filled based on opposite-side net increment
-                # They don't require the price to be in activation window
-                # But they need to be at the opposite side's best price to be filled
+                # Post-crossing orders are filled based on the aggregate net increment
+                # of ALL opposite-side price levels that cross the order price.
+                # Example: BUY@100 post-crossing checks ask@99, ask@100, etc.
+                # This allows fills when market moves in favor (e.g., ask drops to 99)
                 if shadow.is_post_crossing:
-                    # Skip if not at opposite side's best price
-                    if not at_opposite_best_price:
-                        continue
-                    
+                    # No best price check needed - we check all crossing price levels
                     fill_qty, fill_time = self._compute_post_crossing_fill(
                         shadow, segment, t_from, t_to
                     )
