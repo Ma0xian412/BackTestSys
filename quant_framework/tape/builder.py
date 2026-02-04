@@ -145,15 +145,6 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 f"快照时间必须严格递增。"
             )
         
-        # 非均匀快照时间处理（默认启用）
-        # 将A快照的时间视为T_B - min_interval
-        # 这样所有变化都归因到最后min_interval内
-        min_interval = self.config.snapshot_min_interval_tick
-        effective_t_a = t_b - min_interval
-        # 确保effective_t_a不小于原始t_a（处理间隔小于min_interval的情况）
-        if effective_t_a < t_a:
-            effective_t_a = t_a
-        
         # Extract endpoint best prices
         bid_a = self._best_price(prev, Side.BUY) or 0.0
         ask_a = self._best_price(prev, Side.SELL) or 0.0
@@ -177,7 +168,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         bid_path, ask_path = self._build_aligned_paths(bid_a, bid_b, ask_a, ask_b, meeting_seq)
         
         # 合并路径为全局段 - 使用effective_t_a作为开始时间
-        segments = self._merge_paths_to_segments(bid_path, ask_path, effective_t_a, t_b)
+        segments = self._merge_paths_to_segments(bid_path, ask_path, t_a, t_b)
         
         if not segments:
             raise ValueError("Segment built for error")
@@ -186,7 +177,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         segments = self._add_activation_sets(segments, prev, curr)
         
         # Volume allocation based on price-level distribution
-        segments = self._allocate_volumes(segments, last_vol_split, effective_t_a, t_b)
+        segments = self._allocate_volumes(segments, last_vol_split, t_a, t_b)
         
         # Derive cancellations and net flow using queue-zero constraint at price transitions
         segments = self._derive_cancellations_and_net_flow(segments, prev, curr)
