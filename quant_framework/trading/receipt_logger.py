@@ -264,12 +264,18 @@ class ReceiptLogger:
         total_orders = len(self.order_total_qty)
         total_qty = sum(self.order_total_qty.values())
         filled_qty = sum(self.order_filled_qty.values())
-        fully_filled_orders = 0
+        
+        # 直接使用 _full_fill_counts 获取全部成交订单数
+        fully_filled_orders = len(self._full_fill_counts)
+        
         partially_filled_orders = 0
         unfilled_orders = 0
         for oid, order_qty in self.order_total_qty.items():
             if order_qty <= 0:
                 # Skip invalid/non-tradable quantities (0 or negative; defensive guard)
+                continue
+            # 跳过已全部成交的订单（已通过 _full_fill_counts 统计）
+            if oid in self._full_fill_counts:
                 continue
             order_filled_qty = self.order_filled_qty.get(oid, 0)
             if oid in self._canceled_orders:
@@ -278,9 +284,8 @@ class ReceiptLogger:
                 else:
                     unfilled_orders += 1
                 continue
-            if order_filled_qty >= order_qty:
-                fully_filled_orders += 1
-            elif order_filled_qty > 0:
+            # 非撤单、非全部成交的订单
+            if order_filled_qty > 0:
                 partially_filled_orders += 1
             else:
                 unfilled_orders += 1
