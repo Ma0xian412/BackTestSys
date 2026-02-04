@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple, Set, Optional
 import math
 
 from ..core.interfaces import ITapeBuilder
-from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK
+from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS
 
 
 # Constants
@@ -81,12 +81,6 @@ class TapeConfig:
     
     # Top-5 constraint
     top_k: int = 5  # Number of price levels to track
-    
-    # 非均匀快照推送配置
-    # Snapshot推送最小间隔（tick单位）：快照实际上是在T_B-min_interval到T_B之间产生的变化
-    # 所以A快照的时间被视为T_B - min_interval
-    # 500ms = 5_000_000 ticks (100ns per tick)
-    snapshot_min_interval_tick: int = SNAPSHOT_MIN_INTERVAL_TICK
 
 
 class UnifiedTapeBuilder(ITapeBuilder):
@@ -119,9 +113,7 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         从A/B快照构建tape段。使用统一的recv timeline (ts_recv)。
         
-        非均匀快照时间处理（默认启用）：
-        快照只在关键字段变化时推送，最小间隔500ms (5_000_000 ticks)。
-        将A快照的时间视为T_B - 500ms，所有变化归因到[T_B-500ms, T_B]区间。
+        注意：快照间隔由feed层保证，tape始终从t_a开始到t_b结束。
         
         Args:
             prev: Previous snapshot (A) at time T_A / 前一个快照（A），在T_A时刻
@@ -167,17 +159,32 @@ class UnifiedTapeBuilder(ITapeBuilder):
         # 确保bid_path和ask_path长度相同，segment数量一致
         bid_path, ask_path = self._build_aligned_paths(bid_a, bid_b, ask_a, ask_b, meeting_seq)
         
-        # 合并路径为全局段 - 使用effective_t_a作为开始时间
+        # 合并路径为全局段 - 使用t_a作为开始时间
         segments = self._merge_paths_to_segments(bid_path, ask_path, t_a, t_b)
         
         if not segments:
             raise ValueError("Segment built for error")
+        
+        # 验证第一个段的开始时间等于t_a
+        if segments[0].t_start != t_a:
+            raise ValueError(
+                f"First segment t_start ({segments[0].t_start}) must equal t_a ({t_a}). "
+                f"第一个段的开始时间必须等于t_a。"
+            )
         
         # Compute activation sets for each segment
         segments = self._add_activation_sets(segments, prev, curr)
         
         # Volume allocation based on price-level distribution
         segments = self._allocate_volumes(segments, last_vol_split, t_a, t_b)
+        
+        # 再次验证：_allocate_volumes 可能会修改 t_start
+        if segments[0].t_start != t_a:
+            raise ValueError(
+                f"After volume allocation, first segment t_start ({segments[0].t_start}) "
+                f"must equal t_a ({t_a}). Volume allocation should not change the start time. "
+                f"体量分配后，第一个段的开始时间必须等于t_a。"
+            )
         
         # Derive cancellations and net flow using queue-zero constraint at price transitions
         segments = self._derive_cancellations_and_net_flow(segments, prev, curr)
@@ -546,12 +553,20 @@ class UnifiedTapeBuilder(ITapeBuilder):
         current_ask = ask_path[0] if ask_path else 0.0
         last_u = 0.0
         seg_idx = 1
+        is_first_segment = True
         
         for u, side, price in events:
             if u > last_u + EPSILON:
+                # 确保第一个段的开始时间精确等于 t_a
+                if is_first_segment:
+                    seg_t_start = t_a
+                    is_first_segment = False
+                else:
+                    seg_t_start = int(t_a + last_u * (t_b - t_a))
+                
                 seg = TapeSegment(
                     index=seg_idx,
-                    t_start=int(t_a + last_u * (t_b - t_a)),
+                    t_start=seg_t_start,
                     t_end=int(t_a + u * (t_b - t_a)),
                     bid_price=current_bid,
                     ask_price=current_ask,
@@ -567,9 +582,15 @@ class UnifiedTapeBuilder(ITapeBuilder):
         
         # Final segment
         if last_u < 1.0 - EPSILON:
+            # 确保第一个段的开始时间精确等于 t_a
+            if is_first_segment:
+                seg_t_start = t_a
+            else:
+                seg_t_start = int(t_a + last_u * (t_b - t_a))
+            
             seg = TapeSegment(
                 index=seg_idx,
-                t_start=int(t_a + last_u * (t_b - t_a)),
+                t_start=seg_t_start,
                 t_end=t_b,
                 bid_price=current_bid,
                 ask_price=current_ask,
@@ -734,8 +755,17 @@ class UnifiedTapeBuilder(ITapeBuilder):
         dt = t_b - t_a
         result = []
         for i, seg in enumerate(segments):
-            new_t_start = int(t_a + u_cumsum[i] * dt)
-            new_t_end = int(t_a + u_cumsum[i+1] * dt)
+            # 确保第一个段的开始时间精确等于 t_a, 最后一个段的结束时间精确等于 t_b
+            # 避免浮点数精度问题导致的时间偏差
+            if i == 0:
+                new_t_start = t_a
+            else:
+                new_t_start = int(t_a + u_cumsum[i] * dt)
+            
+            if i == len(segments) - 1:
+                new_t_end = t_b
+            else:
+                new_t_end = int(t_a + u_cumsum[i+1] * dt)
             
             # Build trades dict: bilateral trades at the matching price
             trades: Dict[Tuple[Side, Price], Qty] = {}
