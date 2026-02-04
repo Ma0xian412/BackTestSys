@@ -297,7 +297,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     key = (side, round(price, 8), seg_idx)
                     
                     # M_{s,i}(p): trades at this price in this segment
-                    m_si = seg.trades.get((side, price), 0)
+                    # Only include trades if this price is the best price,
+                    # because trades only happen at the best price level
+                    is_best_price = abs(price - best_price) < EPSILON
+                    m_si = seg.trades.get((side, price), 0) if is_best_price else 0
                     
                     # C_{s,i}(p): cancels at this price in this segment
                     c_si = seg.cancels.get((side, price), 0)
