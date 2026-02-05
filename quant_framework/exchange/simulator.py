@@ -336,6 +336,33 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         best_price = seg.bid_price if side == Side.BUY else seg.ask_price
         return abs(price - best_price) < EPSILON
     
+    def _calculate_effective_phi(self, shadow: ShadowOrder) -> float:
+        """Calculate position-dependent effective cancel ratio (phi) for a shadow order.
+        
+        The effective phi represents the probability that a random cancellation in the queue
+        is positioned in front of this order. This depends on the order's position relative
+        to the total queue depth at arrival time.
+        
+        Formula: phi_effective = min(1.0, pos / Q_mkt_at_arrival)
+        
+        Examples:
+        - Order at tail (pos = Q): phi_effective = 1.0 (all cancels are in front)
+        - Order at front (pos = 0): phi_effective = 0.0 (no cancels are in front)
+        - Order in middle (pos = Q/2): phi_effective = 0.5 (half of cancels are in front)
+        
+        Args:
+            shadow: The shadow order
+            
+        Returns:
+            Effective phi value in range [0.0, 1.0]
+        """
+        if shadow.q_mkt_at_arrival > 0:
+            return min(1.0, shadow.pos / shadow.q_mkt_at_arrival)
+        else:
+            # Edge case: no queue at arrival or q_mkt_at_arrival is zero/negative
+            # Fall back to base cancel_front_ratio
+            return self.cancel_front_ratio
+    
     def _get_x_coord(self, side: Side, price: Price, t: int) -> float:
         """Get X coordinate at time t for given side and price.
         
@@ -399,15 +426,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         if not self._current_tape or t <= self._interval_start:
             return level.x_coord
         
-        # Calculate order-specific effective phi based on position
-        # For an order at position pos with queue depth Q at arrival:
-        # - If pos is at the tail (pos ≈ Q), phi_effective ≈ 1.0 (all cancels are in front)
-        # - If pos is at the front (pos ≈ 0), phi_effective ≈ 0.0 (no cancels are in front)
-        if shadow.q_mkt_at_arrival > 0:
-            phi_effective = min(1.0, shadow.pos / shadow.q_mkt_at_arrival)
-        else:
-            # Edge case: no queue at arrival, use base cancel_front_ratio
-            phi_effective = self.cancel_front_ratio
+        # Calculate order-specific effective phi using helper method
+        phi_effective = self._calculate_effective_phi(shadow)
         
         # Find which segment t falls into
         x = level.x_coord
@@ -997,6 +1017,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # 手数必须是整数，所以需要取整
                 pos = int(round(q_mkt_at_arrival))
         
+        # Warn if q_mkt_at_arrival is negative (may indicate a calculation issue)
+        if q_mkt_at_arrival < 0:
+            logger.warning(
+                f"[Exchange] Order {order.order_id}: negative q_mkt_at_arrival={q_mkt_at_arrival}, "
+                f"clamped to 0. This may indicate a calculation issue."
+            )
+        
         # Create shadow order with remaining qty
         # Mark as post-crossing if there was an immediate fill (crossing occurred)
         shadow = ShadowOrder(
@@ -1135,15 +1162,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         level = self._get_level(side, price)
         
-        # Calculate order-specific effective phi based on position
-        # For an order at position pos with queue depth Q at arrival:
-        # - If pos is at the tail (pos ≈ Q), phi_effective ≈ 1.0 (all cancels are in front)
-        # - If pos is at the front (pos ≈ 0), phi_effective ≈ 0.0 (no cancels are in front)
-        if shadow.q_mkt_at_arrival > 0:
-            phi_effective = min(1.0, shadow.pos / shadow.q_mkt_at_arrival)
-        else:
-            # Edge case: no queue at arrival, use base cancel_front_ratio
-            phi_effective = self.cancel_front_ratio
+        # Calculate order-specific effective phi using helper method
+        phi_effective = self._calculate_effective_phi(shadow)
         
         # Start X from level's base
         x_running = level.x_coord
