@@ -927,11 +927,19 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Calculate position based on whether crossing occurred
         if already_filled > 0:
             # 订单发生了crossing（吃掉了对手方流动性）
-            # 剩余部分应该在队首，position为0
-            # 逻辑：如果我的订单在px上发生crossing，说明ask方在≤px有流动性
-            # 如果ask@px有流动性，那么bid@px不可能有订单（否则早就撮合了）
-            # 因此bid@px上不可能有之前的shadow订单，position直接为0
-            pos = 0
+            # 剩余部分应该在队首位置
+            # 
+            # 修复：pos 应该等于到达时刻的 x_coord，而不是 0
+            # 原因：如果 x_coord 已经推进到比如 100，而 pos=0，
+            #       那么后续订单的 pos 会是 0+remaining_qty，
+            #       这会导致它们在下一轮 advance 中被立即成交（因为 x > pos+qty）
+            # 
+            # 正确做法：pos = x_coord(arrival_time)，表示队首在坐标轴上的位置
+            # 这样后续订单的 pos 会正确地排在当前 x_coord 之后
+            # 
+            # 注：由于 post-crossing 订单在本方队列没有前序 shadow 订单，
+            #     shadow_pos 参数使用 0（对 X 计算无影响，因为队列为空时不涉及位置相关撤单）
+            pos = int(round(self._get_x_coord(side, price, arrival_time, 0)))
         else:
             # 没有crossing，计算新订单在队列中的位置
             # 
