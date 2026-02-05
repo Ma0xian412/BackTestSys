@@ -551,11 +551,14 @@ class EventLoopRunner:
                     current_seg_idx += 1
                     
                     # 修复问题1：检查是否有新事件的时间早于或等于当前推进的时间
-                    # 如果有，跳出内层循环，在外层循环中处理这些事件
+                    # 使用 <= 是因为：当新回执在seg.t_end时刻到达策略时，
+                    # 策略可能下新单，新单到达时间可能正好在seg.t_end
+                    # 这种情况下应该先处理这些事件再继续推进下一段
                     if event_queue and event_queue[0].time <= last_time:
                         break
 
-                # 如果因为有更早事件而跳出，重新peek并继续外层循环
+                # 检查是否有时间早于原始t_next的新事件需要处理
+                # 如果有，跳回外层循环重新peek事件队列（line 534）
                 if event_queue and event_queue[0].time < t_next:
                     continue
 
@@ -570,7 +573,8 @@ class EventLoopRunner:
                             self._schedule_receipt(receipt, event_queue, t_b)
                         last_time = t_next
                         
-                        # 修复问题1：段内推进后也检查是否有更早事件
+                        # 段内推进后也检查是否有时间早于t_next的新事件
+                        # 如果有，跳回外层循环重新peek事件队列
                         if event_queue and event_queue[0].time < t_next:
                             continue
 
