@@ -40,6 +40,21 @@ class OrderNotFoundError(Exception):
         super().__init__(message)
 
 
+class InvalidSegmentError(Exception):
+    """Exception raised when a tape segment has invalid properties.
+    
+    This exception is raised when segment validation fails, indicating
+    a bug in the tape builder or corrupted segment data.
+    """
+    def __init__(self, seg_idx: int, t_start: int, t_end: int, message: str = None):
+        self.seg_idx = seg_idx
+        self.t_start = t_start
+        self.t_end = t_end
+        if message is None:
+            message = f"Invalid segment {seg_idx}: t_start={t_start}, t_end={t_end}, duration={t_end - t_start}"
+        super().__init__(message)
+
+
 @dataclass
 class ShadowOrder:
     """A shadow order in the exchange queue.
@@ -341,7 +356,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         for seg_idx, seg in enumerate(tape):
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                continue
+                raise InvalidSegmentError(
+                    seg_idx, seg.t_start, seg.t_end,
+                    f"Invalid segment {seg_idx} in set_tape: "
+                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
+                )
             
             # For each activated price in this segment
             for side in [Side.BUY, Side.SELL]:
@@ -475,7 +494,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                continue
+                raise InvalidSegmentError(
+                    seg_idx, seg.t_start, seg.t_end,
+                    f"Invalid segment {seg_idx} in _get_x_coord_for_shadow: "
+                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
+                )
             
             # M_{s,i}(p): trades at this price in this segment
             m_si = seg.trades.get((side, price), 0)
@@ -555,7 +578,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                continue
+                raise InvalidSegmentError(
+                    seg_idx, seg.t_start, seg.t_end,
+                    f"Invalid segment {seg_idx} in _get_q_mkt: "
+                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
+                )
             
             # Check activation
             if not self._is_in_activation_window(side, price, seg_idx):
@@ -614,7 +641,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                continue
+                raise InvalidSegmentError(
+                    seg_idx, seg.t_start, seg.t_end,
+                    f"Invalid segment {seg_idx} in _get_positive_netflow_between: "
+                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
+                )
             
             # Check activation
             if not self._is_in_activation_window(side, price, seg_idx):
@@ -1209,7 +1240,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                continue
+                raise InvalidSegmentError(
+                    seg_idx, seg.t_start, seg.t_end,
+                    f"Invalid segment {seg_idx} in _compute_fill_time: "
+                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
+                )
             
             # Check activation
             if not self._is_in_activation_window(side, price, seg_idx):
@@ -1283,7 +1318,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # 成交时间是消耗完fill_qty的时刻
         seg_duration = t_to - t_from
         if seg_duration <= 0:
-            return fill_qty, t_to
+            raise InvalidSegmentError(
+                seg.index, t_from, t_to,
+                f"Invalid segment duration in _compute_post_crossing_fill: "
+                f"seg_duration={seg_duration} <= 0 (t_from={t_from}, t_to={t_to})"
+            )
         
         # 如果remaining_qty <= N，则成交时间是消耗完remaining_qty的时刻
         # 如果remaining_qty > N，则成交时间是消耗完N的时刻（即segment结束）
