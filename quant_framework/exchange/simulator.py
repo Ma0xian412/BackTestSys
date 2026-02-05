@@ -69,6 +69,7 @@ class ShadowOrder:
     tif: TimeInForce = TimeInForce.GTC
     is_post_crossing: bool = False  # True if this is remainder after crossing
     crossed_prices: List[Tuple[Side, Price]] = field(default_factory=list)  # Prices that were crossed
+    q_mkt_at_arrival: float = 0.0  # Queue depth when order arrived, used for position-dependent cancel ratio
 
 
 @dataclass
@@ -335,6 +336,33 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         best_price = seg.bid_price if side == Side.BUY else seg.ask_price
         return abs(price - best_price) < EPSILON
     
+    def _calculate_effective_phi(self, shadow: ShadowOrder) -> float:
+        """Calculate position-dependent effective cancel ratio (phi) for a shadow order.
+        
+        The effective phi represents the probability that a random cancellation in the queue
+        is positioned in front of this order. This depends on the order's position relative
+        to the total queue depth at arrival time.
+        
+        Formula: phi_effective = min(1.0, pos / Q_mkt_at_arrival)
+        
+        Examples:
+        - Order at tail (pos = Q): phi_effective = 1.0 (all cancels are in front)
+        - Order at front (pos = 0): phi_effective = 0.0 (no cancels are in front)
+        - Order in middle (pos = Q/2): phi_effective = 0.5 (half of cancels are in front)
+        
+        Args:
+            shadow: The shadow order
+            
+        Returns:
+            Effective phi value in range [0.0, 1.0]
+        """
+        if shadow.q_mkt_at_arrival > 0:
+            return min(1.0, shadow.pos / shadow.q_mkt_at_arrival)
+        else:
+            # Edge case: no queue at arrival or q_mkt_at_arrival is zero/negative
+            # Fall back to base cancel_front_ratio
+            return self.cancel_front_ratio
+    
     def _get_x_coord(self, side: Side, price: Price, t: int) -> float:
         """Get X coordinate at time t for given side and price.
         
@@ -367,6 +395,71 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             # Add contribution from this segment
             x += rate * (seg_end - seg_start)
+            
+            if t <= seg.t_end:
+                break
+        
+        return x
+    
+    def _get_order_specific_x_coord(self, shadow: ShadowOrder, t: int) -> float:
+        """Get order-specific X coordinate at time t, using position-dependent cancel ratio.
+        
+        When an order arrives at the queue tail, ALL cancellations should advance its position.
+        The effective cancel ratio (phi) depends on the order's position relative to the queue:
+        - phi_effective = min(1.0, pos / Q_mkt_at_arrival) if Q_mkt_at_arrival > 0
+        - phi_effective = 1.0 if Q_mkt_at_arrival <= 0 (order at front, but treat tail conservatively)
+        
+        This fixes the issue where a static cancel_front_ratio incorrectly assumes only a portion
+        of cancellations benefit tail orders, when in reality ALL cancellations are in front of them.
+        
+        Args:
+            shadow: The shadow order to calculate X for
+            t: Target time
+            
+        Returns:
+            Order-specific X coordinate at time t
+        """
+        side = shadow.side
+        price = shadow.price
+        level = self._get_level(side, price)
+        
+        if not self._current_tape or t <= self._interval_start:
+            return level.x_coord
+        
+        # Calculate order-specific effective phi using helper method
+        phi_effective = self._calculate_effective_phi(shadow)
+        
+        # Find which segment t falls into
+        x = level.x_coord
+        for seg_idx, seg in enumerate(self._current_tape):
+            if t <= seg.t_start:
+                break
+            
+            seg_start = max(seg.t_start, self._interval_start)
+            seg_end = min(seg.t_end, t)
+            
+            if seg_end <= seg_start:
+                continue
+            
+            # Check activation
+            if not self._is_in_activation_window(side, price, seg_idx):
+                continue
+            
+            seg_duration = seg.t_end - seg.t_start
+            if seg_duration <= 0:
+                continue
+            
+            # M_{s,i}(p): trades at this price in this segment
+            m_si = seg.trades.get((side, price), 0)
+            
+            # C_{s,i}(p): cancels at this price in this segment
+            c_si = seg.cancels.get((side, price), 0)
+            
+            # Order-specific X rate: (M + phi_effective * C) / duration
+            x_rate = (m_si + phi_effective * c_si) / seg_duration
+            
+            # Add contribution from this segment
+            x += x_rate * (seg_end - seg_start)
             
             if t <= seg.t_end:
                 break
@@ -861,6 +954,15 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         level = self._get_level(side, price)
         
+        # Initialize Q_mkt with base value at interval start T_A
+        # This serves as the starting point for interpolation
+        # Must be done before calculating q_mkt_at_arrival
+        if not level.queue and level.q_mkt == 0:
+            level.q_mkt = float(market_qty)
+        
+        # Calculate queue depth at arrival time for position-dependent cancel ratio
+        q_mkt_at_arrival = self._get_q_mkt(side, price, arrival_time)
+        
         # Calculate position based on whether crossing occurred
         if already_filled > 0:
             # 订单发生了crossing（吃掉了对手方流动性）
@@ -884,11 +986,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             #   - 负netflow不增加距离（队列收缩不会让后续订单超过前面的订单）
             # 
             # 这保证了FIFO：每个订单的threshold = pos + qty >= 前一个订单的threshold
-            # 
-            # Initialize Q_mkt with base value at interval start T_A
-            # This serves as the starting point for interpolation
-            if not level.queue and level.q_mkt == 0:
-                level.q_mkt = float(market_qty)
             
             # 找到该价位上最后一个活跃的shadow订单
             last_active_shadow = None
@@ -913,12 +1010,19 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # 没有前序shadow订单，使用原始逻辑
                 # 根据arrival_time所在segment的进度计算当前队列深度
                 # q_mkt_t = 基础值 + Σ(net_flow - trades) * segment_progress
-                q_mkt_t = self._get_q_mkt(side, price, arrival_time)  # 插值计算的当前队列深度
+                # Note: q_mkt_at_arrival already calculated above
                 
                 # 新订单位置 = 当前队列深度
                 # 注意：不包含X坐标，X坐标只用于成交推进计算
                 # 手数必须是整数，所以需要取整
-                pos = int(round(q_mkt_t))
+                pos = int(round(q_mkt_at_arrival))
+        
+        # Warn if q_mkt_at_arrival is negative (may indicate a calculation issue)
+        if q_mkt_at_arrival < 0:
+            logger.warning(
+                f"[Exchange] Order {order.order_id}: negative q_mkt_at_arrival={q_mkt_at_arrival}, "
+                f"clamped to 0. This may indicate a calculation issue."
+            )
         
         # Create shadow order with remaining qty
         # Mark as post-crossing if there was an immediate fill (crossing occurred)
@@ -934,6 +1038,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             filled_qty=0,  # Already filled part is tracked separately
             is_post_crossing=(already_filled > 0),  # True if this is remainder after crossing
             crossed_prices=crossed_prices or [],  # Store crossed prices for post-crossing fill
+            q_mkt_at_arrival=max(0.0, q_mkt_at_arrival),  # Store queue depth at arrival for position-dependent phi
         )
         
         level.queue.append(shadow)
@@ -1036,7 +1141,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
     def _compute_fill_time(self, shadow: ShadowOrder, qty_to_fill: int) -> Optional[int]:
         """Compute exchtime when order reaches fill threshold.
         
-        Uses piecewise linear X to find when X(t) >= pos + qty_to_fill.
+        Uses piecewise linear X with position-dependent cancel ratio to find 
+        when X(t) >= pos + qty_to_fill.
+        
+        The effective cancel ratio (phi) is based on the order's position relative
+        to the queue depth at arrival time, ensuring that orders at the queue tail
+        correctly benefit from ALL cancellations (phi ≈ 1.0), while orders at the
+        front see fewer cancellations benefiting them (phi ≈ 0.0).
         
         Args:
             shadow: The shadow order
@@ -1051,20 +1162,13 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         level = self._get_level(side, price)
         
+        # Calculate order-specific effective phi using helper method
+        phi_effective = self._calculate_effective_phi(shadow)
+        
         # Start X from level's base
         x_running = level.x_coord
         
         for seg_idx, seg in enumerate(self._current_tape):
-            if seg.t_end <= shadow.arrival_time:
-                # Skip segments before order arrival
-                # But still need to accumulate X
-                if self._is_in_activation_window(side, price, seg_idx):
-                    key = (side, round(price, 8), seg_idx)
-                    rate = self._x_rates.get(key, 0.0)
-                    seg_duration = seg.t_end - seg.t_start
-                    x_running += rate * seg_duration
-                continue
-            
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
                 continue
@@ -1073,8 +1177,16 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if not self._is_in_activation_window(side, price, seg_idx):
                 continue
             
-            key = (side, round(price, 8), seg_idx)
-            rate = self._x_rates.get(key, 0.0)
+            # Calculate order-specific X rate for this segment
+            m_si = seg.trades.get((side, price), 0)
+            c_si = seg.cancels.get((side, price), 0)
+            rate = (m_si + phi_effective * c_si) / seg_duration
+            
+            if seg.t_end <= shadow.arrival_time:
+                # Skip segments before order arrival
+                # But still need to accumulate X
+                x_running += rate * seg_duration
+                continue
             
             # Effective start time for this segment
             effective_start = max(seg.t_start, shadow.arrival_time)
@@ -1245,9 +1357,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # Only orders at the best price can be filled during advance
             at_best_price = seg_idx < 0 or self._is_at_best_price(side, price, seg_idx)
             
-            # Get X at t_to (only if in activation)
-            x_t_to = self._get_x_coord(side, price, t_to) if in_activation else 0
-            
             # Check each shadow order
             for shadow in level.queue:
                 if shadow.status != "ACTIVE":
@@ -1316,6 +1425,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # at non-best price levels).
                 if not at_best_price:
                     continue
+                
+                # Get order-specific X at t_to using position-dependent cancel ratio
+                # This fixes the issue where static cancel_front_ratio incorrectly models
+                # the effect of cancellations on orders at different positions in the queue
+                x_t_to = self._get_order_specific_x_coord(shadow, t_to)
                 
                 # Fill threshold
                 threshold = shadow.pos + shadow.original_qty
