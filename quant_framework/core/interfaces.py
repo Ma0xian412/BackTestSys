@@ -127,30 +127,15 @@ class IExchangeSimulator(ABC):
         pass
 
     @abstractmethod
-    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
-        """使用tape段推进仿真从t_from到t_to。
-
-        Args:
-            t_from: 切片开始时间
-            t_to: 切片结束时间
-            segment: 包含该区间M和C的Tape段
-
-        Returns:
-            该时段内的成交回执列表
-        """
-        pass
-
-    @abstractmethod
-    def advance_single(self, t_from: int, t_to: int, segment: TapeSegment) -> AdvanceResult:
-        """单步推进：从t_from推进到第一个成交事件或t_to。
+    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> AdvanceResult:
+        """单步推进仿真从t_from到第一个成交事件或t_to。
         
-        与advance方法不同，此方法在遇到第一个成交事件时立即停止，
-        返回该成交的回执和停止时间。这允许事件循环在segment内部
-        处理动态订单到达。
+        此方法在遇到第一个成交事件时立即停止，返回该成交的回执和停止时间。
+        这允许事件循环在segment内部处理动态订单到达。
         
         使用示例：
             while True:
-                result = exchange.advance_single(last_time, t_to, segment)
+                result = exchange.advance(last_time, t_to, segment)
                 if result.receipt:
                     # 处理成交回执，可能触发新订单
                     handle_receipt(result.receipt)

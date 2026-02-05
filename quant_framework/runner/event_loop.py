@@ -596,14 +596,6 @@ class EventLoopRunner:
         """
         current_time = t_from
         
-        # 检查交易所是否支持advance_single方法
-        if not hasattr(self.exchange, 'advance_single'):
-            # 回退到原有的batch模式
-            receipts = self.exchange.advance(t_from, t_to, segment)
-            for receipt in receipts:
-                self._schedule_receipt(receipt, event_queue, t_b)
-            return t_to
-        
         while current_time < t_to:
             # Step 1: 检查是否有订单到达事件在当前时间点需要处理
             # 
@@ -630,8 +622,8 @@ class EventLoopRunner:
             for event in sorted(orders_to_process, key=lambda e: (e.time, e.priority, e.seq)):
                 self._process_single_event(event, event_queue, [], t_b)
             
-            # Step 2: 使用advance_single推进到下一个成交或t_to
-            result = self.exchange.advance_single(current_time, t_to, segment)
+            # Step 2: 使用advance推进到下一个成交或t_to
+            result = self.exchange.advance(current_time, t_to, segment)
             
             if result.receipt:
                 # 调度回执

@@ -17,13 +17,41 @@ import logging
 import sys
 
 from quant_framework.core.types import (
-    NormalizedSnapshot, Level, Order, Side, TimeInForce, OrderStatus, TICK_PER_MS
+    NormalizedSnapshot, Level, Order, Side, TimeInForce, OrderStatus, TICK_PER_MS, TapeSegment
 )
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.trading.oms import OrderManager, Portfolio
 from quant_framework.trading.strategy import SimpleStrategy
 from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+
+
+def collect_all_receipts(exchange, t_from: int, t_to: int, segment: TapeSegment):
+    """辅助函数：收集advance过程中的所有回执。
+    
+    循环调用advance直到没有更多成交。
+    
+    Args:
+        exchange: 交易所模拟器
+        t_from: 开始时间
+        t_to: 结束时间
+        segment: Tape段
+        
+    Returns:
+        所有成交回执的列表
+    """
+    receipts = []
+    current_time = t_from
+    
+    while current_time < t_to:
+        result = exchange.advance(current_time, t_to, segment)
+        if result.receipt:
+            receipts.append(result.receipt)
+        current_time = result.stop_time
+        if not result.has_more:
+            break
+    
+    return receipts
 
 
 def setup_test_logging():
@@ -407,7 +435,7 @@ def test_exchange_simulator_fill():
     # Advance through segments
     all_receipts = []
     for seg in tape:
-        receipts = exchange.advance(seg.t_start, seg.t_end, seg)
+        receipts = collect_all_receipts(exchange, seg.t_start, seg.t_end, seg)
         all_receipts.extend(receipts)
         print(f"Segment {seg.index}: generated {len(receipts)} receipts")
     
@@ -448,9 +476,9 @@ def test_exchange_simulator_multi_partial_to_fill():
     order = Order(order_id="multi-fill", side=Side.BUY, price=100.0, qty=4)
     exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
     
-    receipt_1 = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
-    receipt_2 = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
-    receipt_3 = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
+    receipt_1 = collect_all_receipts(exchange, 1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
+    receipt_2 = collect_all_receipts(exchange, 1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
+    receipt_3 = collect_all_receipts(exchange, 1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
     
     receipts = receipt_1 + receipt_2 + receipt_3
     fill_types = [r.receipt_type for r in receipts]
@@ -607,7 +635,7 @@ def test_integration_basic():
     # Advance exchange through first segment
     if tape:
         seg = tape[0]
-        receipts = exchange.advance(seg.t_start, seg.t_end, seg)
+        receipts = collect_all_receipts(exchange, seg.t_start, seg.t_end, seg)
         print(f"Exchange generated {len(receipts)} receipts")
         
         for receipt in receipts:
@@ -727,13 +755,13 @@ def test_fill_priority():
     
     exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
 
-    exchange.advance(0, 1010 * TICK_PER_MS, tape[0])
-    exchange.advance(1010 * TICK_PER_MS, 1100 * TICK_PER_MS, tape[1])
+    collect_all_receipts(exchange, 0, 1010 * TICK_PER_MS, tape[0])
+    collect_all_receipts(exchange, 1010 * TICK_PER_MS, 1100 * TICK_PER_MS, tape[1])
 
     order1 = Order(order_id="order1", side=Side.BUY, price=100.0, qty=20)
     exchange.on_order_arrival(order1, 1100 * TICK_PER_MS, market_qty=30)
 
-    exchange.advance(1100 * TICK_PER_MS, 1300 * TICK_PER_MS, tape[1])
+    collect_all_receipts(exchange, 1100 * TICK_PER_MS, 1300 * TICK_PER_MS, tape[1])
     
     order2 = Order(order_id="order2", side=Side.BUY, price=100.0, qty=10)
     exchange.on_order_arrival(order2, 1300 * TICK_PER_MS, market_qty=30)
@@ -749,10 +777,10 @@ def test_fill_priority():
     # Advance and collect fills
     all_receipts = []
     last_t = 1300 * TICK_PER_MS
-    receipts = exchange.advance(last_t, tape[1].t_end, tape[1])
+    receipts = collect_all_receipts(exchange, last_t, tape[1].t_end, tape[1])
     all_receipts.extend(receipts)
     last_t = tape[1].t_end
-    receipts = exchange.advance(last_t, tape[2].t_end, tape[2])
+    receipts = collect_all_receipts(exchange, last_t, tape[2].t_end, tape[2])
     all_receipts.extend(receipts)
     
     # With 50 trades: first 30 consume market queue, then order1 (20), then order2 (10)
@@ -3030,7 +3058,7 @@ def test_post_crossing_fill_with_net_increment():
     print(f"  Crossed prices: {shadow1.crossed_prices}")
     
     # 推进时间，应该根据净增量成交
-    receipts1 = exchange1.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg1)
+    receipts1 = collect_all_receipts(exchange1, 1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg1)
     print(f"  Advance生成的回执: {receipts1}")
     
     # post-crossing fill应该基于聚合净增量N=80
@@ -3082,7 +3110,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill2 = receipt2.fill_qty
     expected_remaining2 = 150 - crossing_fill2
     
-    receipts2 = exchange2.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg2)
+    receipts2 = collect_all_receipts(exchange2, 1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg2)
     print(f"  Advance生成的回执: {receipts2}")
     
     # post-crossing fill应该基于聚合净增量N=30
@@ -3134,7 +3162,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill3 = receipt3.fill_qty
     expected_remaining3 = 150 - crossing_fill3
     
-    receipts3 = exchange3.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg3)
+    receipts3 = collect_all_receipts(exchange3, 1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg3)
     print(f"  Advance生成的回执: {receipts3}")
     
     # 净增量N=-10 < 0，post-crossing订单不应该成交
@@ -3181,7 +3209,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill4 = receipt4.fill_qty
     expected_remaining4 = 150 - crossing_fill4
     
-    receipts4 = exchange4.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg4)
+    receipts4 = collect_all_receipts(exchange4, 1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg4)
     print(f"  Advance生成的回执: {receipts4}")
     
     # 净增量N=0，post-crossing订单不应该成交
@@ -4488,7 +4516,7 @@ def test_cross_interval_order_fill():
     assert shadow.original_qty == 10
     
     # 推进区间 [A, B]
-    receipts = exchange.advance(t_A, t_B, tape_AB[0])
+    receipts = collect_all_receipts(exchange, t_A, t_B, tape_AB[0])
     print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_B)}")
     print(f"    生成回执数: {len(receipts)}")
     assert len(receipts) == 0, "Should not fill yet (X=30 < threshold=110)"
@@ -4540,7 +4568,7 @@ def test_cross_interval_order_fill():
     # 这是当前实现的bug - reset清空了_levels，advance找不到订单
     
     # 尝试推进 - 期望订单能被找到并处理
-    receipts = exchange.advance(t_B, t_C, tape_BC[0])
+    receipts = collect_all_receipts(exchange, t_B, t_C, tape_BC[0])
     print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_C)}")
     print(f"    生成回执数: {len(receipts)}")
     
@@ -4592,7 +4620,7 @@ def test_cross_interval_order_fill():
     
     exchange.set_tape(tape_CD, t_C, t_D)
     
-    receipts = exchange.advance(t_C, t_D, tape_CD[0])
+    receipts = collect_all_receipts(exchange, t_C, t_D, tape_CD[0])
     print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_D)}")
     print(f"    生成回执数: {len(receipts)}")
     
@@ -4619,8 +4647,8 @@ def test_cross_interval_order_fill():
     print("✓ Cross-interval order fill test passed")
 
 
-def test_advance_single_step_by_step():
-    """测试advance_single方法的单步推进功能。
+def test_advance_step_by_step():
+    """测试advance方法的单步推进功能。
     
     验证交易所模拟器可以单步推进，每次只处理一个成交事件。
     这是实现segment内部动态订单处理的基础。
@@ -4628,7 +4656,7 @@ def test_advance_single_step_by_step():
     from quant_framework.exchange.simulator import FIFOExchangeSimulator
     from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce, NormalizedSnapshot, Level, AdvanceResult
     
-    print("\n--- Test: Advance Single Step By Step ---\n")
+    print("\n--- Test: Advance Step By Step ---\n")
     
     # 时间设置
     t_start = 10_000_000
@@ -4681,19 +4709,16 @@ def test_advance_single_step_by_step():
     print(f"  订单1到达: order_id={order1.order_id}")
     print(f"  订单2到达: order_id={order2.order_id}")
     
-    # 验证advance_single方法存在
-    assert hasattr(exchange, 'advance_single'), "exchange should have advance_single method"
-    
     # Step 1: 第一次单步推进
-    print("\n  第一次advance_single:")
-    result1 = exchange.advance_single(t_start, t_end, tape[0])
+    print("\n  第一次advance:")
+    result1 = exchange.advance(t_start, t_end, tape[0])
     
     print(f"    result1.receipt: {result1.receipt}")
     print(f"    result1.stop_time: {result1.stop_time}")
     print(f"    result1.has_more: {result1.has_more}")
     
     # 应该返回order-1的成交回执
-    assert result1.receipt is not None, "First advance_single should return a receipt"
+    assert result1.receipt is not None, "First advance should return a receipt"
     assert result1.receipt.order_id == "order-1", f"First receipt should be for order-1, got {result1.receipt.order_id}"
     assert result1.stop_time <= t_end, "stop_time should be <= t_end"
     
@@ -4701,8 +4726,8 @@ def test_advance_single_step_by_step():
     
     # Step 2: 继续推进（如果还有更多事件）
     if result1.has_more:
-        print("\n  第二次advance_single:")
-        result2 = exchange.advance_single(result1.stop_time, t_end, tape[0])
+        print("\n  第二次advance:")
+        result2 = exchange.advance(result1.stop_time, t_end, tape[0])
         
         print(f"    result2.receipt: {result2.receipt}")
         print(f"    result2.stop_time: {result2.stop_time}")
@@ -4712,7 +4737,7 @@ def test_advance_single_step_by_step():
             assert result2.receipt.order_id == "order-2", f"Second receipt should be for order-2, got {result2.receipt.order_id}"
             print(f"    ✓ 第二个订单成交: {result2.receipt.receipt_type}")
     
-    print("\n✓ Advance single step by step test passed")
+    print("\n✓ Advance step by step test passed")
 
 
 def test_segment_internal_dynamic_order():
@@ -4726,9 +4751,9 @@ def test_segment_internal_dynamic_order():
       3. C时刻订单2到达（C在B和D之间）
       4. 订单2应该能参与[C, D]的撮合
     
-    这个测试验证advance_single配合事件循环可以正确处理这种场景。
+    这个测试验证advance配合事件循环可以正确处理这种场景。
     
-    关键点：即使has_more=False，添加新订单后仍需继续调用advance_single
+    关键点：即使has_more=False，添加新订单后仍需继续调用advance
     """
     from quant_framework.exchange.simulator import FIFOExchangeSimulator
     from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce, NormalizedSnapshot, Level, AdvanceResult
@@ -4782,7 +4807,7 @@ def test_segment_internal_dynamic_order():
     
     # Step 1: 单步推进，期望得到订单1的成交
     print("\n  Step 1: 第一次单步推进 (期望订单1成交)...")
-    result1 = exchange.advance_single(current_time, t_D, tape[0])
+    result1 = exchange.advance(current_time, t_D, tape[0])
     
     if result1.receipt:
         receipts_received.append(result1.receipt)
@@ -4826,7 +4851,7 @@ def test_segment_internal_dynamic_order():
                 
                 # 继续推进直到到达t_D
                 while current_time < t_D:
-                    result_next = exchange.advance_single(current_time, t_D, tape[0])
+                    result_next = exchange.advance(current_time, t_D, tape[0])
                     
                     if result_next.receipt:
                         receipts_received.append(result_next.receipt)
@@ -5063,7 +5088,7 @@ def run_all_tests():
         test_no_duplicate_segment_and_interval_end_events,
         test_cancel_order_across_interval,
         test_cross_interval_order_fill,
-        test_advance_single_step_by_step,
+        test_advance_step_by_step,
         test_segment_internal_dynamic_order,
         test_floating_point_precision_in_last_vol_split,
     ]
