@@ -1718,16 +1718,15 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             self.current_time = t_to
             return [], t_to
         
-        # Sort by fill_time to find the earliest
-        fill_candidates.sort(key=lambda x: x[0])
-        earliest_fill_time = fill_candidates[0][0]
+        # Find earliest fill time using min() for O(n) complexity instead of sorting O(n log n)
+        earliest_fill_time = min(fill_candidates, key=lambda x: x[0])[0]
         
         # Process all fills at the earliest fill time
         receipts: List[OrderReceipt] = []
         for fill_time, order_id, shadow, level, fill_info in fill_candidates:
             if fill_time > earliest_fill_time:
-                # Stop processing - we only process fills at the earliest time
-                break
+                # Skip fills that are not at the earliest time
+                continue
             
             # Execute the fill
             if fill_info['is_post_crossing']:

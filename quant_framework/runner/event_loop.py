@@ -559,8 +559,8 @@ class EventLoopRunner:
                         
                         # 检查event queue是否有新的更早事件
                         # 如果有更早的事件，需要先处理它们
-                        if event_queue and event_queue[0].time < stopped_time:
-                            # 有更早的事件，跳出内层循环去处理
+                        if event_queue and event_queue[0].time <= stopped_time:
+                            # 有更早或同时的事件，跳出内层循环去处理
                             break
                         
                         # 如果stopped_time == seg_target，说明段已完成
@@ -588,7 +588,7 @@ class EventLoopRunner:
                             last_time = stopped_time
                             
                             # 检查event queue是否有新的更早事件
-                            if event_queue and event_queue[0].time < stopped_time:
+                            if event_queue and event_queue[0].time <= stopped_time:
                                 break
                             
                             if stopped_time >= t_next:
@@ -599,8 +599,9 @@ class EventLoopRunner:
                 break
             t_next = event_queue[0].time
             
-            # 如果t_next仍然在last_time之后，说明需要继续推进
-            # 重新进入循环顶部
+            # 如果t_next仍然在last_time之后，说明需要继续推进交易所
+            # 这里显式continue回到循环顶部，而不是fall through到事件处理代码
+            # 这是为了确保在处理任何事件之前，交易所已经推进到正确的时间点
             if t_next > last_time and current_seg_idx < len(tape):
                 continue
             
