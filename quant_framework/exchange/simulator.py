@@ -434,7 +434,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         Similar to _get_x_coord, but uses the shadow order's position to compute
         a position-dependent cancel probability p_k(x) instead of a fixed cancel_front_ratio.
         
-        The normalized position x is computed as: x = shadow_pos / Q_mkt
+        The normalized position x is computed as: x = (shadow_pos - X) / Q_mkt
+        - shadow_pos: Fixed position when order was placed (equal to Q_mkt at arrival)
+        - X: Cumulative consumption from queue front (trades + phi * cancels)
+        - (shadow_pos - X): Remaining queue depth ahead of the order
+        - Q_mkt: Current market queue depth
         - x = 0: order at front of queue, all cancels happen behind
         - x = 1: order at tail of queue, all cancels happen in front
         
@@ -453,6 +457,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             return level.x_coord
         
         # Find which segment t falls into
+        # x tracks the X coordinate as we iterate through segments
         x = level.x_coord
         for seg_idx, seg in enumerate(self._current_tape):
             if t <= seg.t_start:
@@ -478,19 +483,25 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # C_{s,i}(p): cancels at this price in this segment
             c_si = seg.cancels.get((side, price), 0)
             
-            # Compute Q_mkt (market queue depth) at segment start for normalized position calculation
-            # Q_mkt represents the total public market queue depth (not including shadow orders)
-            # The normalized position x_norm = shadow_pos / Q_mkt gives the relative position
-            # in the queue (0 = front, 1 = tail), which determines the cancel probability
+            # Compute Q_mkt (market queue depth) at segment start
             q_mkt_at_seg_start = self._get_q_mkt(side, price, seg.t_start)
             
-            # Compute normalized position: x_norm = shadow_pos / Q_mkt
-            # If Q_mkt is 0 or shadow_pos >= Q_mkt, use cancel_front_ratio as fallback
-            if q_mkt_at_seg_start > EPSILON and shadow_pos < q_mkt_at_seg_start:
-                x_norm = shadow_pos / q_mkt_at_seg_start
+            # The current X coordinate at segment start is 'x' (accumulated from previous segments)
+            # The "remaining queue ahead" = shadow_pos - x
+            # This represents how much of the queue is still in front of the shadow order
+            remaining_ahead = shadow_pos - x
+            
+            # Compute normalized position: x_norm = remaining_ahead / Q_mkt
+            # This gives the relative position in the current queue (0 = front, 1 = tail)
+            # Note: remaining_ahead can be negative if X has advanced past shadow_pos (order being filled)
+            if q_mkt_at_seg_start > EPSILON and remaining_ahead > 0:
+                x_norm = remaining_ahead / q_mkt_at_seg_start
+                # Clamp to [0, 1] for the probability function
+                x_norm = min(1.0, max(0.0, x_norm))
                 cancel_prob = self._compute_cancel_front_prob(x_norm)
             else:
-                # Shadow order at or beyond queue tail, use fallback
+                # Shadow order at or ahead of queue front, or queue is empty
+                # Use fallback cancel_front_ratio
                 cancel_prob = self.cancel_front_ratio
             
             # Compute rate with position-dependent cancel probability
