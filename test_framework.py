@@ -407,7 +407,7 @@ def test_exchange_simulator_fill():
     # Advance through segments
     all_receipts = []
     for seg in tape:
-        receipts = exchange.advance(seg.t_start, seg.t_end, seg)
+        receipts, _ = exchange.advance(seg.t_start, seg.t_end, seg)
         all_receipts.extend(receipts)
         print(f"Segment {seg.index}: generated {len(receipts)} receipts")
     
@@ -448,9 +448,9 @@ def test_exchange_simulator_multi_partial_to_fill():
     order = Order(order_id="multi-fill", side=Side.BUY, price=100.0, qty=4)
     exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
     
-    receipt_1 = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
-    receipt_2 = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
-    receipt_3 = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
+    receipt_1, _ = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
+    receipt_2, _ = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
+    receipt_3, _ = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
     
     receipts = receipt_1 + receipt_2 + receipt_3
     fill_types = [r.receipt_type for r in receipts]
@@ -607,7 +607,7 @@ def test_integration_basic():
     # Advance exchange through first segment
     if tape:
         seg = tape[0]
-        receipts = exchange.advance(seg.t_start, seg.t_end, seg)
+        receipts, _ = exchange.advance(seg.t_start, seg.t_end, seg)
         print(f"Exchange generated {len(receipts)} receipts")
         
         for receipt in receipts:
@@ -749,10 +749,10 @@ def test_fill_priority():
     # Advance and collect fills
     all_receipts = []
     last_t = 1300 * TICK_PER_MS
-    receipts = exchange.advance(last_t, tape[1].t_end, tape[1])
+    receipts, _ = exchange.advance(last_t, tape[1].t_end, tape[1])
     all_receipts.extend(receipts)
     last_t = tape[1].t_end
-    receipts = exchange.advance(last_t, tape[2].t_end, tape[2])
+    receipts, _ = exchange.advance(last_t, tape[2].t_end, tape[2])
     all_receipts.extend(receipts)
     
     # With 50 trades: first 30 consume market queue, then order1 (20), then order2 (10)
@@ -3030,7 +3030,7 @@ def test_post_crossing_fill_with_net_increment():
     print(f"  Crossed prices: {shadow1.crossed_prices}")
     
     # 推进时间，应该根据净增量成交
-    receipts1 = exchange1.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg1)
+    receipts1, _ = exchange1.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg1)
     print(f"  Advance生成的回执: {receipts1}")
     
     # post-crossing fill应该基于聚合净增量N=80
@@ -3082,7 +3082,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill2 = receipt2.fill_qty
     expected_remaining2 = 150 - crossing_fill2
     
-    receipts2 = exchange2.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg2)
+    receipts2, _ = exchange2.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg2)
     print(f"  Advance生成的回执: {receipts2}")
     
     # post-crossing fill应该基于聚合净增量N=30
@@ -3134,7 +3134,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill3 = receipt3.fill_qty
     expected_remaining3 = 150 - crossing_fill3
     
-    receipts3 = exchange3.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg3)
+    receipts3, _ = exchange3.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg3)
     print(f"  Advance生成的回执: {receipts3}")
     
     # 净增量N=-10 < 0，post-crossing订单不应该成交
@@ -3181,7 +3181,7 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill4 = receipt4.fill_qty
     expected_remaining4 = 150 - crossing_fill4
     
-    receipts4 = exchange4.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg4)
+    receipts4, _ = exchange4.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg4)
     print(f"  Advance生成的回执: {receipts4}")
     
     # 净增量N=0，post-crossing订单不应该成交
@@ -4488,7 +4488,7 @@ def test_cross_interval_order_fill():
     assert shadow.original_qty == 10
     
     # 推进区间 [A, B]
-    receipts = exchange.advance(t_A, t_B, tape_AB[0])
+    receipts, _ = exchange.advance(t_A, t_B, tape_AB[0])
     print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     assert len(receipts) == 0, "Should not fill yet (X=30 < threshold=110)"
@@ -4540,7 +4540,7 @@ def test_cross_interval_order_fill():
     # 这是当前实现的bug - reset清空了_levels，advance找不到订单
     
     # 尝试推进 - 期望订单能被找到并处理
-    receipts = exchange.advance(t_B, t_C, tape_BC[0])
+    receipts, _ = exchange.advance(t_B, t_C, tape_BC[0])
     print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     
@@ -4592,7 +4592,7 @@ def test_cross_interval_order_fill():
     
     exchange.set_tape(tape_CD, t_C, t_D)
     
-    receipts = exchange.advance(t_C, t_D, tape_CD[0])
+    receipts, _ = exchange.advance(t_C, t_D, tape_CD[0])
     print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     
@@ -5007,7 +5007,7 @@ def test_post_crossing_blocks_best_price_fill():
     print("  测试3: advance并检查成交结果...")
     
     # advance整个segment
-    receipts = exchange.advance(1000 * TICK_PER_MS, 2000 * TICK_PER_MS, seg)
+    receipts, _ = exchange.advance(1000 * TICK_PER_MS, 2000 * TICK_PER_MS, seg)
     
     print(f"    生成了{len(receipts)}个回执:")
     for r in receipts:

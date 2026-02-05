@@ -127,8 +127,11 @@ class IExchangeSimulator(ABC):
         pass
 
     @abstractmethod
-    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
+    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> Tuple[List[OrderReceipt], int]:
         """使用tape段推进仿真从t_from到t_to。
+
+        推进过程中遇到第一个成交时立即返回，返回当前停止的时间点。
+        这样可以确保回执触发策略下单后，新订单能够被正确处理。
 
         Args:
             t_from: 切片开始时间
@@ -136,7 +139,8 @@ class IExchangeSimulator(ABC):
             segment: 包含该区间M和C的Tape段
 
         Returns:
-            该时段内的成交回执列表
+            (回执列表, 停止时间点) - 停止时间点为遇到第一个成交的时间，
+            如果没有成交则为t_to
         """
         pass
 

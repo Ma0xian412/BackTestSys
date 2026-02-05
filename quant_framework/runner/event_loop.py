@@ -523,6 +523,9 @@ class EventLoopRunner:
 
         # 事件循环 - 使用"peek, advance, pop batch"范式
         # 避免"生成过去事件"的因果反转问题
+        # 
+        # 关键改进：每次advance后检查event queue是否有新的更早事件
+        # 确保不会遗漏任何过去的事件（如策略在收到回执后下的新订单）
         current_seg_idx = 0
         last_time = t_a
         
@@ -535,30 +538,73 @@ class EventLoopRunner:
             
             # Step 2: 将交易所推进到t_next，期间产生的回执会被调度
             # 如果回执时间 <= t_next，会在同一轮被处理
+            # 
+            # 关键改进：advance现在遇到第一个成交就返回
+            # 每次advance后需要重新检查event queue是否有更早的事件
             if t_next > last_time and current_seg_idx < len(tape):
                 # 处理到t_next为止的所有完整段
                 while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= t_next:
                     seg = tape[current_seg_idx]
-                    receipts = self.exchange.advance(last_time, seg.t_end, seg)
+                    
+                    # 循环推进直到完成整个段或遇到更早的事件
+                    seg_target = seg.t_end
+                    while last_time < seg_target:
+                        receipts, stopped_time = self.exchange.advance(last_time, seg_target, seg)
 
-                    # 调度回执发送到策略
-                    for receipt in receipts:
-                        self._schedule_receipt(receipt, event_queue, t_b)
+                        # 调度回执发送到策略
+                        for receipt in receipts:
+                            self._schedule_receipt(receipt, event_queue, t_b)
 
-                    last_time = seg.t_end
-                    current_seg_idx += 1
+                        last_time = stopped_time
+                        
+                        # 检查event queue是否有新的更早事件
+                        # 如果有更早的事件，需要先处理它们
+                        if event_queue and event_queue[0].time <= stopped_time:
+                            # 有更早或同时的事件，跳出内层循环去处理
+                            break
+                        
+                        # 如果stopped_time == seg_target，说明段已完成
+                        if stopped_time >= seg_target:
+                            break
+                    
+                    # 检查是否需要跳出段循环去处理更早的事件
+                    if event_queue and event_queue[0].time <= last_time:
+                        break
+                    
+                    # 段完成，继续下一段
+                    if last_time >= seg.t_end:
+                        current_seg_idx += 1
 
                 # 如果t_next落在当前段内部，需要先将交易所推进到t_next
                 # 确保t_next时刻的事件发生之前的成交已被正确处理
                 if current_seg_idx < len(tape):
                     seg = tape[current_seg_idx]
                     if seg.t_start <= t_next < seg.t_end and t_next > last_time:
-                        # 推进到t_next（段内推进）
-                        receipts = self.exchange.advance(last_time, t_next, seg)
-                        for receipt in receipts:
-                            self._schedule_receipt(receipt, event_queue, t_b)
-                        last_time = t_next
+                        # 循环推进直到到达t_next或遇到更早的事件
+                        while last_time < t_next:
+                            receipts, stopped_time = self.exchange.advance(last_time, t_next, seg)
+                            for receipt in receipts:
+                                self._schedule_receipt(receipt, event_queue, t_b)
+                            last_time = stopped_time
+                            
+                            # 检查event queue是否有新的更早事件
+                            if event_queue and event_queue[0].time <= stopped_time:
+                                break
+                            
+                            if stopped_time >= t_next:
+                                break
 
+            # 重新获取t_next，因为可能已经有新的更早事件被调度
+            if not event_queue:
+                break
+            t_next = event_queue[0].time
+            
+            # 如果t_next仍然在last_time之后，说明需要继续推进交易所
+            # 这里显式continue回到循环顶部，而不是fall through到事件处理代码
+            # 这是为了确保在处理任何事件之前，交易所已经推进到正确的时间点
+            if t_next > last_time and current_seg_idx < len(tape):
+                continue
+            
             # Step 3: Pop并处理所有time==t_next的事件（批处理）
             # 这样新生成的回执（如果时间 <= t_next）会在heap中排在后面
             # 但因为我们是批处理同一时刻的事件，它们会被正确处理

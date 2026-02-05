@@ -1473,8 +1473,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         return total_n
     
-    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
+    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> Tuple[List[OrderReceipt], int]:
         """Advance simulation from t_from to t_to using tape segment.
+        
+        推进过程中遇到第一个成交时立即返回，返回当前停止的时间点。
+        这样可以确保回执触发策略下单后，新订单能够被正确处理。
         
         Args:
             t_from: Start time
@@ -1482,12 +1485,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             segment: Tape segment containing M and C for this period
             
         Returns:
-            List of receipts for fills during this period
+            (回执列表, 停止时间点) - 停止时间点为遇到第一个成交的时间，
+            如果没有成交则为t_to
         """
         if t_to <= t_from:
-            return []
-        
-        receipts = []
+            return [], t_to
         
         # Find segment index
         seg_idx = -1
@@ -1512,6 +1514,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     else:
                         # Won't fully fill - record None (blocks entire segment)
                         post_crossing_fill_times[shadow.order_id] = None
+        
+        # Phase 1: Collect all potential fills with their fill times (without executing them)
+        # Each candidate is (fill_time, order_id, shadow, level, fill_info)
+        # fill_info contains the data needed to execute the fill later
+        fill_candidates: List[Tuple[int, str, 'ShadowOrder', 'PriceLevel', dict]] = []
         
         # Process each price level with active orders
         for (side, price), level in list(self._levels.items()):
@@ -1562,41 +1569,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     )
                     
                     if fill_qty > 0 and fill_time is not None:
-                        # Update cache before changing
-                        level._active_shadow_qty -= fill_qty
-                        
-                        shadow.filled_qty += fill_qty
-                        shadow.remaining_qty -= fill_qty
-                        
-                        if shadow.remaining_qty <= 0:
-                            shadow.status = "FILLED"
-                            receipt = OrderReceipt(
-                                order_id=shadow.order_id,
-                                receipt_type="FILL",
-                                timestamp=fill_time,
-                                fill_qty=fill_qty,
-                                fill_price=shadow.price,
-                                remaining_qty=0,
-                            )
-                            logger.debug(
-                                f"[Exchange] Advance: post-crossing FILL for {shadow.order_id}, "
-                                f"fill_qty={fill_qty}, price={shadow.price}, time={fill_time}"
-                            )
-                            receipts.append(receipt)
-                        else:
-                            receipt = OrderReceipt(
-                                order_id=shadow.order_id,
-                                receipt_type="PARTIAL",
-                                timestamp=fill_time,
-                                fill_qty=fill_qty,
-                                fill_price=shadow.price,
-                                remaining_qty=shadow.remaining_qty,
-                            )
-                            logger.debug(
-                                f"[Exchange] Advance: post-crossing PARTIAL for {shadow.order_id}, "
-                                f"fill_qty={fill_qty}, remaining={shadow.remaining_qty}"
-                            )
-                            receipts.append(receipt)
+                        fill_info = {
+                            'is_post_crossing': True,
+                            'fill_qty': fill_qty,
+                            'fill_time': fill_time,
+                        }
+                        fill_candidates.append((fill_time, shadow.order_id, shadow, level, fill_info))
                     continue
                 
                 # Normal fill logic for non-post-crossing orders
@@ -1680,9 +1658,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         fill_time = min(fill_time, t_to)
                     
                     if fill_time is not None and t_from < fill_time <= t_to:
-                        # Update cache before changing
-                        level._active_shadow_qty -= shadow.remaining_qty
-                        
                         remaining_to_fill = shadow.original_qty - shadow.filled_qty
                         if remaining_to_fill <= 0:
                             continue
@@ -1694,24 +1669,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         ):
                             continue
                         
-                        shadow.filled_qty = shadow.original_qty
-                        shadow.remaining_qty = 0
-                        shadow.status = "FILLED"
+                        fill_info = {
+                            'is_post_crossing': False,
+                            'fill_type': 'FULL',
+                            'fill_time': fill_time,
+                            'remaining_to_fill': remaining_to_fill,
+                        }
+                        fill_candidates.append((fill_time, shadow.order_id, shadow, level, fill_info))
                         
-                        # Emit only the remaining delta to avoid double-counting in multi-partial fills
-                        receipt = OrderReceipt(
-                            order_id=shadow.order_id,
-                            receipt_type="FILL",
-                            timestamp=fill_time,
-                            fill_qty=remaining_to_fill,
-                            fill_price=shadow.price,
-                            remaining_qty=0,
-                        )
-                        logger.debug(
-                            f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                            f"fill_qty={remaining_to_fill}, price={shadow.price}, time={fill_time}"
-                        )
-                        receipts.append(receipt)
                 elif effective_x_t_to > shadow.pos:
                     # Partial fill (using effective X)
                     current_fill = int(effective_x_t_to - shadow.pos)
@@ -1735,54 +1700,147 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         if completes_order:
                             new_fill = shadow.remaining_qty
                         
-                        # Update cache for the qty change
-                        level._active_shadow_qty -= new_fill
-                        
-                        # Determine timestamp, accounting for blocking period
-                        # Note: At this point, effective_t_from < t_to (checked earlier)
                         # For partial fills, the fill is reported at segment end (t_to)
-                        # but not earlier than the blocking end time
-                        receipt_timestamp = t_to
+                        fill_time = t_to
                         
-                        if completes_order:
-                            shadow.filled_qty += new_fill
-                            shadow.remaining_qty = 0
-                            shadow.status = "FILLED"
-                            
-                            receipt = OrderReceipt(
-                                order_id=shadow.order_id,
-                                receipt_type="FILL",
-                                timestamp=receipt_timestamp,
-                                fill_qty=new_fill,
-                                fill_price=shadow.price,
-                                remaining_qty=0,
-                            )
-                            logger.debug(
-                                f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                                f"fill_qty={new_fill}, price={shadow.price}, time={receipt_timestamp}"
-                            )
-                            receipts.append(receipt)
-                            continue
-                        
-                        shadow.filled_qty = current_fill
-                        shadow.remaining_qty = shadow.original_qty - current_fill
-                        
-                        receipt = OrderReceipt(
-                            order_id=shadow.order_id,
-                            receipt_type="PARTIAL",
-                            timestamp=receipt_timestamp,
-                            fill_qty=new_fill,
-                            fill_price=shadow.price,
-                            remaining_qty=shadow.remaining_qty,
-                        )
-                        logger.debug(
-                            f"[Exchange] Advance: PARTIAL for {shadow.order_id}, "
-                            f"fill_qty={new_fill}, remaining={shadow.remaining_qty}"
-                        )
-                        receipts.append(receipt)
+                        fill_info = {
+                            'is_post_crossing': False,
+                            'fill_type': 'PARTIAL_COMPLETE' if completes_order else 'PARTIAL',
+                            'fill_time': fill_time,
+                            'new_fill': new_fill,
+                            'current_fill': current_fill,
+                        }
+                        fill_candidates.append((fill_time, shadow.order_id, shadow, level, fill_info))
         
-        self.current_time = t_to
-        return receipts
+        # Phase 2: Find the earliest fill time and process only those fills
+        if not fill_candidates:
+            # No fills, advance to t_to
+            self.current_time = t_to
+            return [], t_to
+        
+        # Find earliest fill time using min() for O(n) complexity instead of sorting O(n log n)
+        earliest_fill_time = min(fill_candidates, key=lambda x: x[0])[0]
+        
+        # Process all fills at the earliest fill time
+        receipts: List[OrderReceipt] = []
+        for fill_time, order_id, shadow, level, fill_info in fill_candidates:
+            if fill_time > earliest_fill_time:
+                # Skip fills that are not at the earliest time
+                continue
+            
+            # Execute the fill
+            if fill_info['is_post_crossing']:
+                fill_qty = fill_info['fill_qty']
+                # Update cache before changing
+                level._active_shadow_qty -= fill_qty
+                
+                shadow.filled_qty += fill_qty
+                shadow.remaining_qty -= fill_qty
+                
+                if shadow.remaining_qty <= 0:
+                    shadow.status = "FILLED"
+                    receipt = OrderReceipt(
+                        order_id=shadow.order_id,
+                        receipt_type="FILL",
+                        timestamp=fill_time,
+                        fill_qty=fill_qty,
+                        fill_price=shadow.price,
+                        remaining_qty=0,
+                    )
+                    logger.debug(
+                        f"[Exchange] Advance: post-crossing FILL for {shadow.order_id}, "
+                        f"fill_qty={fill_qty}, price={shadow.price}, time={fill_time}"
+                    )
+                    receipts.append(receipt)
+                else:
+                    receipt = OrderReceipt(
+                        order_id=shadow.order_id,
+                        receipt_type="PARTIAL",
+                        timestamp=fill_time,
+                        fill_qty=fill_qty,
+                        fill_price=shadow.price,
+                        remaining_qty=shadow.remaining_qty,
+                    )
+                    logger.debug(
+                        f"[Exchange] Advance: post-crossing PARTIAL for {shadow.order_id}, "
+                        f"fill_qty={fill_qty}, remaining={shadow.remaining_qty}"
+                    )
+                    receipts.append(receipt)
+            else:
+                # Non-post-crossing order fill
+                fill_type = fill_info['fill_type']
+                
+                if fill_type == 'FULL':
+                    remaining_to_fill = fill_info['remaining_to_fill']
+                    # Update cache before changing
+                    level._active_shadow_qty -= shadow.remaining_qty
+                    
+                    shadow.filled_qty = shadow.original_qty
+                    shadow.remaining_qty = 0
+                    shadow.status = "FILLED"
+                    
+                    receipt = OrderReceipt(
+                        order_id=shadow.order_id,
+                        receipt_type="FILL",
+                        timestamp=fill_time,
+                        fill_qty=remaining_to_fill,
+                        fill_price=shadow.price,
+                        remaining_qty=0,
+                    )
+                    logger.debug(
+                        f"[Exchange] Advance: FILL for {shadow.order_id}, "
+                        f"fill_qty={remaining_to_fill}, price={shadow.price}, time={fill_time}"
+                    )
+                    receipts.append(receipt)
+                    
+                elif fill_type == 'PARTIAL_COMPLETE':
+                    new_fill = fill_info['new_fill']
+                    # Update cache for the qty change
+                    level._active_shadow_qty -= new_fill
+                    
+                    shadow.filled_qty += new_fill
+                    shadow.remaining_qty = 0
+                    shadow.status = "FILLED"
+                    
+                    receipt = OrderReceipt(
+                        order_id=shadow.order_id,
+                        receipt_type="FILL",
+                        timestamp=fill_time,
+                        fill_qty=new_fill,
+                        fill_price=shadow.price,
+                        remaining_qty=0,
+                    )
+                    logger.debug(
+                        f"[Exchange] Advance: FILL for {shadow.order_id}, "
+                        f"fill_qty={new_fill}, price={shadow.price}, time={fill_time}"
+                    )
+                    receipts.append(receipt)
+                    
+                else:  # PARTIAL
+                    new_fill = fill_info['new_fill']
+                    current_fill = fill_info['current_fill']
+                    # Update cache for the qty change
+                    level._active_shadow_qty -= new_fill
+                    
+                    shadow.filled_qty = current_fill
+                    shadow.remaining_qty = shadow.original_qty - current_fill
+                    
+                    receipt = OrderReceipt(
+                        order_id=shadow.order_id,
+                        receipt_type="PARTIAL",
+                        timestamp=fill_time,
+                        fill_qty=new_fill,
+                        fill_price=shadow.price,
+                        remaining_qty=shadow.remaining_qty,
+                    )
+                    logger.debug(
+                        f"[Exchange] Advance: PARTIAL for {shadow.order_id}, "
+                        f"fill_qty={new_fill}, remaining={shadow.remaining_qty}"
+                    )
+                    receipts.append(receipt)
+        
+        self.current_time = earliest_fill_time
+        return receipts, earliest_fill_time
     
     def align_at_boundary(self, snapshot: NormalizedSnapshot) -> None:
         """Align state at interval boundary.
