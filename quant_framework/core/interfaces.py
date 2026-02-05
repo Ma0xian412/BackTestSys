@@ -13,7 +13,7 @@
 
 from abc import ABC, abstractmethod
 from typing import Iterator, List, Optional, Tuple, Any, TYPE_CHECKING
-from .types import Order, NormalizedSnapshot, Price, Qty, Side, TapeSegment, OrderReceipt
+from .types import Order, NormalizedSnapshot, Price, Qty, Side, TapeSegment, OrderReceipt, AdvanceResult
 from .events import SimulationEvent
 
 if TYPE_CHECKING:
@@ -127,8 +127,21 @@ class IExchangeSimulator(ABC):
         pass
 
     @abstractmethod
-    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
-        """使用tape段推进仿真从t_from到t_to。
+    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> AdvanceResult:
+        """单步推进仿真从t_from到第一个成交事件或t_to。
+        
+        此方法在遇到第一个成交事件时立即停止，返回该成交的回执和停止时间。
+        这允许事件循环在segment内部处理动态订单到达。
+        
+        使用示例：
+            while True:
+                result = exchange.advance(last_time, t_to, segment)
+                if result.receipt:
+                    # 处理成交回执，可能触发新订单
+                    handle_receipt(result.receipt)
+                last_time = result.stop_time
+                if not result.has_more or last_time >= t_to:
+                    break
 
         Args:
             t_from: 切片开始时间
@@ -136,7 +149,10 @@ class IExchangeSimulator(ABC):
             segment: 包含该区间M和C的Tape段
 
         Returns:
-            该时段内的成交回执列表
+            AdvanceResult，包含：
+            - receipt: 成交回执（如果有）
+            - stop_time: 推进停止的时间点
+            - has_more: 是否还有更多事件待处理
         """
         pass
 
