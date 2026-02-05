@@ -284,7 +284,7 @@ def test_exchange_simulator_basic():
     """Test basic exchange simulator functionality."""
     print("\n--- Test 4: Exchange Simulator Basic ---")
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     
     # Create test order
     order = Order(
@@ -342,7 +342,7 @@ def test_exchange_simulator_coordinate_axis():
     """Test exchange simulator coordinate-axis model."""
     print("\n--- Test 6: Exchange Simulator Coordinate Axis ---")
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     
     # Create a tape with trades
     config = TapeConfig()
@@ -384,7 +384,7 @@ def test_exchange_simulator_fill():
     """Test exchange simulator fill logic."""
     print("\n--- Test 7: Exchange Simulator Fill ---")
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     
     # Create tape with enough volume to fill order
     config = TapeConfig()
@@ -429,7 +429,7 @@ def test_exchange_simulator_multi_partial_to_fill():
     
     from quant_framework.core.types import TapeSegment
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     seg = TapeSegment(
         index=1,
         t_start=1000 * TICK_PER_MS,
@@ -650,7 +650,7 @@ def test_integration_with_delays():
     feed = MockFeed(snapshots)
     tape_config = TapeConfig()
     builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     oms = OrderManager()
     
     # Strategy that places orders more frequently
@@ -709,7 +709,7 @@ def test_fill_priority():
     """
     print("\n--- Test 13: Fill Priority (FIFO) ---")
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     
     # Create tape where market queue grows then shrinks
     config = TapeConfig()
@@ -1023,7 +1023,7 @@ def test_historical_receipts_processing():
     feed = MockFeed(snapshots)
     tape_config = TapeConfig()
     tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     oms = OrderManager()
     
     # 简单策略
@@ -1106,7 +1106,7 @@ def test_intra_segment_advancement():
     feed = MockFeed(snapshots)
     tape_config = TapeConfig()
     tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     oms = OrderManager()
     
     # 记录交易所advance调用时间的策略
@@ -1203,7 +1203,7 @@ def test_receipt_delay_consistency():
     feed = MockFeed(snapshots)
     tape_config = TapeConfig()
     tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     oms = OrderManager()
     
     # 记录回执到达时间的策略
@@ -1397,7 +1397,7 @@ def test_peek_advance_pop_paradigm():
     feed = MockFeed(snapshots)
     tape_config = TapeConfig()
     tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     oms = OrderManager()
     
     # 记录事件处理顺序的策略
@@ -1499,7 +1499,7 @@ def test_receipt_recv_time_authority():
     feed = MockFeed(snapshots)
     tape_config = TapeConfig()
     tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     oms = OrderManager()
     
     # 记录recv_time的策略
@@ -1630,7 +1630,7 @@ def test_no_causal_reversal_with_int_truncation():
     runner = EventLoopRunner(
         feed=feed,
         tape_builder=tape_builder,
-        exchange=FIFOExchangeSimulator(cancel_front_ratio=0.5),
+        exchange=FIFOExchangeSimulator(cancel_bias_k=0.0),
         strategy=FrequentOrderStrategy(),
         oms=OrderManager(),
         config=runner_config,
@@ -1652,7 +1652,7 @@ def test_no_causal_reversal_with_int_truncation():
     runner2 = EventLoopRunner(
         feed=feed,
         tape_builder=tape_builder,
-        exchange=FIFOExchangeSimulator(cancel_front_ratio=0.5),
+        exchange=FIFOExchangeSimulator(cancel_bias_k=0.0),
         strategy=FrequentOrderStrategy(),
         oms=OrderManager(),
         config=runner_config2,
@@ -1674,7 +1674,7 @@ def test_no_causal_reversal_with_int_truncation():
     runner3 = EventLoopRunner(
         feed=feed,
         tape_builder=tape_builder,
-        exchange=FIFOExchangeSimulator(cancel_front_ratio=0.5),
+        exchange=FIFOExchangeSimulator(cancel_bias_k=0.0),
         strategy=FrequentOrderStrategy(),
         oms=OrderManager(),
         config=runner_config3,
@@ -1916,7 +1916,7 @@ def test_crossing_immediate_execution():
     print_tape_path(tape)
     
     # 创建交易所模拟器
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # 测试1：BUY订单crossing (price >= ask)
@@ -2442,7 +2442,7 @@ def test_replay_integration():
         # 创建组件
         feed = MockFeed(snapshots)
         tape_builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
-        exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+        exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
         strategy = ReplayStrategy(
             name="TestReplay",
             order_file=order_file,
@@ -2520,7 +2520,7 @@ def test_crossing_partial_fill_position_zero():
     print_tape_path(tape)
     
     # 创建交易所模拟器
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # 测试1: 直接测试_queue_order函数，模拟crossing后剩余订单入队
@@ -2564,7 +2564,7 @@ def test_crossing_partial_fill_position_zero():
     print("\n测试2: 没有crossing的被动订单入队（already_filled = 0）...")
     
     # 创建另一个交易所模拟器用于对比测试
-    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange2.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     passive_order = Order(
@@ -2696,7 +2696,7 @@ def test_multiple_orders_at_same_price():
     
     print_tape_path(tape)
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     oms = OrderManager()
     
     # 创建策略：在第一个快照后提交3个订单
@@ -2819,7 +2819,7 @@ def test_crossing_blocked_by_existing_shadow():
     print_tape_path([seg])
     
     # 创建交易所模拟器
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange.set_tape([seg], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # 初始化对手方（bid侧）的市场队列深度
@@ -2927,7 +2927,7 @@ def test_crossing_blocked_by_queue_depth():
         activation_ask={101.0},
     )
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange.set_tape([seg], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # Initialize opposite-side liquidity to allow crossing
@@ -2994,7 +2994,7 @@ def test_post_crossing_fill_with_net_increment():
     
     print_tape_path([seg1])
     
-    exchange1 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange1 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange1.set_tape([seg1], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
@@ -3061,7 +3061,7 @@ def test_post_crossing_fill_with_net_increment():
     
     print_tape_path([seg2])
     
-    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange2.set_tape([seg2], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
@@ -3113,7 +3113,7 @@ def test_post_crossing_fill_with_net_increment():
     
     print_tape_path([seg3])
     
-    exchange3 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange3 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange3.set_tape([seg3], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
@@ -3160,7 +3160,7 @@ def test_post_crossing_fill_with_net_increment():
     
     print_tape_path([seg4])
     
-    exchange4 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange4 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange4.set_tape([seg4], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     
     # 重要：初始化对手方（bid侧）的市场队列深度
@@ -4256,7 +4256,7 @@ def test_cancel_order_across_interval():
     # 测试1: 验证订单在reset后仍然可以被取消
     print("  测试1: 订单在exchange.reset()后仍可被取消...")
     
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     
     # 创建订单
     order = Order(
@@ -4339,7 +4339,7 @@ def test_cancel_order_across_interval():
     # 测试2: 验证取消不存在的订单会抛出OrderNotFoundError
     print("\n  测试2: 取消不存在的订单应抛出OrderNotFoundError...")
     
-    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange2.set_tape(tape, 10000000, 15000000)
     
     try:
@@ -4354,7 +4354,7 @@ def test_cancel_order_across_interval():
     # 测试3: 验证已取消的订单再次取消返回REJECTED
     print("\n  测试3: 已取消的订单再次取消应返回REJECTED...")
     
-    exchange3 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange3 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange3.set_tape(tape, 10000000, 15000000)
     
     order3 = Order(
@@ -4382,7 +4382,7 @@ def test_cancel_order_across_interval():
     # 测试4: 验证full_reset会清空levels
     print("\n  测试4: full_reset应清空levels...")
     
-    exchange4 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange4 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange4.set_tape(tape, 10000000, 15000000)
     
     order4 = Order(
@@ -4437,7 +4437,7 @@ def test_cross_interval_order_fill():
     t_D = 25_000_000
     
     # 创建交易所
-    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
     
     # ========== 区间 [A, B] ==========
     print("  区间 [A, B]:")
@@ -4489,7 +4489,7 @@ def test_cross_interval_order_fill():
     
     # 推进区间 [A, B]
     receipts = exchange.advance(t_A, t_B, tape_AB[0])
-    print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_B)}")
+    print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     assert len(receipts) == 0, "Should not fill yet (X=30 < threshold=110)"
     
@@ -4541,7 +4541,7 @@ def test_cross_interval_order_fill():
     
     # 尝试推进 - 期望订单能被找到并处理
     receipts = exchange.advance(t_B, t_C, tape_BC[0])
-    print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_C)}")
+    print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     
     # 如果实现正确：
@@ -4593,7 +4593,7 @@ def test_cross_interval_order_fill():
     exchange.set_tape(tape_CD, t_C, t_D)
     
     receipts = exchange.advance(t_C, t_D, tape_CD[0])
-    print(f"    区间结束时X坐标: {exchange._get_x_coord(Side.BUY, 100.0, t_D)}")
+    print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     
     # 如果跨区间正确工作：
