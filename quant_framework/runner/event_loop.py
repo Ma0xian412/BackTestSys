@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple, Protocol, TYPE_CHECKING, Ca
 from enum import Enum, auto
 
 from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
-from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest
+from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest, AdvanceResult
 from ..core.trading_hours import TradingHoursHelper
 
 if TYPE_CHECKING:
@@ -534,18 +534,14 @@ class EventLoopRunner:
             t_next = event_queue[0].time
             
             # Step 2: 将交易所推进到t_next，期间产生的回执会被调度
-            # 如果回执时间 <= t_next，会在同一轮被处理
+            # 使用advance_single实现单步推进，允许动态处理segment内部的订单到达
             if t_next > last_time and current_seg_idx < len(tape):
                 # 处理到t_next为止的所有完整段
                 while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= t_next:
                     seg = tape[current_seg_idx]
-                    receipts = self.exchange.advance(last_time, seg.t_end, seg)
-
-                    # 调度回执发送到策略
-                    for receipt in receipts:
-                        self._schedule_receipt(receipt, event_queue, t_b)
-
-                    last_time = seg.t_end
+                    last_time = self._advance_segment_with_dynamic_orders(
+                        last_time, seg.t_end, seg, event_queue, t_b
+                    )
                     current_seg_idx += 1
 
                 # 如果t_next落在当前段内部，需要先将交易所推进到t_next
@@ -554,10 +550,9 @@ class EventLoopRunner:
                     seg = tape[current_seg_idx]
                     if seg.t_start <= t_next < seg.t_end and t_next > last_time:
                         # 推进到t_next（段内推进）
-                        receipts = self.exchange.advance(last_time, t_next, seg)
-                        for receipt in receipts:
-                            self._schedule_receipt(receipt, event_queue, t_b)
-                        last_time = t_next
+                        last_time = self._advance_segment_with_dynamic_orders(
+                            last_time, t_next, seg, event_queue, t_b
+                        )
 
             # Step 3: Pop并处理所有time==t_next的事件（批处理）
             # 这样新生成的回执（如果时间 <= t_next）会在heap中排在后面
@@ -569,6 +564,85 @@ class EventLoopRunner:
             # 处理同一时刻的所有事件（已按priority和seq排序）
             for event in events_at_t_next:
                 self._process_single_event(event, event_queue, tape, t_b)
+
+    def _advance_segment_with_dynamic_orders(
+        self,
+        t_from: int,
+        t_to: int,
+        segment: TapeSegment,
+        event_queue: List[Event],
+        t_b: int,
+    ) -> int:
+        """推进segment，支持动态订单到达。
+        
+        使用advance_single实现单步推进，在每次成交后：
+        1. 调度回执到策略
+        2. 检查并处理在[t_from, 成交时间]区间到达的订单
+        3. 继续推进直到t_to
+        
+        这允许segment内部的动态交互：
+        - A时刻开始 -> B时刻成交 -> 策略收到回执 -> 
+        - C时刻新订单到达 -> 新订单参与[C, D]的撮合
+        
+        Args:
+            t_from: 开始时间
+            t_to: 结束时间  
+            segment: Tape段
+            event_queue: 事件队列
+            t_b: 区间结束时间
+            
+        Returns:
+            推进后的时间（应为t_to）
+        """
+        current_time = t_from
+        
+        # 检查交易所是否支持advance_single方法
+        if not hasattr(self.exchange, 'advance_single'):
+            # 回退到原有的batch模式
+            receipts = self.exchange.advance(t_from, t_to, segment)
+            for receipt in receipts:
+                self._schedule_receipt(receipt, event_queue, t_b)
+            return t_to
+        
+        while current_time < t_to:
+            # Step 1: 检查是否有订单到达事件在当前时间点
+            # 这些订单需要在继续advance之前先处理
+            orders_to_process = []
+            remaining_events = []
+            
+            for event in list(event_queue):
+                if event.event_type == EventType.ORDER_ARRIVAL:
+                    if event.time <= current_time:
+                        orders_to_process.append(event)
+                    else:
+                        remaining_events.append(event)
+                else:
+                    remaining_events.append(event)
+            
+            # 处理当前时间点的订单到达
+            for event in sorted(orders_to_process, key=lambda e: (e.time, e.priority, e.seq)):
+                heapq.heappop(event_queue)  # Remove from queue
+                self._process_single_event(event, event_queue, [], t_b)
+            
+            # Step 2: 使用advance_single推进到下一个成交或t_to
+            result = self.exchange.advance_single(current_time, t_to, segment)
+            
+            if result.receipt:
+                # 调度回执
+                self._schedule_receipt(result.receipt, event_queue, t_b)
+            
+            current_time = result.stop_time
+            
+            # 如果没有更多成交，跳出循环
+            if not result.has_more:
+                break
+        
+        # 确保推进到t_to
+        if current_time < t_to:
+            # 可能还需要处理剩余时间的订单到达
+            pass
+        
+        return max(current_time, t_to)
 
     def _process_single_event(
         self,

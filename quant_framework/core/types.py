@@ -259,6 +259,26 @@ class OrderReceipt:
 
 
 @dataclass
+class AdvanceResult:
+    """advance方法的返回结果。
+    
+    支持单步推进模式：每次advance在第一个成交后停止，
+    返回该成交的回执和停止时间，以便事件循环可以处理
+    segment内部的动态订单到达。
+    
+    Attributes:
+        receipt: 成交回执（如果有成交）
+        stop_time: 推进停止的时间点
+        has_more: 是否还有更多事件需要处理
+                  True表示在[stop_time, t_to]区间可能还有成交
+                  False表示已经处理完[t_from, t_to]区间所有成交
+    """
+    receipt: Optional['OrderReceipt'] = None
+    stop_time: int = 0
+    has_more: bool = False
+
+
+@dataclass
 class FillDetail:
     """成交详情（用于诊断）。
 

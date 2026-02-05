@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple, Set
 from ..core.interfaces import IExchangeSimulator
 from ..core.types import (
     Order, OrderReceipt, NormalizedSnapshot, Price, Qty, Side, 
-    TapeSegment, TimeInForce, OrderStatus
+    TapeSegment, TimeInForce, OrderStatus, AdvanceResult
 )
 
 
@@ -1423,6 +1423,195 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         self.current_time = t_to
         return receipts
+    
+    def advance_single(self, t_from: int, t_to: int, segment: TapeSegment) -> AdvanceResult:
+        """单步推进：从t_from推进到第一个成交事件或t_to。
+        
+        与advance方法不同，此方法在遇到第一个成交事件时立即停止，
+        返回该成交的回执和停止时间。这允许事件循环在segment内部
+        处理动态订单到达。
+        
+        Args:
+            t_from: 开始时间
+            t_to: 结束时间
+            segment: 包含该区间M和C的Tape段
+            
+        Returns:
+            AdvanceResult，包含回执、停止时间和是否有更多事件
+        """
+        if t_to <= t_from:
+            return AdvanceResult(receipt=None, stop_time=t_to, has_more=False)
+        
+        # Step 1: 收集所有可能的成交事件，找到最早的一个
+        earliest_fill = None  # (fill_time, receipt_data, shadow, level, fill_type)
+        
+        # Find segment index
+        seg_idx = -1
+        for i, seg in enumerate(self._current_tape):
+            if seg.t_start <= t_from < seg.t_end:
+                seg_idx = i
+                break
+        
+        # Scan all price levels to find the earliest fill
+        for (side, price), level in list(self._levels.items()):
+            if not level.queue:
+                continue
+            
+            in_activation = seg_idx < 0 or self._is_in_activation_window(side, price, seg_idx)
+            at_best_price = seg_idx < 0 or self._is_at_best_price(side, price, seg_idx)
+            
+            for shadow in level.queue:
+                if shadow.status != "ACTIVE":
+                    continue
+                if shadow.arrival_time > t_to:
+                    continue
+                
+                fill_time = None
+                fill_qty = 0
+                fill_type = None  # "FILL" or "PARTIAL"
+                
+                # Handle post-crossing orders
+                if shadow.is_post_crossing:
+                    qty, ftime = self._compute_post_crossing_fill(
+                        shadow, segment, t_from, t_to
+                    )
+                    if qty > 0 and ftime is not None and t_from < ftime <= t_to:
+                        fill_time = ftime
+                        fill_qty = qty
+                        fill_type = "FILL" if (shadow.remaining_qty - qty) <= 0 else "PARTIAL"
+                else:
+                    # Normal fill logic
+                    if not in_activation or not at_best_price:
+                        continue
+                    
+                    threshold = shadow.pos + shadow.original_qty
+                    x_t_to = self._get_x_coord(side, price, t_to)
+                    
+                    if x_t_to >= threshold:
+                        # Full fill
+                        ftime = self._compute_fill_time(shadow, shadow.original_qty)
+                        if ftime is not None and t_from < ftime <= t_to:
+                            remaining_to_fill = shadow.original_qty - shadow.filled_qty
+                            if remaining_to_fill > 0:
+                                fill_time = ftime
+                                fill_qty = remaining_to_fill
+                                fill_type = "FILL"
+                    elif x_t_to > shadow.pos:
+                        # Partial fill - use t_to as the fill time for partial fills
+                        current_fill = int(x_t_to - shadow.pos)
+                        if current_fill > shadow.filled_qty:
+                            new_fill = current_fill - shadow.filled_qty
+                            if new_fill > 0:
+                                completes_order = new_fill >= shadow.remaining_qty
+                                if completes_order:
+                                    new_fill = shadow.remaining_qty
+                                fill_time = t_to
+                                fill_qty = new_fill
+                                fill_type = "FILL" if completes_order else "PARTIAL"
+                
+                # Update earliest if this fill is earlier
+                if fill_time is not None and fill_qty > 0:
+                    if earliest_fill is None or fill_time < earliest_fill[0]:
+                        earliest_fill = (fill_time, fill_qty, fill_type, shadow, level, side, price)
+        
+        # Step 2: If no fill found, advance to t_to and return
+        if earliest_fill is None:
+            self.current_time = t_to
+            return AdvanceResult(receipt=None, stop_time=t_to, has_more=False)
+        
+        # Step 3: Process the earliest fill
+        fill_time, fill_qty, fill_type, shadow, level, side, price = earliest_fill
+        
+        # Validate fill
+        if not self._validate_fill_delta(
+            shadow.order_id,
+            fill_qty,
+            shadow.filled_qty,
+            shadow.original_qty,
+        ):
+            # If validation fails, skip this fill and continue
+            self.current_time = fill_time
+            # Check if there might be more fills
+            has_more = self._has_potential_fills_after(fill_time, t_to, seg_idx)
+            return AdvanceResult(receipt=None, stop_time=fill_time, has_more=has_more)
+        
+        # Update shadow order state
+        level._active_shadow_qty -= fill_qty
+        shadow.filled_qty += fill_qty
+        shadow.remaining_qty -= fill_qty
+        
+        if shadow.remaining_qty <= 0:
+            shadow.status = "FILLED"
+            fill_type = "FILL"
+        
+        # Create receipt
+        receipt = OrderReceipt(
+            order_id=shadow.order_id,
+            receipt_type=fill_type,
+            timestamp=fill_time,
+            fill_qty=fill_qty,
+            fill_price=shadow.price,
+            remaining_qty=shadow.remaining_qty,
+        )
+        
+        logger.debug(
+            f"[Exchange] AdvanceSingle: {fill_type} for {shadow.order_id}, "
+            f"fill_qty={fill_qty}, price={shadow.price}, time={fill_time}"
+        )
+        
+        # Update current time to fill time
+        self.current_time = fill_time
+        
+        # Check if there might be more fills in [fill_time, t_to]
+        has_more = self._has_potential_fills_after(fill_time, t_to, seg_idx)
+        
+        return AdvanceResult(receipt=receipt, stop_time=fill_time, has_more=has_more)
+    
+    def _has_potential_fills_after(self, t_from: int, t_to: int, seg_idx: int) -> bool:
+        """检查在[t_from, t_to]区间内是否可能还有成交。
+        
+        Args:
+            t_from: 开始时间（不包含）
+            t_to: 结束时间
+            seg_idx: 当前段索引
+            
+        Returns:
+            True 如果可能有更多成交
+        """
+        if t_from >= t_to:
+            return False
+        
+        for (side, price), level in self._levels.items():
+            if not level.queue:
+                continue
+            
+            in_activation = seg_idx < 0 or self._is_in_activation_window(side, price, seg_idx)
+            at_best_price = seg_idx < 0 or self._is_at_best_price(side, price, seg_idx)
+            
+            for shadow in level.queue:
+                if shadow.status != "ACTIVE":
+                    continue
+                if shadow.arrival_time > t_to:
+                    continue
+                
+                if shadow.is_post_crossing:
+                    # Post-crossing might have more fills
+                    return True
+                
+                if not in_activation or not at_best_price:
+                    continue
+                
+                # Check if this order might fill in the remaining interval
+                threshold = shadow.pos + shadow.original_qty
+                x_t_to = self._get_x_coord(side, price, t_to)
+                x_t_from = self._get_x_coord(side, price, t_from)
+                
+                # If X increases and there's remaining qty, might have more fills
+                if x_t_to > x_t_from and shadow.remaining_qty > 0:
+                    if x_t_to > shadow.pos + shadow.filled_qty:
+                        return True
+        
+        return False
     
     def align_at_boundary(self, snapshot: NormalizedSnapshot) -> None:
         """Align state at interval boundary.
