@@ -534,9 +534,11 @@ class EventLoopRunner:
             t_next = event_queue[0].time
             
             # Step 2: 将交易所推进到t_next，期间产生的回执会被调度
-            # 如果回执时间 <= t_next，会在同一轮被处理
+            # 修复问题1：每次推进一个段后，重新检查事件队列
+            # 如果有新事件的时间早于下一个要推进的时间，先处理这些事件
+            # 这确保了回执->策略->新订单的因果链在同一区间内被正确处理
             if t_next > last_time and current_seg_idx < len(tape):
-                # 处理到t_next为止的所有完整段
+                # 逐段推进，每段推进后检查是否有更早的事件需要处理
                 while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= t_next:
                     seg = tape[current_seg_idx]
                     receipts = self.exchange.advance(last_time, seg.t_end, seg)
@@ -547,6 +549,18 @@ class EventLoopRunner:
 
                     last_time = seg.t_end
                     current_seg_idx += 1
+                    
+                    # 修复问题1：检查是否有新事件的时间早于或等于当前推进的时间
+                    # 使用 <= 是因为：当新回执在seg.t_end时刻到达策略时，
+                    # 策略可能下新单，新单到达时间可能正好在seg.t_end
+                    # 这种情况下应该先处理这些事件再继续推进下一段
+                    if event_queue and event_queue[0].time <= last_time:
+                        break
+
+                # 检查是否有时间早于原始t_next的新事件需要处理
+                # 如果有，跳回外层循环重新peek事件队列（line 534）
+                if event_queue and event_queue[0].time < t_next:
+                    continue
 
                 # 如果t_next落在当前段内部，需要先将交易所推进到t_next
                 # 确保t_next时刻的事件发生之前的成交已被正确处理
@@ -558,6 +572,11 @@ class EventLoopRunner:
                         for receipt in receipts:
                             self._schedule_receipt(receipt, event_queue, t_b)
                         last_time = t_next
+                        
+                        # 段内推进后也检查是否有时间早于t_next的新事件
+                        # 如果有，跳回外层循环重新peek事件队列
+                        if event_queue and event_queue[0].time < t_next:
+                            continue
 
             # Step 3: Pop并处理所有time==t_next的事件（批处理）
             # 这样新生成的回执（如果时间 <= t_next）会在heap中排在后面
@@ -810,8 +829,8 @@ class EventLoopRunner:
         回执会在recv_time时刻通过RECEIPT_TO_STRATEGY事件传递给策略。
         
         因果一致性保证：
-        - 如果由于int截断导致计算出的事件时间早于当前时间，
-          会自动将事件时间调整为当前时间，避免因果反转。
+        - 回执的接收时间不能早于回执的创建时间（receipt.timestamp）
+        - 这是物理因果约束：不可能在事件发生之前收到该事件的通知
         
         Args:
             receipt: 订单回执
@@ -825,9 +844,10 @@ class EventLoopRunner:
         receipt.recv_time = recv_time
         
         if recv_time <= t_b:
-            # 因果一致性保证：确保新事件时间 >= 当前时间
-            if recv_time < self.current_time:
-                recv_time = self.current_time
+            # 修复问题2：因果一致性保证应基于回执创建时间，而非当前事件处理时间
+            # 回执的接收时间不能早于其创建时间（物理因果约束）
+            if recv_time < receipt.timestamp:
+                recv_time = receipt.timestamp
                 receipt.recv_time = recv_time
             
             heapq.heappush(event_queue, Event(

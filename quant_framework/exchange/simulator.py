@@ -1384,6 +1384,15 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         # Update cache for the qty change
                         level._active_shadow_qty -= new_fill
                         
+                        # Compute actual fill time (when X reached the threshold)
+                        # For completes_order: threshold is pos + original_qty
+                        # For partial: threshold is pos + current_fill
+                        fill_qty_threshold = shadow.original_qty if completes_order else current_fill
+                        fill_time = self._compute_fill_time(shadow, fill_qty_threshold)
+                        # Fallback to t_to if computation fails
+                        if fill_time is None or fill_time < t_from or fill_time > t_to:
+                            fill_time = t_to
+                        
                         if completes_order:
                             shadow.filled_qty += new_fill
                             shadow.remaining_qty = 0
@@ -1392,14 +1401,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             receipt = OrderReceipt(
                                 order_id=shadow.order_id,
                                 receipt_type="FILL",
-                                timestamp=t_to,
+                                timestamp=fill_time,
                                 fill_qty=new_fill,
                                 fill_price=shadow.price,
                                 remaining_qty=0,
                             )
                             logger.debug(
                                 f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                                f"fill_qty={new_fill}, price={shadow.price}, time={t_to}"
+                                f"fill_qty={new_fill}, price={shadow.price}, time={fill_time}"
                             )
                             receipts.append(receipt)
                             continue
@@ -1410,14 +1419,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         receipt = OrderReceipt(
                             order_id=shadow.order_id,
                             receipt_type="PARTIAL",
-                            timestamp=t_to,
+                            timestamp=fill_time,
                             fill_qty=new_fill,
                             fill_price=shadow.price,
                             remaining_qty=shadow.remaining_qty,
                         )
                         logger.debug(
                             f"[Exchange] Advance: PARTIAL for {shadow.order_id}, "
-                            f"fill_qty={new_fill}, remaining={shadow.remaining_qty}"
+                            f"fill_qty={new_fill}, remaining={shadow.remaining_qty}, time={fill_time}"
                         )
                         receipts.append(receipt)
         

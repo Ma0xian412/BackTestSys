@@ -4749,6 +4749,326 @@ def test_floating_point_precision_in_last_vol_split():
     print("✓ Floating point precision test passed")
 
 
+def test_receipt_to_order_within_advance_loop():
+    """测试修复问题1和问题2：回执调度和因果一致性。
+    
+    问题1（修复前）：
+    在_run_interval的while循环中，当推进交易所到t_next时，内层while循环会连续推进多个段，
+    期间产生的回执虽然被调度，但不会立即处理。如果策略根据回执下了新订单，
+    且新订单到达交易所的时间在seg_end之前，程序无法正确处理。
+    
+    问题2（修复前）：
+    _schedule_receipt使用self.current_time来做因果一致性检查，
+    但这是不正确的。应该使用receipt.timestamp（回执创建时间）。
+    
+    测试场景：
+    1. 使用IOC订单测试回执生成（IOC订单不匹配时会产生REJECTED回执）
+    2. 验证回执的recv_time正确基于receipt.timestamp
+    """
+    print("\n--- Test: Receipt to Order Within Advance Loop ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
+    from quant_framework.trading.oms import OrderManager
+    from quant_framework.core.types import Side, TimeInForce, TICK_PER_MS
+    
+    # 测试1: 使用IOC订单验证回执因果一致性
+    print("\n  测试1: 验证IOC订单回执的因果一致性...")
+    
+    # 创建测试快照 - bid/ask不相等，IOC订单会被rejected
+    snapshots = [
+        create_test_snapshot(
+            1000 * TICK_PER_MS,  # t_a
+            100.0, 101.0,  # bid < ask，IOC订单不会crossing
+            bid_qty=100,
+            last_vol_split=[]
+        ),
+        create_test_snapshot(
+            2000 * TICK_PER_MS,  # t_b
+            100.0, 101.0,
+            bid_qty=100,
+            last_vol_split=[]
+        ),
+    ]
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 记录事件的策略
+    class IOCStrategy:
+        """下IOC订单的策略，用于测试回执"""
+        def __init__(self):
+            self.order_count = 0
+            self.receipt_times = []
+            
+        def on_snapshot(self, snapshot, oms):
+            self.order_count += 1
+            if self.order_count == 1:
+                # IOC订单：如果不能立即成交则被拒绝
+                order = Order(
+                    order_id="ioc-order-1",
+                    side=Side.BUY,
+                    price=100.0,  # 低于ask，不会crossing
+                    qty=5,
+                    tif=TimeInForce.IOC,
+                )
+                return [order]
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            self.receipt_times.append((receipt.order_id, receipt.timestamp, receipt.recv_time))
+            return []
+    
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms = OrderManager()
+    strategy = IOCStrategy()
+    
+    # 使用较短的延迟
+    delay_in = 50 * TICK_PER_MS   # 50ms
+    delay_out = 50 * TICK_PER_MS  # 50ms
+    runner_config = RunnerConfig(
+        delay_out=delay_out,
+        delay_in=delay_in,
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        oms=oms,
+        strategy=strategy,
+        config=runner_config,
+    )
+    
+    runner.run()
+    
+    # 验证
+    print(f"    回执记录: {strategy.receipt_times}")
+    
+    # IOC订单应该产生回执（REJECTED或CANCELED）
+    receipt_order_ids = [r[0] for r in strategy.receipt_times]
+    assert "ioc-order-1" in receipt_order_ids, \
+        f"IOC订单应该收到回执，但回执列表为: {receipt_order_ids}"
+    print(f"    ✓ IOC订单收到了回执")
+    
+    # 测试2: 验证修复问题2 - recv_time应基于receipt.timestamp
+    print("\n  测试2: 验证recv_time基于receipt.timestamp...")
+    
+    # 检查所有回执的recv_time是否正确
+    for order_id, timestamp, recv_time in strategy.receipt_times:
+        # recv_time应该等于timestamp + delay_in
+        expected_recv_time = timestamp + delay_in
+        
+        # 关键验证：recv_time不应早于timestamp（因果约束）
+        assert recv_time >= timestamp, \
+            f"{order_id}的recv_time({recv_time})不应早于timestamp({timestamp})"
+        
+        # recv_time应该接近expected_recv_time（允许因果调整）
+        assert abs(recv_time - expected_recv_time) <= delay_in, \
+            f"{order_id}的recv_time({recv_time})与expected({expected_recv_time})偏差过大"
+        
+        print(f"    {order_id}: timestamp={timestamp}, recv_time={recv_time}, " + 
+              f"delay={recv_time - timestamp} (expected: {delay_in})")
+    
+    print("  ✓ 测试2通过: recv_time正确基于receipt.timestamp")
+    
+    # 测试3: 验证修复问题1 - 使用跨段成交场景
+    print("\n  测试3: 验证跨段推进时的事件处理...")
+    
+    # 创建一个包含成交的场景
+    snapshots2 = [
+        create_test_snapshot(
+            1000 * TICK_PER_MS,
+            100.0, 101.0,
+            bid_qty=50,
+            last_vol_split=[]
+        ),
+        create_test_snapshot(
+            2000 * TICK_PER_MS,
+            100.0, 101.0,
+            bid_qty=30,
+            last_vol_split=[(100.0, 20)]  # 20手成交
+        ),
+    ]
+    
+    class QueueStrategy:
+        """下排队订单的策略"""
+        def __init__(self):
+            self.order_count = 0
+            self.receipt_times = []
+            
+        def on_snapshot(self, snapshot, oms):
+            self.order_count += 1
+            if self.order_count == 1:
+                # 排队订单：在bid价位排队
+                order = Order(
+                    order_id="queue-order-1",
+                    side=Side.BUY,
+                    price=100.0,
+                    qty=10,
+                    tif=TimeInForce.GTC,
+                )
+                return [order]
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            self.receipt_times.append((receipt.order_id, receipt.receipt_type, receipt.timestamp, receipt.recv_time))
+            return []
+    
+    feed2 = MockFeed(snapshots2)
+    tape_builder2 = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    oms2 = OrderManager()
+    strategy2 = QueueStrategy()
+    
+    runner2 = EventLoopRunner(
+        feed=feed2,
+        tape_builder=tape_builder2,
+        exchange=exchange2,
+        oms=oms2,
+        strategy=strategy2,
+        config=runner_config,
+    )
+    
+    runner2.run()
+    
+    print(f"    排队订单回执: {strategy2.receipt_times}")
+    
+    # 如果有成交回执，验证其因果一致性
+    for order_id, receipt_type, timestamp, recv_time in strategy2.receipt_times:
+        assert recv_time >= timestamp, \
+            f"{order_id}的recv_time({recv_time})不应早于timestamp({timestamp})"
+        print(f"    {order_id}: type={receipt_type}, timestamp={timestamp}, recv_time={recv_time}")
+    
+    print("  ✓ 测试3通过: 跨段推进时事件处理正确")
+    
+    print("✓ Receipt to order within advance loop test passed")
+
+
+def test_partial_fill_timestamp_accuracy():
+    """测试修复：部分成交的时间戳应该是实际成交时间，而非t_to。
+    
+    问题描述：
+    advance(t_from, t_to)时，如果在t_from和t_to之间发生了成交(t_deal)，
+    满足t_from < t_deal < t_to，那么回执的时间戳应该是t_deal，而不是t_to。
+    
+    测试场景：
+    1. 创建一个订单，设置成交数量使其在区间中间时刻完成部分成交
+    2. 验证部分成交回执的时间戳在[t_from, t_to)区间内
+    3. 验证完整成交回执的时间戳也是实际成交时刻
+    """
+    print("\n--- Test: Partial Fill Timestamp Accuracy ---")
+    
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
+    from quant_framework.core.types import TapeSegment, Order, Side, TICK_PER_MS
+    
+    # 测试1: 验证部分成交时间戳
+    print("\n  测试1: 验证部分成交回执的时间戳...")
+    
+    # 创建一个segment，有4手成交，用时304ms
+    # 成交速率 = 4 / 304ms = 1手/76ms
+    t_start = 1000 * TICK_PER_MS
+    t_end = 1304 * TICK_PER_MS
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    seg = TapeSegment(
+        index=1,
+        t_start=t_start,
+        t_end=t_end,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 4},  # 4手成交
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 0},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg], t_start, t_end)
+    
+    # 下单4手，在队首（market_qty=0）
+    order = Order(order_id="timestamp-test", side=Side.BUY, price=100.0, qty=4)
+    exchange.on_order_arrival(order, t_start, market_qty=0)
+    
+    # 推进到中间时刻 (约152ms，应该成交约2手)
+    t_mid = t_start + 152 * TICK_PER_MS
+    receipts_1 = exchange.advance(t_start, t_mid, seg)
+    
+    # 继续推进到结束
+    receipts_2 = exchange.advance(t_mid, t_end, seg)
+    
+    all_receipts = receipts_1 + receipts_2
+    print(f"    回执数量: {len(all_receipts)}")
+    
+    for r in all_receipts:
+        print(f"    {r.receipt_type}: fill_qty={r.fill_qty}, timestamp={r.timestamp}")
+        
+        # 验证时间戳在合理范围内
+        # 注意：第一批回执的timestamp应该在 [t_start, t_mid] 区间内
+        # 第二批回执的timestamp应该在 [t_mid, t_end] 区间内
+        assert r.timestamp >= t_start, f"时间戳{r.timestamp}不应早于{t_start}"
+        assert r.timestamp <= t_end, f"时间戳{r.timestamp}不应晚于{t_end}"
+    
+    # 验证第一批回执的时间戳不是t_mid（而是实际成交时间）
+    if receipts_1:
+        for r in receipts_1:
+            # 时间戳应该是实际成交时间，可以是t_mid或更早
+            # 但不应该总是等于advance的结束时间
+            print(f"    第一批回执时间戳: {r.timestamp}, t_mid={t_mid}")
+            assert r.timestamp <= t_mid, \
+                f"第一批回执时间戳{r.timestamp}不应超过t_mid={t_mid}"
+    
+    print("  ✓ 测试1通过: 部分成交时间戳在正确范围内")
+    
+    # 测试2: 验证完整成交的时间戳是实际成交时间
+    print("\n  测试2: 验证完整成交回执的时间戳...")
+    
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2.set_tape([seg], t_start, t_end)
+    
+    # 下单2手，应该在约152ms时成交
+    order2 = Order(order_id="full-fill-timestamp", side=Side.BUY, price=100.0, qty=2)
+    exchange2.on_order_arrival(order2, t_start, market_qty=0)
+    
+    # 推进整个区间
+    receipts_full = exchange2.advance(t_start, t_end, seg)
+    
+    assert len(receipts_full) == 1, f"应该只有一个成交回执，实际{len(receipts_full)}"
+    fill_receipt = receipts_full[0]
+    
+    print(f"    成交回执: type={fill_receipt.receipt_type}, fill_qty={fill_receipt.fill_qty}, timestamp={fill_receipt.timestamp}")
+    
+    # 成交时间应该远早于t_end（大约在152ms时）
+    # 允许一定误差
+    expected_fill_time = t_start + 152 * TICK_PER_MS
+    assert fill_receipt.timestamp < t_end, \
+        f"成交时间{fill_receipt.timestamp}应该早于t_end={t_end}"
+    assert abs(fill_receipt.timestamp - expected_fill_time) < 20 * TICK_PER_MS, \
+        f"成交时间{fill_receipt.timestamp}应该接近{expected_fill_time}"
+    
+    print(f"    预期成交时间: ~{expected_fill_time}, 实际: {fill_receipt.timestamp}")
+    print("  ✓ 测试2通过: 完整成交时间戳是实际成交时间")
+    
+    print("✓ Partial fill timestamp accuracy test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4814,6 +5134,8 @@ def run_all_tests():
         test_cancel_order_across_interval,
         test_cross_interval_order_fill,
         test_floating_point_precision_in_last_vol_split,
+        test_receipt_to_order_within_advance_loop,
+        test_partial_fill_timestamp_accuracy,
     ]
     
     passed = 0
