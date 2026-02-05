@@ -1504,7 +1504,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                                 fill_qty = remaining_to_fill
                                 fill_type = "FILL"
                     elif x_t_to > shadow.pos:
-                        # Partial fill - use t_to as the fill time for partial fills
+                        # Partial fill - X has progressed past shadow.pos but not reached threshold
+                        # Since X is piecewise linear within segment, we report partial fill at t_to
+                        # (the boundary where we observe the partial progress)
                         current_fill = int(x_t_to - shadow.pos)
                         if current_fill > shadow.filled_qty:
                             new_fill = current_fill - shadow.filled_qty

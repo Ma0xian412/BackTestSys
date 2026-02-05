@@ -607,21 +607,24 @@ class EventLoopRunner:
         while current_time < t_to:
             # Step 1: 检查是否有订单到达事件在当前时间点
             # 这些订单需要在继续advance之前先处理
+            # 使用临时列表收集需要处理的事件，避免在遍历时修改堆
             orders_to_process = []
-            remaining_events = []
+            events_to_keep = []
             
-            for event in list(event_queue):
-                if event.event_type == EventType.ORDER_ARRIVAL:
-                    if event.time <= current_time:
-                        orders_to_process.append(event)
-                    else:
-                        remaining_events.append(event)
+            # 从堆中取出所有事件进行分类
+            while event_queue:
+                event = heapq.heappop(event_queue)
+                if event.event_type == EventType.ORDER_ARRIVAL and event.time <= current_time:
+                    orders_to_process.append(event)
                 else:
-                    remaining_events.append(event)
+                    events_to_keep.append(event)
             
-            # 处理当前时间点的订单到达
+            # 将非订单到达事件放回堆中
+            for event in events_to_keep:
+                heapq.heappush(event_queue, event)
+            
+            # 处理当前时间点的订单到达（按时间、优先级、序列号排序）
             for event in sorted(orders_to_process, key=lambda e: (e.time, e.priority, e.seq)):
-                heapq.heappop(event_queue)  # Remove from queue
                 self._process_single_event(event, event_queue, [], t_b)
             
             # Step 2: 使用advance_single推进到下一个成交或t_to
@@ -637,12 +640,7 @@ class EventLoopRunner:
             if not result.has_more:
                 break
         
-        # 确保推进到t_to
-        if current_time < t_to:
-            # 可能还需要处理剩余时间的订单到达
-            pass
-        
-        return max(current_time, t_to)
+        return t_to
 
     def _process_single_event(
         self,
