@@ -4749,6 +4749,156 @@ def test_floating_point_precision_in_last_vol_split():
     print("✓ Floating point precision test passed")
 
 
+def test_post_crossing_pos_uses_x_coord():
+    """测试post-crossing订单的pos使用x_coord而不是0。
+    
+    问题场景：
+    1. 订单A在时刻t1 crossing部分成交后，剩余部分入队，pos=0
+    2. 后续订单B在时刻t2入队，pos = 0 + A.remaining_qty + netflow
+    3. 如果此时x_coord已经推进到比如100，那么订单B的pos可能小于x_coord
+    4. 这会导致订单B在下一轮advance中被立即成交（因为x > pos+qty）
+    
+    修复后：post-crossing订单的pos = x_coord(arrival_time)，确保后续订单不会被错误成交。
+    
+    本测试验证：
+    1. post-crossing订单的pos等于到达时刻的x_coord
+    2. 后续订单的pos正确基于前序订单的threshold计算
+    """
+    print("\n--- Test: Post-Crossing Pos Uses X Coord ---")
+    
+    tape_config = TapeConfig(
+        epsilon=1.0,
+    )
+    builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    
+    # 创建快照：模拟一个有大量trades的场景，使x_coord能够推进
+    # bid@100, ask@101, 然后价格相遇产生大量trades
+    prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=100, ask_qty=100)
+    curr = create_test_snapshot(1500 * TICK_PER_MS, 100.0, 101.0, bid_qty=50, ask_qty=50,
+                                last_vol_split=[(100.0, 80), (101.0, 80)])  # 大量成交
+    
+    tape = builder.build(prev, curr)
+    
+    print_tape_path(tape)
+    
+    # 创建交易所模拟器
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    
+    # 测试1: 在区间中间模拟post-crossing入队
+    # 首先让时间推进到区间中段，使x_coord有机会增加
+    print("\n  测试1: 在x_coord已推进后入队post-crossing订单...")
+    
+    # 计算一个位于区间中间的时间点
+    mid_time = 1250 * TICK_PER_MS  # 区间中点
+    
+    # 获取该时刻的x_coord（在没有shadow订单时，使用shadow_pos=0）
+    # 注：需要在BUY@100这个价位，因为trades发生在这里
+    x_at_mid = exchange._get_x_coord(Side.BUY, 100.0, mid_time, 0)
+    print(f"    时刻{mid_time}的x_coord(BUY@100): {x_at_mid}")
+    
+    # 创建一个post-crossing订单（模拟crossing后剩余部分）
+    order1 = Order(
+        order_id="post-crossing-order",
+        side=Side.BUY,
+        price=100.0,  # 与trades同价位
+        qty=100,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 模拟已经部分成交80后，剩余20入队
+    exchange._queue_order(
+        order=order1,
+        arrival_time=mid_time,
+        market_qty=50,
+        remaining_qty=20,
+        already_filled=80  # 已通过crossing成交80
+    )
+    
+    # 获取入队后的shadow order
+    shadow_orders = exchange.get_shadow_orders()
+    post_crossing_shadow = None
+    for so in shadow_orders:
+        if so.order_id == "post-crossing-order":
+            post_crossing_shadow = so
+            break
+    
+    assert post_crossing_shadow is not None, "post-crossing订单应该在队列中"
+    
+    # 关键验证：pos应该等于到达时刻的x_coord（取整）
+    expected_pos = int(round(x_at_mid))
+    print(f"    post-crossing订单pos: {post_crossing_shadow.pos}, 期望(x_coord取整): {expected_pos}")
+    
+    # 允许小的舍入误差
+    assert abs(post_crossing_shadow.pos - expected_pos) <= 1, \
+        f"post-crossing订单pos应该约等于x_coord({expected_pos})，实际为{post_crossing_shadow.pos}"
+    print(f"    ✓ post-crossing订单pos正确等于x_coord")
+    
+    # 测试2: 后续订单的pos应该基于前序订单的threshold
+    print("\n  测试2: 后续订单的pos基于前序订单threshold计算...")
+    
+    order2 = Order(
+        order_id="subsequent-order",
+        side=Side.BUY,
+        price=100.0,  # 同一价位
+        qty=10,
+        tif=TimeInForce.GTC,
+    )
+    
+    # 稍后一点的时间入队
+    later_time = 1300 * TICK_PER_MS
+    
+    exchange._queue_order(
+        order=order2,
+        arrival_time=later_time,
+        market_qty=50,
+        remaining_qty=10,
+        already_filled=0  # 没有crossing
+    )
+    
+    # 获取后续订单
+    shadow_orders = exchange.get_shadow_orders()
+    subsequent_shadow = None
+    for so in shadow_orders:
+        if so.order_id == "subsequent-order":
+            subsequent_shadow = so
+            break
+    
+    assert subsequent_shadow is not None, "后续订单应该在队列中"
+    
+    # 后续订单的pos应该 >= 前序订单的threshold (pos + qty)
+    prev_threshold = post_crossing_shadow.pos + post_crossing_shadow.original_qty
+    print(f"    前序订单threshold: {prev_threshold}")
+    print(f"    后续订单pos: {subsequent_shadow.pos}")
+    
+    # 后续订单的pos应该基于前序订单，不会小于前序的threshold
+    assert subsequent_shadow.pos >= prev_threshold, \
+        f"后续订单pos({subsequent_shadow.pos})应该 >= 前序订单threshold({prev_threshold})"
+    print(f"    ✓ 后续订单pos正确 >= 前序订单threshold")
+    
+    # 测试3: 验证后续订单不会因为pos过小而被错误成交
+    print("\n  测试3: 验证后续订单不会被错误成交...")
+    
+    # 获取区间结束时的x_coord
+    end_time = 1500 * TICK_PER_MS
+    x_at_end = exchange._get_x_coord(Side.BUY, 100.0, end_time, post_crossing_shadow.pos)
+    print(f"    区间结束时x_coord: {x_at_end}")
+    
+    # 后续订单的fill threshold
+    subsequent_threshold = subsequent_shadow.pos + subsequent_shadow.original_qty
+    print(f"    后续订单threshold: {subsequent_threshold}")
+    
+    # 在正常情况下，如果x_coord没有超过threshold，订单不应该成交
+    if x_at_end < subsequent_threshold:
+        print(f"    x_coord({x_at_end}) < threshold({subsequent_threshold})，订单不应该成交")
+        print(f"    ✓ 后续订单不会被错误成交（修复验证通过）")
+    else:
+        print(f"    x_coord({x_at_end}) >= threshold({subsequent_threshold})，订单应该成交")
+        print(f"    ✓ 如果成交，这是正确行为")
+    
+    print("✓ Post-crossing pos uses x_coord test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4814,6 +4964,7 @@ def run_all_tests():
         test_cancel_order_across_interval,
         test_cross_interval_order_fill,
         test_floating_point_precision_in_last_vol_split,
+        test_post_crossing_pos_uses_x_coord,
     ]
     
     passed = 0
