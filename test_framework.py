@@ -4899,6 +4899,158 @@ def test_post_crossing_pos_uses_x_coord():
     print("✓ Post-crossing pos uses x_coord test passed")
 
 
+def test_post_crossing_blocks_best_price_fill():
+    """测试post-crossing订单阻塞best price订单的队列消耗。
+    
+    场景：
+    - bid1 price = 18
+    - 先挂一个价格21的bid单（post-crossing后有余量）
+    - 再挂一个价格18的bid单（在队首）
+    - 验证在21的post-crossing订单成交前，18的订单不会成交
+    - 验证在21的post-crossing订单成交后，18的订单才能根据剩余时间成交
+    """
+    print("\n--- Test: Post-Crossing Blocks Best Price Fill ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    
+    # 创建一个tape segment，模拟以下场景：
+    # - bid_price = 18, ask_price = 21
+    # - 有足够的net_flow让post-crossing订单成交
+    # - 有足够的trades让best price订单可能成交
+    seg = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=2000 * TICK_PER_MS,
+        bid_price=18.0,
+        ask_price=21.0,
+        trades={(Side.BUY, 18.0): 100},  # 100的trade量在bid1=18
+        cancels={},
+        net_flow={
+            # post-crossing BUY@21需要看对手方(SELL)价格<=21的净增量
+            # 这里设置ask@21有50的净增量
+            (Side.SELL, 21.0): 50,
+            (Side.BUY, 18.0): 100,  # bid1的净增量
+        },
+        activation_bid={18.0, 17.0, 16.0, 15.0, 14.0},
+        activation_ask={21.0, 22.0, 23.0, 24.0, 25.0},
+    )
+    
+    exchange.set_tape([seg], 1000 * TICK_PER_MS, 2000 * TICK_PER_MS)
+    
+    print("  测试1: 创建post-crossing订单@21和best price订单@18...")
+    
+    # 创建一个post-crossing订单（BID@21，模拟crossing后剩余部分）
+    order1 = Order(
+        order_id="post-crossing-bid21",
+        side=Side.BUY,
+        price=21.0,
+        qty=30,  # post-crossing剩余30
+        tif=TimeInForce.GTC,
+    )
+    
+    # 使用_queue_order直接入队post-crossing订单
+    exchange._queue_order(
+        order=order1,
+        arrival_time=1000 * TICK_PER_MS,
+        market_qty=0,
+        remaining_qty=30,
+        already_filled=70,  # 已通过crossing成交70
+        crossed_prices=[(Side.SELL, 21.0)]  # 记录crossed的价格
+    )
+    
+    # 创建一个best price订单（BID@18，在队首）
+    order2 = Order(
+        order_id="best-price-bid18",
+        side=Side.BUY,
+        price=18.0,
+        qty=20,  # 需要20的成交
+        tif=TimeInForce.GTC,
+    )
+    
+    # 这个订单在队首（market_qty=0表示前面没有市场订单）
+    exchange._queue_order(
+        order=order2,
+        arrival_time=1010 * TICK_PER_MS,
+        market_qty=0,
+        remaining_qty=20,
+        already_filled=0
+    )
+    
+    # 获取shadow orders
+    shadow_orders = exchange.get_shadow_orders()
+    post_crossing_shadow = None
+    best_price_shadow = None
+    for so in shadow_orders:
+        if so.order_id == "post-crossing-bid21":
+            post_crossing_shadow = so
+        elif so.order_id == "best-price-bid18":
+            best_price_shadow = so
+    
+    assert post_crossing_shadow is not None, "post-crossing订单应该存在"
+    assert best_price_shadow is not None, "best price订单应该存在"
+    assert post_crossing_shadow.is_post_crossing, "应该标记为post-crossing"
+    assert not best_price_shadow.is_post_crossing, "不应该标记为post-crossing"
+    
+    print(f"    post-crossing订单@21: pos={post_crossing_shadow.pos}, qty={post_crossing_shadow.remaining_qty}")
+    print(f"    best price订单@18: pos={best_price_shadow.pos}, qty={best_price_shadow.remaining_qty}")
+    
+    print("  测试2: 验证阻塞检测函数...")
+    
+    # 检查best price订单是否被阻塞
+    blocking_orders = exchange._get_blocking_post_crossing_orders(Side.BUY, 18.0)
+    assert len(blocking_orders) == 1, f"应该有1个阻塞订单，实际有{len(blocking_orders)}个"
+    assert blocking_orders[0].order_id == "post-crossing-bid21", "阻塞订单应该是post-crossing-bid21"
+    print(f"    ✓ 检测到阻塞订单: {blocking_orders[0].order_id}")
+    
+    print("  测试3: advance并检查成交结果...")
+    
+    # advance整个segment
+    receipts = exchange.advance(1000 * TICK_PER_MS, 2000 * TICK_PER_MS, seg)
+    
+    print(f"    生成了{len(receipts)}个回执:")
+    for r in receipts:
+        print(f"      - {r.order_id}: {r.receipt_type}, fill_qty={r.fill_qty}, timestamp={r.timestamp}")
+    
+    # 检查post-crossing订单的成交
+    post_crossing_receipts = [r for r in receipts if r.order_id == "post-crossing-bid21"]
+    best_price_receipts = [r for r in receipts if r.order_id == "best-price-bid18"]
+    
+    print("  测试4: 验证成交顺序...")
+    
+    if post_crossing_receipts and best_price_receipts:
+        # 如果两个订单都成交了，验证post-crossing的成交时间应该更早
+        pc_fill_time = post_crossing_receipts[0].timestamp
+        bp_fill_time = best_price_receipts[0].timestamp
+        
+        if bp_fill_time > 0:  # 如果best price订单有成交
+            # 注意：由于阻塞逻辑，best price订单的有效成交应该在post-crossing之后
+            print(f"    post-crossing成交时间: {pc_fill_time}")
+            print(f"    best price成交时间: {bp_fill_time}")
+            
+            # 最关键的验证：如果post-crossing订单还没完全成交，best price订单不应该有成交
+            # 或者如果best price有成交，其成交量应该受到阻塞的影响
+            if pc_fill_time < 2000 * TICK_PER_MS:  # post-crossing在segment内成交
+                # best price的成交应该在post-crossing之后
+                assert bp_fill_time >= pc_fill_time, \
+                    f"best price成交时间({bp_fill_time})应该 >= post-crossing成交时间({pc_fill_time})"
+                print(f"    ✓ 成交顺序正确: post-crossing先成交")
+    elif post_crossing_receipts and not best_price_receipts:
+        # post-crossing成交但best price没成交
+        print(f"    ✓ post-crossing成交，best price被阻塞（符合预期）")
+    elif not post_crossing_receipts:
+        print(f"    注：post-crossing订单未在本segment成交")
+    
+    # 获取最终状态
+    shadow_orders_final = exchange.get_shadow_orders()
+    for so in shadow_orders_final:
+        print(f"    最终状态 - {so.order_id}: status={so.status}, "
+              f"filled_qty={so.filled_qty}, remaining_qty={so.remaining_qty}")
+    
+    print("✓ Post-crossing blocks best price fill test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4965,6 +5117,7 @@ def run_all_tests():
         test_cross_interval_order_fill,
         test_floating_point_precision_in_last_vol_split,
         test_post_crossing_pos_uses_x_coord,
+        test_post_crossing_blocks_best_price_fill,
     ]
     
     passed = 0

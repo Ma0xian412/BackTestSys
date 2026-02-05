@@ -757,6 +757,148 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         return False
     
+    def _get_blocking_post_crossing_orders(self, side: Side, price: Price) -> List[ShadowOrder]:
+        """获取所有阻塞当前价格档位的post-crossing订单。
+        
+        用于advance中的队列阻塞计算：
+        - BUY订单在价格P: 获取所有本方BUY post-crossing订单在价格 > P
+        - SELL订单在价格P: 获取所有本方SELL post-crossing订单在价格 < P
+        
+        这些post-crossing订单会阻塞当前档位的队列消耗。
+        
+        Args:
+            side: 订单方向（本方方向）
+            price: 当前价格档位
+            
+        Returns:
+            阻塞当前档位的post-crossing订单列表
+        """
+        price = round(float(price), 8)
+        blocking_orders = []
+        
+        for (level_side, level_price), level in self._levels.items():
+            if level_side != side:
+                continue
+            
+            level_price = round(float(level_price), 8)
+            
+            # BUY: 检查价格 > P 的档位
+            # SELL: 检查价格 < P 的档位
+            should_check = False
+            if side == Side.BUY and level_price > price:
+                should_check = True
+            elif side == Side.SELL and level_price < price:
+                should_check = True
+            
+            if should_check:
+                for shadow in level.queue:
+                    if (shadow.status == "ACTIVE" and 
+                        shadow.remaining_qty > 0 and 
+                        shadow.is_post_crossing):
+                        blocking_orders.append(shadow)
+        
+        return blocking_orders
+    
+    def _compute_blocking_end_time_from_precomputed(
+        self,
+        side: Side,
+        price: Price,
+        post_crossing_fill_times: Dict[str, Optional[int]],
+        t_to: int
+    ) -> int:
+        """使用预计算的fill times计算阻塞结束时间。
+        
+        这个方法在advance开始时预计算post-crossing订单的fill times后使用，
+        避免因为订单状态在遍历过程中改变而导致的问题。
+        
+        Args:
+            side: 订单方向
+            price: 当前价格档位
+            post_crossing_fill_times: 预计算的post-crossing订单fill times
+            t_to: segment结束时间
+            
+        Returns:
+            阻塞结束时间，如果没有阻塞则返回0（表示立即可以开始）
+        """
+        price = round(float(price), 8)
+        latest_blocking_end = 0
+        
+        for (level_side, level_price), level in self._levels.items():
+            if level_side != side:
+                continue
+            
+            level_price = round(float(level_price), 8)
+            
+            # BUY: 检查价格 > P 的档位
+            # SELL: 检查价格 < P 的档位
+            should_check = False
+            if side == Side.BUY and level_price > price:
+                should_check = True
+            elif side == Side.SELL and level_price < price:
+                should_check = True
+            
+            if should_check:
+                for shadow in level.queue:
+                    if shadow.is_post_crossing and shadow.order_id in post_crossing_fill_times:
+                        fill_time = post_crossing_fill_times[shadow.order_id]
+                        if fill_time is None:
+                            # 这个post-crossing订单不会在本segment完全成交
+                            # 整个segment被阻塞
+                            return t_to
+                        # 记录最晚的阻塞结束时间
+                        if fill_time > latest_blocking_end:
+                            latest_blocking_end = fill_time
+        
+        return latest_blocking_end
+    
+    def _compute_blocking_end_time(
+        self,
+        blocking_orders: List[ShadowOrder],
+        seg: TapeSegment,
+        t_from: int,
+        t_to: int
+    ) -> int:
+        """计算所有阻塞订单完成的时间点。
+        
+        阻塞结束时间是所有阻塞的post-crossing订单都成交完成的时间点。
+        - 如果所有post-crossing订单都能在segment内完全成交，返回最晚的成交时间
+        - 如果有订单不能完全成交，返回t_to（整个segment都被阻塞）
+        
+        Args:
+            blocking_orders: 阻塞当前档位的post-crossing订单列表
+            seg: 当前segment
+            t_from: segment开始时间
+            t_to: segment结束时间
+            
+        Returns:
+            阻塞结束时间
+        """
+        if not blocking_orders:
+            return t_from  # 没有阻塞，立即开始
+        
+        latest_end_time = t_from
+        
+        for shadow in blocking_orders:
+            # 计算这个post-crossing订单的成交情况
+            fill_qty, fill_time = self._compute_post_crossing_fill(
+                shadow, seg, t_from, t_to
+            )
+            
+            if fill_qty <= 0 or fill_time is None:
+                # 这个订单在本segment内不会成交，整个segment被阻塞
+                return t_to
+            
+            if fill_qty < shadow.remaining_qty:
+                # 订单只能部分成交，本segment内不能完全成交
+                # 整个segment被阻塞
+                return t_to
+            
+            # 订单完全成交，记录成交时间
+            if fill_time > latest_end_time:
+                latest_end_time = fill_time
+        
+        return latest_end_time
+    
     def _get_opposite_best_price(self, side: Side, seg_idx: int) -> Optional[Price]:
         """获取对手方最优价格。
         
@@ -1354,6 +1496,23 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 seg_idx = i
                 break
         
+        # Pre-compute post-crossing order fill times for blocking calculation
+        # This must be done BEFORE processing any orders, so we can determine
+        # blocking relationships correctly
+        post_crossing_fill_times: Dict[str, Optional[int]] = {}
+        for (side, price), level in self._levels.items():
+            for shadow in level.queue:
+                if shadow.status == "ACTIVE" and shadow.is_post_crossing:
+                    fill_qty, fill_time = self._compute_post_crossing_fill(
+                        shadow, segment, t_from, t_to
+                    )
+                    if fill_qty >= shadow.remaining_qty and fill_time is not None:
+                        # Will fully fill - record fill time
+                        post_crossing_fill_times[shadow.order_id] = fill_time
+                    else:
+                        # Won't fully fill - record None (blocks entire segment)
+                        post_crossing_fill_times[shadow.order_id] = None
+        
         # Process each price level with active orders
         for (side, price), level in list(self._levels.items()):
             if not level.queue:
@@ -1453,13 +1612,65 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 if not at_best_price:
                     continue
                 
+                # Check for blocking post-crossing orders at better prices
+                # Under no-impact assumption, we cannot consume tape trade volume
+                # Instead, we pause queue consumption until blocking orders are filled
+                # Use pre-computed fill times to determine blocking end time
+                blocking_end_time = self._compute_blocking_end_time_from_precomputed(
+                    side, price, post_crossing_fill_times, t_to
+                )
+                
+                # Calculate effective time range for queue consumption
+                effective_t_from = t_from
+                if blocking_end_time > t_from:
+                    effective_t_from = blocking_end_time
+                    logger.debug(
+                        f"[Exchange] Advance: order {shadow.order_id} blocked by "
+                        f"post-crossing orders until {blocking_end_time}"
+                    )
+                
+                # If blocked for entire segment, skip this order's fill calculation
+                if effective_t_from >= t_to:
+                    logger.debug(
+                        f"[Exchange] Advance: order {shadow.order_id} blocked for entire segment"
+                    )
+                    continue
+                
+                # Calculate effective X at t_to considering the blocking period
+                # X only accumulates during the unblocked period [effective_t_from, t_to]
+                if effective_t_from > t_from and first_active_shadow_pos is not None:
+                    # Partial blocking - calculate X increment only for unblocked period
+                    # Use interpolation: X increases linearly within segment
+                    seg_duration = t_to - t_from
+                    unblocked_duration = t_to - effective_t_from
+                    x_ratio = unblocked_duration / seg_duration if seg_duration > 0 else 0
+                    
+                    # Get full X increment for the segment
+                    x_t_from_level = self._get_x_coord(side, price, t_from, first_active_shadow_pos)
+                    full_x_increment = x_t_to - x_t_from_level
+                    
+                    # Effective X = X at t_from + (X increment * unblocked ratio)
+                    effective_x_t_to = x_t_from_level + (full_x_increment * x_ratio)
+                    logger.debug(
+                        f"[Exchange] Advance: order {shadow.order_id} effective_x_t_to={effective_x_t_to} "
+                        f"(full x_t_to={x_t_to}, x_ratio={x_ratio})"
+                    )
+                else:
+                    effective_x_t_to = x_t_to
+                
                 # Fill threshold
                 threshold = shadow.pos + shadow.original_qty
                 
-                # Check if threshold is crossed
-                if x_t_to >= threshold:
+                # Check if threshold is crossed (using effective X)
+                if effective_x_t_to >= threshold:
                     # Full fill - compute exact fill time
                     fill_time = self._compute_fill_time(shadow, shadow.original_qty)
+                    
+                    # Adjust fill_time to account for blocking period
+                    # Fill cannot happen before blocking ends
+                    if fill_time is not None and effective_t_from > t_from:
+                        # If blocked, adjust fill_time to be at least blocking_end_time
+                        fill_time = max(fill_time, effective_t_from)
                     
                     if fill_time is not None and t_from < fill_time <= t_to:
                         # Update cache before changing
@@ -1494,9 +1705,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             f"fill_qty={remaining_to_fill}, price={shadow.price}, time={fill_time}"
                         )
                         receipts.append(receipt)
-                elif x_t_to > shadow.pos:
-                    # Partial fill
-                    current_fill = int(x_t_to - shadow.pos)
+                elif effective_x_t_to > shadow.pos:
+                    # Partial fill (using effective X)
+                    current_fill = int(effective_x_t_to - shadow.pos)
                     if current_fill > shadow.filled_qty:
                         new_fill = current_fill - shadow.filled_qty
                         
@@ -1520,6 +1731,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         # Update cache for the qty change
                         level._active_shadow_qty -= new_fill
                         
+                        # Determine timestamp, accounting for blocking period
+                        # Fill timestamp should be at least effective_t_from
+                        receipt_timestamp = max(t_to, effective_t_from) if effective_t_from > t_from else t_to
+                        
                         if completes_order:
                             shadow.filled_qty += new_fill
                             shadow.remaining_qty = 0
@@ -1528,14 +1743,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             receipt = OrderReceipt(
                                 order_id=shadow.order_id,
                                 receipt_type="FILL",
-                                timestamp=t_to,
+                                timestamp=receipt_timestamp,
                                 fill_qty=new_fill,
                                 fill_price=shadow.price,
                                 remaining_qty=0,
                             )
                             logger.debug(
                                 f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                                f"fill_qty={new_fill}, price={shadow.price}, time={t_to}"
+                                f"fill_qty={new_fill}, price={shadow.price}, time={receipt_timestamp}"
                             )
                             receipts.append(receipt)
                             continue
@@ -1546,7 +1761,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         receipt = OrderReceipt(
                             order_id=shadow.order_id,
                             receipt_type="PARTIAL",
-                            timestamp=t_to,
+                            timestamp=receipt_timestamp,
                             fill_qty=new_fill,
                             fill_price=shadow.price,
                             remaining_qty=shadow.remaining_qty,
