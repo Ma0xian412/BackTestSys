@@ -167,52 +167,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # preventing unbounded growth. full_reset() also clears this set.
         self._filled_order_ids: set = set()
 
-    def _compute_cancel_front_prob(self, x: float) -> float:
-        """Compute position-dependent cancel probability p_k(x).
-        
-        When your order is at normalized position x in the queue (0=front, 1=tail),
-        this returns the probability that a cancel happens in front of you.
-        
-        Model:
-        - p(1) = 1: At queue tail, all cancels happen in front
-        - p(0) = 0: At queue front, all cancels happen behind
-        - Parameter k controls the bias:
-          - k < 0: p_k(x) = x^(1+k), cancels more likely from behind (realistic)
-          - k = 0: p_k(x) = x, uniform distribution
-          - k > 0: p_k(x) = 1 - (1-x)^(1-k), cancels more likely from front
-        
-        Args:
-            x: Normalized queue position (0 = front, 1 = tail)
-            
-        Returns:
-            Probability of cancel happening in front of the order
-        """
-        # Defensive clamping: ensure x is in [0, 1] even if called directly with
-        # out-of-bounds values (e.g., due to floating point errors or edge cases)
-        x = max(0.0, min(1.0, x))
-        
-        k = self.cancel_bias_k
-        
-        if k < 0:
-            # p_k(x) = x^(1+k)
-            # When k approaches -1, exponent approaches 0, p -> 1 for x > 0
-            # When k = -0.5, p = x^0.5 = sqrt(x)
-            exponent = 1.0 + k
-            if exponent <= 0:
-                # Edge case: k <= -1
-                return 1.0 if x > 0 else 0.0
-            return x ** exponent
-        elif k == 0:
-            # Uniform: p(x) = x
-            return x
-        else:
-            # k > 0: p_k(x) = 1 - (1-x)^(1-k)
-            exponent = 1.0 - k
-            if exponent <= 0:
-                # Edge case: k >= 1
-                return 0.0 if x < 1 else 1.0
-            return 1.0 - (1.0 - x) ** exponent
-
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
         if delta < 0:
@@ -409,66 +363,27 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         best_price = seg.bid_price if side == Side.BUY else seg.ask_price
         return abs(price - best_price) < EPSILON
     
-    def _get_x_coord(self, side: Side, price: Price, t: int) -> float:
+    def _get_x_coord(self, side: Side, price: Price, t: int, shadow_pos: Optional[int] = None) -> float:
         """Get X coordinate at time t for given side and price.
         
         X_s(p,t) = cumulative (M + phi * C) from interval start to t
-        """
-        level = self._get_level(side, price)
         
-        if not self._current_tape or t <= self._interval_start:
-            return level.x_coord
-        
-        # Find which segment t falls into
-        x = level.x_coord
-        for seg_idx, seg in enumerate(self._current_tape):
-            if t <= seg.t_start:
-                break
-            
-            seg_start = max(seg.t_start, self._interval_start)
-            seg_end = min(seg.t_end, t)
-            
-            if seg_end <= seg_start:
-                continue
-            
-            # Check activation
-            if not self._is_in_activation_window(side, price, seg_idx):
-                continue
-            
-            # Get rate for this segment
-            key = (side, round(price, 8), seg_idx)
-            rate = self._x_rates.get(key, 0.0)
-            
-            # Add contribution from this segment
-            x += rate * (seg_end - seg_start)
-            
-            if t <= seg.t_end:
-                break
-        
-        return x
-    
-    def _get_x_coord_for_shadow(self, side: Side, price: Price, t: int, shadow_pos: int) -> float:
-        """Get X coordinate at time t with position-dependent cancel probability.
-        
-        Similar to _get_x_coord, but uses the shadow order's position to compute
-        a position-dependent cancel probability p_k(x) instead of a fixed cancel_front_ratio.
-        
-        The normalized position x is computed as: x = (shadow_pos - X) / Q_mkt
-        - shadow_pos: Fixed position when order was placed (equal to Q_mkt at arrival)
-        - X: Cumulative consumption from queue front (trades + phi * cancels)
-        - (shadow_pos - X): Remaining queue depth ahead of the order
-        - Q_mkt: Current market queue depth
-        - x = 0: order at front of queue, all cancels happen behind
-        - x = 1: order at tail of queue, all cancels happen in front
+        When shadow_pos is provided, uses position-dependent cancel probability p_k(x)
+        instead of the fixed cancel_front_ratio:
+        - The normalized position x = (shadow_pos - X) / Q_mkt
+        - x = 0: order at front of queue, all cancels happen behind (p=0)
+        - x = 1: order at tail of queue, all cancels happen in front (p=1)
+        - p_k(x) model with cancel_bias_k parameter controls the bias
         
         Args:
             side: Order side
             price: Price level
             t: Target time
-            shadow_pos: Position of the first shadow order in the queue
+            shadow_pos: Position of the first shadow order in the queue (optional)
+                       If None, uses fixed cancel_front_ratio (original behavior)
             
         Returns:
-            X coordinate with position-adjusted cancel contribution
+            X coordinate at time t
         """
         level = self._get_level(side, price)
         
@@ -476,7 +391,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             return level.x_coord
         
         # Find which segment t falls into
-        # x tracks the X coordinate as we iterate through segments
         x = level.x_coord
         for seg_idx, seg in enumerate(self._current_tape):
             if t <= seg.t_start:
@@ -492,44 +406,62 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if not self._is_in_activation_window(side, price, seg_idx):
                 continue
             
-            seg_duration = seg.t_end - seg.t_start
-            if seg_duration <= 0:
-                raise InvalidSegmentError(
-                    seg_idx, seg.t_start, seg.t_end,
-                    f"Invalid segment {seg_idx} in _get_x_coord_for_shadow: "
-                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
-                )
-            
-            # M_{s,i}(p): trades at this price in this segment
-            m_si = seg.trades.get((side, price), 0)
-            
-            # C_{s,i}(p): cancels at this price in this segment
-            c_si = seg.cancels.get((side, price), 0)
-            
-            # Compute Q_mkt (market queue depth) at segment start
-            q_mkt_at_seg_start = self._get_q_mkt(side, price, seg.t_start)
-            
-            # The current X coordinate at segment start is 'x' (accumulated from previous segments)
-            # The "remaining queue ahead" = shadow_pos - x
-            # This represents how much of the queue is still in front of the shadow order
-            remaining_ahead = shadow_pos - x
-            
-            # Compute normalized position: x_norm = remaining_ahead / Q_mkt
-            # This gives the relative position in the current queue (0 = front, 1 = tail)
-            # Note: remaining_ahead can be negative if X has advanced past shadow_pos (order being filled)
-            if q_mkt_at_seg_start > EPSILON and remaining_ahead > 0:
-                x_norm = remaining_ahead / q_mkt_at_seg_start
-                # Clamp to [0, 1] for the probability function
-                x_norm = min(1.0, max(0.0, x_norm))
-                cancel_prob = self._compute_cancel_front_prob(x_norm)
+            if shadow_pos is None:
+                # Original behavior: use precomputed rate with fixed cancel_front_ratio
+                key = (side, round(price, 8), seg_idx)
+                rate = self._x_rates.get(key, 0.0)
             else:
-                # Shadow order at or ahead of queue front (remaining_ahead <= 0)
-                # According to the model: p(0) = 0, meaning all cancels happen behind
-                # So cancel_prob should be 0, not the fallback cancel_front_ratio
-                cancel_prob = 0.0
-            
-            # Compute rate with position-dependent cancel probability
-            rate = (m_si + cancel_prob * c_si) / seg_duration
+                # Position-dependent cancel probability
+                seg_duration = seg.t_end - seg.t_start
+                if seg_duration <= 0:
+                    raise InvalidSegmentError(
+                        seg_idx, seg.t_start, seg.t_end,
+                        f"Invalid segment {seg_idx} in _get_x_coord: "
+                        f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
+                    )
+                
+                # M_{s,i}(p): trades at this price in this segment
+                m_si = seg.trades.get((side, price), 0)
+                
+                # C_{s,i}(p): cancels at this price in this segment
+                c_si = seg.cancels.get((side, price), 0)
+                
+                # Compute Q_mkt (market queue depth) at segment start
+                q_mkt_at_seg_start = self._get_q_mkt(side, price, seg.t_start)
+                
+                # The current X coordinate at segment start is 'x' (accumulated from previous segments)
+                # The "remaining queue ahead" = shadow_pos - x
+                remaining_ahead = shadow_pos - x
+                
+                # Compute normalized position and cancel probability
+                if q_mkt_at_seg_start > EPSILON and remaining_ahead > 0:
+                    x_norm = remaining_ahead / q_mkt_at_seg_start
+                    x_norm = min(1.0, max(0.0, x_norm))
+                    
+                    # Inline p_k(x) calculation:
+                    # k < 0: p_k(x) = x^(1+k), cancels more likely from behind
+                    # k = 0: p_k(x) = x, uniform distribution
+                    # k > 0: p_k(x) = 1 - (1-x)^(1-k), cancels more likely from front
+                    k = self.cancel_bias_k
+                    if k < 0:
+                        exponent = 1.0 + k
+                        if exponent <= 0:
+                            cancel_prob = 1.0 if x_norm > 0 else 0.0
+                        else:
+                            cancel_prob = x_norm ** exponent
+                    elif k == 0:
+                        cancel_prob = x_norm
+                    else:
+                        exponent = 1.0 - k
+                        if exponent <= 0:
+                            cancel_prob = 0.0 if x_norm < 1 else 1.0
+                        else:
+                            cancel_prob = 1.0 - (1.0 - x_norm) ** exponent
+                else:
+                    # Shadow order at or ahead of queue front: p(0) = 0
+                    cancel_prob = 0.0
+                
+                rate = (m_si + cancel_prob * c_si) / seg_duration
             
             # Add contribution from this segment
             x += rate * (seg_end - seg_start)
@@ -1441,7 +1373,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # Use position-dependent cancel probability if we have a shadow order
             if in_activation:
                 if first_active_shadow_pos is not None:
-                    x_t_to = self._get_x_coord_for_shadow(side, price, t_to, first_active_shadow_pos)
+                    x_t_to = self._get_x_coord(side, price, t_to, first_active_shadow_pos)
                 else:
                     x_t_to = self._get_x_coord(side, price, t_to)
             else:
