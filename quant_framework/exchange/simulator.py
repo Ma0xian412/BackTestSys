@@ -118,14 +118,23 @@ class FIFOExchangeSimulator(IExchangeSimulator):
     - Piecewise linear fill time calculation
     """
     
-    def __init__(self, cancel_front_ratio: float = 0.5):
+    def __init__(self, cancel_front_ratio: float = 0.5, cancel_bias_k: float = 0.0):
         """Initialize the simulator.
         
         Args:
             cancel_front_ratio: phi - proportion of cancels that advance queue front
                               (0 = pessimistic, 0.5 = neutral, 1 = optimistic)
+                              Note: This is used as fallback when no shadow orders exist.
+                              When shadow orders exist, cancel_bias_k model is used instead.
+            cancel_bias_k: Cancellation bias parameter k, ranging from -1 to 1.
+                          Controls position-dependent cancel probability p_k(x):
+                          - k < 0: p_k(x) = x^(1+k), biased toward cancels from behind
+                          - k = 0: p_k(x) = x, uniform distribution
+                          - k > 0: p_k(x) = 1 - (1-x)^(1-k), biased toward cancels from front
+                          Common values: k=0 (uniform), k=-0.8 (moderate bias), k=-0.95 (strong bias)
         """
         self.cancel_front_ratio = cancel_front_ratio
+        self.cancel_bias_k = cancel_bias_k
         self._levels: Dict[Tuple[Side, Price], PriceLevelState] = {}
         self.current_time: int = 0
         self._current_tape: List[TapeSegment] = []
@@ -142,6 +151,51 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Note: Order IDs are removed from this set after being referenced in a cancel,
         # preventing unbounded growth. full_reset() also clears this set.
         self._filled_order_ids: set = set()
+
+    def _compute_cancel_front_prob(self, x: float) -> float:
+        """Compute position-dependent cancel probability p_k(x).
+        
+        When your order is at normalized position x in the queue (0=front, 1=tail),
+        this returns the probability that a cancel happens in front of you.
+        
+        Model:
+        - p(1) = 1: At queue tail, all cancels happen in front
+        - p(0) = 0: At queue front, all cancels happen behind
+        - Parameter k controls the bias:
+          - k < 0: p_k(x) = x^(1+k), cancels more likely from behind (realistic)
+          - k = 0: p_k(x) = x, uniform distribution
+          - k > 0: p_k(x) = 1 - (1-x)^(1-k), cancels more likely from front
+        
+        Args:
+            x: Normalized queue position (0 = front, 1 = tail)
+            
+        Returns:
+            Probability of cancel happening in front of the order
+        """
+        # Clamp x to [0, 1]
+        x = max(0.0, min(1.0, x))
+        
+        k = self.cancel_bias_k
+        
+        if k < 0:
+            # p_k(x) = x^(1+k)
+            # When k approaches -1, exponent approaches 0, p -> 1 for x > 0
+            # When k = -0.5, p = x^0.5 = sqrt(x)
+            exponent = 1.0 + k
+            if exponent <= 0:
+                # Edge case: k <= -1
+                return 1.0 if x > 0 else 0.0
+            return x ** exponent
+        elif k == 0:
+            # Uniform: p(x) = x
+            return x
+        else:
+            # k > 0: p_k(x) = 1 - (1-x)^(1-k)
+            exponent = 1.0 - k
+            if exponent <= 0:
+                # Edge case: k >= 1
+                return 0.0 if x < 1 else 1.0
+            return 1.0 - (1.0 - x) ** exponent
 
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
@@ -364,6 +418,79 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # Get rate for this segment
             key = (side, round(price, 8), seg_idx)
             rate = self._x_rates.get(key, 0.0)
+            
+            # Add contribution from this segment
+            x += rate * (seg_end - seg_start)
+            
+            if t <= seg.t_end:
+                break
+        
+        return x
+    
+    def _get_x_coord_for_shadow(self, side: Side, price: Price, t: int, shadow_pos: int) -> float:
+        """Get X coordinate at time t with position-dependent cancel probability.
+        
+        Similar to _get_x_coord, but uses the shadow order's position to compute
+        a position-dependent cancel probability p_k(x) instead of a fixed cancel_front_ratio.
+        
+        The normalized position x is computed as: x = shadow_pos / Q_mkt
+        - x = 0: order at front of queue, all cancels happen behind
+        - x = 1: order at tail of queue, all cancels happen in front
+        
+        Args:
+            side: Order side
+            price: Price level
+            t: Target time
+            shadow_pos: Position of the first shadow order in the queue
+            
+        Returns:
+            X coordinate with position-adjusted cancel contribution
+        """
+        level = self._get_level(side, price)
+        
+        if not self._current_tape or t <= self._interval_start:
+            return level.x_coord
+        
+        # Find which segment t falls into
+        x = level.x_coord
+        for seg_idx, seg in enumerate(self._current_tape):
+            if t <= seg.t_start:
+                break
+            
+            seg_start = max(seg.t_start, self._interval_start)
+            seg_end = min(seg.t_end, t)
+            
+            if seg_end <= seg_start:
+                continue
+            
+            # Check activation
+            if not self._is_in_activation_window(side, price, seg_idx):
+                continue
+            
+            seg_duration = seg.t_end - seg.t_start
+            if seg_duration <= 0:
+                continue
+            
+            # M_{s,i}(p): trades at this price in this segment
+            m_si = seg.trades.get((side, price), 0)
+            
+            # C_{s,i}(p): cancels at this price in this segment
+            c_si = seg.cancels.get((side, price), 0)
+            
+            # Compute Q_mkt at segment start for normalized position calculation
+            q_mkt_at_seg_start = self._get_q_mkt(side, price, seg.t_start)
+            
+            # Compute normalized position: x_norm = shadow_pos / Q_mkt
+            # If Q_mkt is 0 or shadow_pos >= Q_mkt, use cancel_front_ratio as fallback
+            if q_mkt_at_seg_start > EPSILON and shadow_pos < q_mkt_at_seg_start:
+                x_norm = shadow_pos / q_mkt_at_seg_start
+                cancel_prob = self._compute_cancel_front_prob(x_norm)
+            else:
+                # Shadow order at or beyond queue tail, use fallback
+                cancel_prob = self.cancel_front_ratio
+            
+            # Compute rate with position-dependent cancel probability
+            rate = (m_si + cancel_prob * c_si) / seg_duration
             
             # Add contribution from this segment
             x += rate * (seg_end - seg_start)
@@ -1245,8 +1372,23 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # Only orders at the best price can be filled during advance
             at_best_price = seg_idx < 0 or self._is_at_best_price(side, price, seg_idx)
             
+            # Find the first active shadow order's position for position-dependent cancel probability
+            # Per spec: when multiple shadows exist at one price level, only use first shadow's pos
+            first_active_shadow_pos = None
+            for shadow in level.queue:
+                if shadow.status == "ACTIVE" and shadow.arrival_time <= t_to:
+                    first_active_shadow_pos = shadow.pos
+                    break
+            
             # Get X at t_to (only if in activation)
-            x_t_to = self._get_x_coord(side, price, t_to) if in_activation else 0
+            # Use position-dependent cancel probability if we have a shadow order
+            if in_activation:
+                if first_active_shadow_pos is not None:
+                    x_t_to = self._get_x_coord_for_shadow(side, price, t_to, first_active_shadow_pos)
+                else:
+                    x_t_to = self._get_x_coord(side, price, t_to)
+            else:
+                x_t_to = 0
             
             # Check each shadow order
             for shadow in level.queue:
