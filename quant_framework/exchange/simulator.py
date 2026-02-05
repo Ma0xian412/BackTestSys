@@ -523,9 +523,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 x_norm = min(1.0, max(0.0, x_norm))
                 cancel_prob = self._compute_cancel_front_prob(x_norm)
             else:
-                # Shadow order at or ahead of queue front, or queue is empty
-                # Use fallback cancel_front_ratio
-                cancel_prob = self.cancel_front_ratio
+                # Shadow order at or ahead of queue front (remaining_ahead <= 0)
+                # According to the model: p(0) = 0, meaning all cancels happen behind
+                # So cancel_prob should be 0, not the fallback cancel_front_ratio
+                cancel_prob = 0.0
             
             # Compute rate with position-dependent cancel probability
             rate = (m_si + cancel_prob * c_si) / seg_duration
