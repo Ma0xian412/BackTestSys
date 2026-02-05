@@ -172,7 +172,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         Returns:
             Probability of cancel happening in front of the order
         """
-        # Clamp x to [0, 1]
+        # Defensive clamping: ensure x is in [0, 1] even if called directly with
+        # out-of-bounds values (e.g., due to floating point errors or edge cases)
         x = max(0.0, min(1.0, x))
         
         k = self.cancel_bias_k
@@ -477,7 +478,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # C_{s,i}(p): cancels at this price in this segment
             c_si = seg.cancels.get((side, price), 0)
             
-            # Compute Q_mkt at segment start for normalized position calculation
+            # Compute Q_mkt (market queue depth) at segment start for normalized position calculation
+            # Q_mkt represents the total public market queue depth (not including shadow orders)
+            # The normalized position x_norm = shadow_pos / Q_mkt gives the relative position
+            # in the queue (0 = front, 1 = tail), which determines the cancel probability
             q_mkt_at_seg_start = self._get_q_mkt(side, price, seg.t_start)
             
             # Compute normalized position: x_norm = shadow_pos / Q_mkt
@@ -1374,6 +1378,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             # Find the first active shadow order's position for position-dependent cancel probability
             # Per spec: when multiple shadows exist at one price level, only use first shadow's pos
+            # Note: This linear search is acceptable since queue sizes are typically small (< 100 orders).
+            # If performance becomes an issue, consider caching the first active shadow position.
             first_active_shadow_pos = None
             for shadow in level.queue:
                 if shadow.status == "ACTIVE" and shadow.arrival_time <= t_to:
