@@ -1504,9 +1504,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                                 fill_qty = remaining_to_fill
                                 fill_type = "FILL"
                     elif x_t_to > shadow.pos:
-                        # Partial fill - X has progressed past shadow.pos but not reached threshold
-                        # Since X is piecewise linear within segment, we report partial fill at t_to
-                        # (the boundary where we observe the partial progress)
+                        # Partial fill - X has progressed past shadow.pos but hasn't reached full threshold
+                        # We use t_to as the fill time because:
+                        # 1. X progresses linearly within the segment, so we know exactly how much was filled
+                        # 2. We report the partial fill at the observation point (t_to) rather than interpolating
+                        #    the exact moment each unit filled, which would require costly computations
+                        # 3. This is consistent with the original advance() behavior for partial fills
                         current_fill = int(x_t_to - shadow.pos)
                         if current_fill > shadow.filled_qty:
                             new_fill = current_fill - shadow.filled_qty
@@ -1611,6 +1614,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     continue
                 
                 # Check if this order might fill in the remaining interval
+                # In the piecewise linear X model:
+                # - X(t) = x_coord + rate * (t - t_start) within a segment
+                # - If X increases (x_t_to > x_t_from), there's consumption happening
+                # - If the consumption crosses past any shadow order's filled position,
+                #   that order can potentially receive more fills
                 threshold = shadow.pos + shadow.original_qty
                 x_t_to = self._get_x_coord(side, price, t_to)
                 x_t_from = self._get_x_coord(side, price, t_from)
