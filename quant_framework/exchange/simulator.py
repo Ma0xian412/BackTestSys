@@ -1638,14 +1638,18 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 
                 # Calculate effective X at t_to considering the blocking period
                 # X only accumulates during the unblocked period [effective_t_from, t_to]
+                # Note: first_active_shadow_pos was computed earlier and is required for X calculation
+                # The check ensures we only do the interpolation when both conditions are met
                 if effective_t_from > t_from and first_active_shadow_pos is not None:
                     # Partial blocking - calculate X increment only for unblocked period
-                    # Use interpolation: X increases linearly within segment
+                    # Use linear interpolation: X increases proportionally within segment
                     seg_duration = t_to - t_from
                     unblocked_duration = t_to - effective_t_from
+                    # Note: seg_duration should always be > 0 here (checked at function start)
+                    # But we add the check for safety
                     x_ratio = unblocked_duration / seg_duration if seg_duration > 0 else 0
                     
-                    # Get full X increment for the segment
+                    # Get X at segment start for calculating the increment
                     x_t_from_level = self._get_x_coord(side, price, t_from, first_active_shadow_pos)
                     full_x_increment = x_t_to - x_t_from_level
                     
@@ -1671,6 +1675,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     if fill_time is not None and effective_t_from > t_from:
                         # If blocked, adjust fill_time to be at least blocking_end_time
                         fill_time = max(fill_time, effective_t_from)
+                        # Ensure fill_time doesn't exceed segment end
+                        # (This can happen if effective_t_from is close to t_to)
+                        fill_time = min(fill_time, t_to)
                     
                     if fill_time is not None and t_from < fill_time <= t_to:
                         # Update cache before changing
@@ -1732,8 +1739,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         level._active_shadow_qty -= new_fill
                         
                         # Determine timestamp, accounting for blocking period
-                        # Fill timestamp should be at least effective_t_from
-                        receipt_timestamp = max(t_to, effective_t_from) if effective_t_from > t_from else t_to
+                        # Note: At this point, effective_t_from < t_to (checked earlier)
+                        # For partial fills, the fill is reported at segment end (t_to)
+                        # but not earlier than the blocking end time
+                        receipt_timestamp = t_to
                         
                         if completes_order:
                             shadow.filled_qty += new_fill
