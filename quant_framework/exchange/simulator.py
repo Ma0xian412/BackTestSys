@@ -620,8 +620,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 is_crossing = False
                 logger.debug(f"[Exchange] Order {order.order_id}: blocked by higher priority shadow order")
             else:
-                # New check: if same-side queue still has depth, cannot execute immediately
-                self._ensure_base_q_mkt(side, price, market_qty)
                 queue_depth = self._get_total_queue_depth(side, price, arrival_time)
                 
                 if queue_depth > 0:
