@@ -4962,6 +4962,113 @@ def test_receipt_to_order_within_advance_loop():
     print("✓ Receipt to order within advance loop test passed")
 
 
+def test_partial_fill_timestamp_accuracy():
+    """测试修复：部分成交的时间戳应该是实际成交时间，而非t_to。
+    
+    问题描述：
+    advance(t_from, t_to)时，如果在t_from和t_to之间发生了成交(t_deal)，
+    满足t_from < t_deal < t_to，那么回执的时间戳应该是t_deal，而不是t_to。
+    
+    测试场景：
+    1. 创建一个订单，设置成交数量使其在区间中间时刻完成部分成交
+    2. 验证部分成交回执的时间戳在[t_from, t_to)区间内
+    3. 验证完整成交回执的时间戳也是实际成交时刻
+    """
+    print("\n--- Test: Partial Fill Timestamp Accuracy ---")
+    
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
+    from quant_framework.core.types import TapeSegment, Order, Side, TICK_PER_MS
+    
+    # 测试1: 验证部分成交时间戳
+    print("\n  测试1: 验证部分成交回执的时间戳...")
+    
+    # 创建一个segment，有4手成交，用时304ms
+    # 成交速率 = 4 / 304ms = 1手/76ms
+    t_start = 1000 * TICK_PER_MS
+    t_end = 1304 * TICK_PER_MS
+    
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    seg = TapeSegment(
+        index=1,
+        t_start=t_start,
+        t_end=t_end,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 4},  # 4手成交
+        cancels={},
+        net_flow={(Side.BUY, 100.0): 0},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg], t_start, t_end)
+    
+    # 下单4手，在队首（market_qty=0）
+    order = Order(order_id="timestamp-test", side=Side.BUY, price=100.0, qty=4)
+    exchange.on_order_arrival(order, t_start, market_qty=0)
+    
+    # 推进到中间时刻 (约152ms，应该成交约2手)
+    t_mid = t_start + 152 * TICK_PER_MS
+    receipts_1 = exchange.advance(t_start, t_mid, seg)
+    
+    # 继续推进到结束
+    receipts_2 = exchange.advance(t_mid, t_end, seg)
+    
+    all_receipts = receipts_1 + receipts_2
+    print(f"    回执数量: {len(all_receipts)}")
+    
+    for r in all_receipts:
+        print(f"    {r.receipt_type}: fill_qty={r.fill_qty}, timestamp={r.timestamp}")
+        
+        # 验证时间戳在合理范围内
+        # 注意：第一批回执的timestamp应该在 [t_start, t_mid] 区间内
+        # 第二批回执的timestamp应该在 [t_mid, t_end] 区间内
+        assert r.timestamp >= t_start, f"时间戳{r.timestamp}不应早于{t_start}"
+        assert r.timestamp <= t_end, f"时间戳{r.timestamp}不应晚于{t_end}"
+    
+    # 验证第一批回执的时间戳不是t_mid（而是实际成交时间）
+    if receipts_1:
+        for r in receipts_1:
+            # 时间戳应该是实际成交时间，可以是t_mid或更早
+            # 但不应该总是等于advance的结束时间
+            print(f"    第一批回执时间戳: {r.timestamp}, t_mid={t_mid}")
+            assert r.timestamp <= t_mid, \
+                f"第一批回执时间戳{r.timestamp}不应超过t_mid={t_mid}"
+    
+    print("  ✓ 测试1通过: 部分成交时间戳在正确范围内")
+    
+    # 测试2: 验证完整成交的时间戳是实际成交时间
+    print("\n  测试2: 验证完整成交回执的时间戳...")
+    
+    exchange2 = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    exchange2.set_tape([seg], t_start, t_end)
+    
+    # 下单2手，应该在约152ms时成交
+    order2 = Order(order_id="full-fill-timestamp", side=Side.BUY, price=100.0, qty=2)
+    exchange2.on_order_arrival(order2, t_start, market_qty=0)
+    
+    # 推进整个区间
+    receipts_full = exchange2.advance(t_start, t_end, seg)
+    
+    assert len(receipts_full) == 1, f"应该只有一个成交回执，实际{len(receipts_full)}"
+    fill_receipt = receipts_full[0]
+    
+    print(f"    成交回执: type={fill_receipt.receipt_type}, fill_qty={fill_receipt.fill_qty}, timestamp={fill_receipt.timestamp}")
+    
+    # 成交时间应该远早于t_end（大约在152ms时）
+    # 允许一定误差
+    expected_fill_time = t_start + 152 * TICK_PER_MS
+    assert fill_receipt.timestamp < t_end, \
+        f"成交时间{fill_receipt.timestamp}应该早于t_end={t_end}"
+    assert abs(fill_receipt.timestamp - expected_fill_time) < 20 * TICK_PER_MS, \
+        f"成交时间{fill_receipt.timestamp}应该接近{expected_fill_time}"
+    
+    print(f"    预期成交时间: ~{expected_fill_time}, 实际: {fill_receipt.timestamp}")
+    print("  ✓ 测试2通过: 完整成交时间戳是实际成交时间")
+    
+    print("✓ Partial fill timestamp accuracy test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -5028,6 +5135,7 @@ def run_all_tests():
         test_cross_interval_order_fill,
         test_floating_point_precision_in_last_vol_split,
         test_receipt_to_order_within_advance_loop,
+        test_partial_fill_timestamp_accuracy,
     ]
     
     passed = 0
