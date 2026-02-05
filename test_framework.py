@@ -4619,6 +4619,256 @@ def test_cross_interval_order_fill():
     print("✓ Cross-interval order fill test passed")
 
 
+def test_advance_single_step_by_step():
+    """测试advance_single方法的单步推进功能。
+    
+    验证交易所模拟器可以单步推进，每次只处理一个成交事件。
+    这是实现segment内部动态订单处理的基础。
+    """
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
+    from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce, NormalizedSnapshot, Level, AdvanceResult
+    
+    print("\n--- Test: Advance Single Step By Step ---\n")
+    
+    # 时间设置
+    t_start = 10_000_000
+    t_end = 20_000_000
+    
+    # 创建交易所
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    
+    # 创建tape: 成交50手，两个订单各25手，应该能分别成交
+    tape = [
+        TapeSegment(
+            index=1,
+            t_start=t_start,
+            t_end=t_end,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={(Side.BUY, 100.0): 50},
+            cancels={},
+            net_flow={(Side.BUY, 100.0): -50},
+            activation_bid={100.0, 99.0, 98.0, 97.0, 96.0},
+            activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+        )
+    ]
+    
+    exchange.set_tape(tape, t_start, t_end)
+    
+    # 两个订单在同一价位，队列位置分别是0和10
+    order1 = Order(
+        order_id="order-1",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=t_start,
+    )
+    
+    order2 = Order(
+        order_id="order-2",
+        side=Side.BUY,
+        price=100.0,
+        qty=10,
+        tif=TimeInForce.GTC,
+        create_time=t_start + 1000,
+    )
+    
+    # 订单到达
+    receipt1 = exchange.on_order_arrival(order1, t_start, market_qty=0)  # pos=0
+    receipt2 = exchange.on_order_arrival(order2, t_start + 1000, market_qty=10)  # pos=10
+    
+    print(f"  订单1到达: order_id={order1.order_id}")
+    print(f"  订单2到达: order_id={order2.order_id}")
+    
+    # 验证advance_single方法存在
+    assert hasattr(exchange, 'advance_single'), "exchange should have advance_single method"
+    
+    # Step 1: 第一次单步推进
+    print("\n  第一次advance_single:")
+    result1 = exchange.advance_single(t_start, t_end, tape[0])
+    
+    print(f"    result1.receipt: {result1.receipt}")
+    print(f"    result1.stop_time: {result1.stop_time}")
+    print(f"    result1.has_more: {result1.has_more}")
+    
+    # 应该返回order-1的成交回执
+    assert result1.receipt is not None, "First advance_single should return a receipt"
+    assert result1.receipt.order_id == "order-1", f"First receipt should be for order-1, got {result1.receipt.order_id}"
+    assert result1.stop_time <= t_end, "stop_time should be <= t_end"
+    
+    print(f"    ✓ 第一个订单成交: {result1.receipt.receipt_type}")
+    
+    # Step 2: 继续推进（如果还有更多事件）
+    if result1.has_more:
+        print("\n  第二次advance_single:")
+        result2 = exchange.advance_single(result1.stop_time, t_end, tape[0])
+        
+        print(f"    result2.receipt: {result2.receipt}")
+        print(f"    result2.stop_time: {result2.stop_time}")
+        print(f"    result2.has_more: {result2.has_more}")
+        
+        if result2.receipt:
+            assert result2.receipt.order_id == "order-2", f"Second receipt should be for order-2, got {result2.receipt.order_id}"
+            print(f"    ✓ 第二个订单成交: {result2.receipt.receipt_type}")
+    
+    print("\n✓ Advance single step by step test passed")
+
+
+def test_segment_internal_dynamic_order():
+    """测试segment内部动态订单处理。
+    
+    场景（您描述的问题）：
+    - A和D是segment的开始和结束时间
+    - 在advance从A到D的过程中：
+      1. B时刻订单1成交
+      2. 策略收到回执后发送订单2
+      3. C时刻订单2到达（C在B和D之间）
+      4. 订单2应该能参与[C, D]的撮合
+    
+    这个测试验证advance_single配合事件循环可以正确处理这种场景。
+    
+    关键点：即使has_more=False，添加新订单后仍需继续调用advance_single
+    """
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
+    from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce, NormalizedSnapshot, Level, AdvanceResult
+    
+    print("\n--- Test: Segment Internal Dynamic Order ---\n")
+    
+    # 时间设置
+    t_A = 10_000_000  # segment开始
+    t_D = 20_000_000  # segment结束
+    
+    print(f"  时间线: A({t_A}) -> D({t_D})")
+    
+    # 创建交易所
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    
+    # 创建tape: 足够的成交量让两个订单都能成交
+    # 总成交30手，订单1需要5手，订单2需要5手
+    tape = [
+        TapeSegment(
+            index=1,
+            t_start=t_A,
+            t_end=t_D,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={(Side.BUY, 100.0): 30},  # 总成交30手
+            cancels={},
+            net_flow={(Side.BUY, 100.0): -30},
+            activation_bid={100.0, 99.0, 98.0, 97.0, 96.0},
+            activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+        )
+    ]
+    
+    exchange.set_tape(tape, t_A, t_D)
+    
+    # 订单1：在A时刻到达，排在队列前面
+    order1 = Order(
+        order_id="order-A-1",
+        side=Side.BUY,
+        price=100.0,
+        qty=5,  # 5手，应该很快成交
+        tif=TimeInForce.GTC,
+        create_time=t_A,
+    )
+    
+    receipt_on_arrival = exchange.on_order_arrival(order1, t_A, market_qty=0)  # pos=0
+    print(f"  订单1在A时刻到达: order_id={order1.order_id}, pos=0, qty=5")
+    
+    # 模拟事件循环的单步推进逻辑
+    current_time = t_A
+    receipts_received = []
+    
+    # Step 1: 单步推进，期望得到订单1的成交
+    print("\n  Step 1: 第一次单步推进 (期望订单1成交)...")
+    result1 = exchange.advance_single(current_time, t_D, tape[0])
+    
+    if result1.receipt:
+        receipts_received.append(result1.receipt)
+        print(f"    收到回执: order_id={result1.receipt.order_id}, type={result1.receipt.receipt_type}")
+        print(f"    成交时间: {result1.stop_time}")
+        print(f"    has_more: {result1.has_more} (此时订单2还未添加)")
+        
+        # 模拟策略响应：收到成交回执后发送新订单
+        if result1.receipt.receipt_type in ["FILL", "PARTIAL"]:
+            print("\n  Step 2: 策略收到回执，发送新订单...")
+            
+            # 计算新订单到达时间（假设delay_out=0）
+            order2_arrival_time = result1.stop_time + 1000  # 加一点延迟
+            
+            if order2_arrival_time < t_D:
+                order2 = Order(
+                    order_id="order-dynamic-2",
+                    side=Side.BUY,
+                    price=100.0,
+                    qty=5,
+                    tif=TimeInForce.GTC,
+                    create_time=order2_arrival_time,
+                )
+                
+                # 订单2到达时的市场队列深度
+                market_qty = 0
+                
+                receipt_on_arrival2 = exchange.on_order_arrival(order2, order2_arrival_time, market_qty=market_qty)
+                print(f"    订单2在{order2_arrival_time}到达: order_id={order2.order_id}, market_qty={market_qty}")
+                
+                # 获取订单2的shadow order查看其pos
+                shadows = exchange.get_shadow_orders()
+                for s in shadows:
+                    if s.order_id == "order-dynamic-2":
+                        print(f"    订单2的pos={s.pos}, arrival_time={s.arrival_time}")
+                
+                # Step 3: 关键！即使has_more=False，添加新订单后也要继续推进
+                # 因为新订单可能在剩余时间内成交
+                print("\n  Step 3: 继续推进（无论has_more值）...")
+                current_time = result1.stop_time
+                
+                # 继续推进直到到达t_D
+                while current_time < t_D:
+                    result_next = exchange.advance_single(current_time, t_D, tape[0])
+                    
+                    if result_next.receipt:
+                        receipts_received.append(result_next.receipt)
+                        print(f"    收到回执: order_id={result_next.receipt.order_id}, type={result_next.receipt.receipt_type}, time={result_next.stop_time}")
+                    
+                    current_time = result_next.stop_time
+                    
+                    # 如果没有更多事件且已到达t_D，退出
+                    if current_time >= t_D:
+                        break
+    
+    # 验证结果
+    print(f"\n  总共收到 {len(receipts_received)} 个回执")
+    for r in receipts_received:
+        print(f"    - {r.order_id}: {r.receipt_type} @ {r.timestamp}")
+    
+    # 检查两个订单是否都收到了回执
+    order_ids_with_receipts = set(r.order_id for r in receipts_received)
+    
+    if "order-A-1" in order_ids_with_receipts:
+        print("  ✓ 订单1成交")
+    
+    if "order-dynamic-2" in order_ids_with_receipts:
+        print("  ✓ 订单2（动态创建）成交 - segment内部动态订单处理正确！")
+    else:
+        # 检查为什么订单2没有成交
+        print("  ⚠ 订单2未收到成交回执")
+        shadows = exchange.get_shadow_orders()
+        for s in shadows:
+            if s.order_id == "order-dynamic-2":
+                x_end = exchange.get_x_coord(Side.BUY, 100.0)
+                print(f"    订单2状态: pos={s.pos}, filled={s.filled_qty}, status={s.status}")
+                print(f"    X坐标在t_D时: {x_end}")
+                print(f"    成交阈值: pos + qty = {s.pos + s.original_qty}")
+    
+    # 断言两个订单都应该成交
+    assert "order-A-1" in order_ids_with_receipts, "Order 1 should have filled"
+    assert "order-dynamic-2" in order_ids_with_receipts, "Order 2 (dynamic) should have filled - segment internal dynamic order processing failed"
+    
+    print("\n✓ Segment internal dynamic order test passed")
+
+
 def test_floating_point_precision_in_last_vol_split():
     """测试浮点精度问题的修复。
     
@@ -4813,6 +5063,8 @@ def run_all_tests():
         test_no_duplicate_segment_and_interval_end_events,
         test_cancel_order_across_interval,
         test_cross_interval_order_fill,
+        test_advance_single_step_by_step,
+        test_segment_internal_dynamic_order,
         test_floating_point_precision_in_last_vol_split,
     ]
     

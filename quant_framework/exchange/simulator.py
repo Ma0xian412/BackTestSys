@@ -1089,11 +1089,18 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             x_at_end = x_running + rate * seg_duration
             
             # Check if threshold is crossed in this segment
+            # Case 1: threshold crossed during segment (normal case)
             if x_at_start < threshold <= x_at_end and rate > EPSILON:
                 # Solve: x_at_start + rate * (t - effective_start) = threshold
                 delta_t = (threshold - x_at_start) / rate
                 fill_time = int(effective_start + delta_t)
                 return max(fill_time, effective_start)
+            
+            # Case 2: threshold already crossed at effective_start (order can fill immediately on arrival)
+            # This happens when order arrives after X has already exceeded threshold
+            if x_at_start >= threshold:
+                # Order can fill immediately at arrival time
+                return effective_start
             
             x_running = x_at_end
         
