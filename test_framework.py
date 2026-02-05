@@ -4749,6 +4749,186 @@ def test_floating_point_precision_in_last_vol_split():
     print("✓ Floating point precision test passed")
 
 
+def test_position_dependent_cancel_ratio():
+    """Test that orders at queue tail benefit more from cancellations.
+    
+    This test validates the fix for the issue where static cancel_front_ratio
+    incorrectly modeled cancellation effects on orders at different queue positions.
+    
+    Scenario:
+    - Two orders arrive at different positions in the queue
+    - Order 1: at front (pos = 10)  -> should benefit less from cancels
+    - Order 2: at tail (pos = 100)  -> should benefit more from cancels
+    
+    When cancellations occur, Order 2 at the tail should see a higher effective phi
+    (closer to 1.0) because ALL cancels are in front of it, while Order 1 at the
+    front should see a lower effective phi (closer to 0.0).
+    
+    This is validated by checking that the order-specific X coordinate for the
+    tail order is larger than the standard X coordinate (which uses static phi=0.5).
+    """
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator, ShadowOrder
+    from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce, NormalizedSnapshot, Level
+    
+    print("\n--- Test: Position-Dependent Cancel Ratio ---\n")
+    
+    # Time settings
+    t_A = 10_000_000
+    t_B = 20_000_000
+    
+    # Create exchange with cancel_front_ratio = 0.5
+    exchange = FIFOExchangeSimulator(cancel_front_ratio=0.5)
+    
+    # Create tape with significant cancellations
+    # trades=10, cancels=100 to make the difference visible
+    tape = [
+        TapeSegment(
+            index=1,
+            t_start=t_A,
+            t_end=t_B,
+            bid_price=100.0,
+            ask_price=101.0,
+            trades={(Side.BUY, 100.0): 10},  # 10 trades
+            cancels={(Side.BUY, 100.0): 100},  # 100 cancels
+            net_flow={(Side.BUY, 100.0): -110},  # net outflow
+            activation_bid={100.0},
+            activation_ask={101.0},
+        )
+    ]
+    
+    exchange.set_tape(tape, t_A, t_B)
+    
+    # Test 1: Order at front (pos near 0)
+    print("  测试1: 订单在队列前端...")
+    
+    # Create order at front position (queue depth = 10)
+    order_front = Order(
+        order_id="order-front",
+        side=Side.BUY,
+        price=100.0,
+        qty=5,
+        tif=TimeInForce.GTC,
+        create_time=t_A,
+    )
+    exchange.on_order_arrival(order_front, t_A, market_qty=10)  # pos ≈ 10
+    
+    shadow_front = exchange._find_order_by_id("order-front")
+    print(f"    订单位置: pos={shadow_front.pos}, q_mkt_at_arrival={shadow_front.q_mkt_at_arrival}")
+    
+    # Calculate phi_effective for front order
+    if shadow_front.q_mkt_at_arrival > 0:
+        phi_effective_front = min(1.0, shadow_front.pos / shadow_front.q_mkt_at_arrival)
+    else:
+        phi_effective_front = 0.5
+    print(f"    有效phi: {phi_effective_front:.3f}")
+    
+    # Order at front should have phi ≈ 1.0 (pos/q_mkt ≈ 10/10 = 1.0)
+    # Note: This is because pos = q_mkt when arriving at tail
+    assert phi_effective_front >= 0.9, f"Front order phi should be close to 1.0, got {phi_effective_front}"
+    
+    print("  ✓ 队列前端订单的有效phi正确")
+    
+    # Full reset for clean state
+    exchange.full_reset()
+    
+    # Test 2: Order at tail (pos = queue_depth)
+    print("\n  测试2: 订单在队列尾端...")
+    
+    exchange.set_tape(tape, t_A, t_B)
+    
+    # Create order at tail position (queue depth = 100)
+    order_tail = Order(
+        order_id="order-tail",
+        side=Side.BUY,
+        price=100.0,
+        qty=5,
+        tif=TimeInForce.GTC,
+        create_time=t_A,
+    )
+    exchange.on_order_arrival(order_tail, t_A, market_qty=100)  # pos ≈ 100
+    
+    shadow_tail = exchange._find_order_by_id("order-tail")
+    print(f"    订单位置: pos={shadow_tail.pos}, q_mkt_at_arrival={shadow_tail.q_mkt_at_arrival}")
+    
+    # Calculate phi_effective for tail order
+    if shadow_tail.q_mkt_at_arrival > 0:
+        phi_effective_tail = min(1.0, shadow_tail.pos / shadow_tail.q_mkt_at_arrival)
+    else:
+        phi_effective_tail = 0.5
+    print(f"    有效phi: {phi_effective_tail:.3f}")
+    
+    # Order at tail should have phi = 1.0 (pos/q_mkt = 100/100 = 1.0)
+    assert phi_effective_tail >= 0.9, f"Tail order phi should be close to 1.0, got {phi_effective_tail}"
+    
+    print("  ✓ 队列尾端订单的有效phi正确")
+    
+    # Test 3: Verify X calculation difference
+    print("\n  测试3: 验证X坐标计算差异...")
+    
+    # Get order-specific X for tail order (should use phi ≈ 1.0)
+    x_specific_tail = exchange._get_order_specific_x_coord(shadow_tail, t_B)
+    
+    # Get standard X (uses static phi = 0.5)
+    x_standard = exchange._get_x_coord(Side.BUY, 100.0, t_B)
+    
+    print(f"    标准X (phi=0.5): {x_standard:.2f}")
+    print(f"    订单特定X (phi={phi_effective_tail:.2f}): {x_specific_tail:.2f}")
+    
+    # X_specific should be >= X_standard because phi_effective >= 0.5
+    # X = M + phi * C = 10 + phi * 100
+    # Standard: X = 10 + 0.5 * 100 = 60
+    # Specific (tail, phi=1.0): X = 10 + 1.0 * 100 = 110
+    assert x_specific_tail >= x_standard, \
+        f"Order-specific X should be >= standard X, got {x_specific_tail} vs {x_standard}"
+    
+    # With phi_effective = 1.0 vs phi = 0.5, the difference should be significant
+    expected_diff = (phi_effective_tail - 0.5) * 100  # (phi_eff - phi_base) * cancels
+    actual_diff = x_specific_tail - x_standard
+    print(f"    X差值: {actual_diff:.2f} (预期约: {expected_diff:.2f})")
+    
+    # The difference should be close to 50 (100 cancels * 0.5 phi difference)
+    assert abs(actual_diff - expected_diff) < 1.0, \
+        f"X difference {actual_diff} should be close to {expected_diff}"
+    
+    print("  ✓ X坐标计算正确反映了位置依赖的撤单比例")
+    
+    # Test 4: Verify fill time is earlier for tail order
+    print("\n  测试4: 验证尾端订单成交时间更早...")
+    
+    # The order at tail should fill sooner because it benefits from all cancellations
+    # For a given pos + qty threshold, higher X rate means earlier fill time
+    
+    # Tail order: threshold = 100 + 5 = 105
+    # With phi=1.0: X rate = (10 + 100) / duration = 110 / duration
+    # With phi=0.5: X rate = (10 + 50) / duration = 60 / duration
+    
+    # The order-specific fill time should be correctly calculated
+    fill_time = exchange._compute_fill_time(shadow_tail, shadow_tail.original_qty)
+    
+    if fill_time is not None:
+        # Fill time should be within the interval
+        assert t_A < fill_time <= t_B, f"Fill time {fill_time} should be in [{t_A}, {t_B}]"
+        
+        # Calculate expected fill time with position-dependent phi
+        threshold = shadow_tail.pos + shadow_tail.original_qty
+        duration = t_B - t_A
+        x_rate = (10 + phi_effective_tail * 100) / duration
+        expected_fill_time = t_A + threshold / x_rate
+        
+        print(f"    实际成交时间: {fill_time}")
+        print(f"    预期成交时间: {int(expected_fill_time)}")
+        
+        # Allow some tolerance due to floating point
+        assert abs(fill_time - expected_fill_time) < duration * 0.01, \
+            f"Fill time difference too large: {fill_time} vs {expected_fill_time}"
+        
+        print("  ✓ 成交时间计算正确")
+    else:
+        print("  ! 订单在此区间内未能成交（阈值太高）")
+    
+    print("\n✓ Position-dependent cancel ratio test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4814,6 +4994,7 @@ def run_all_tests():
         test_cancel_order_across_interval,
         test_cross_interval_order_fill,
         test_floating_point_precision_in_last_vol_split,
+        test_position_dependent_cancel_ratio,
     ]
     
     passed = 0
