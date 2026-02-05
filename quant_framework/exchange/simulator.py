@@ -417,37 +417,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if not self._is_in_activation_window(side, price, seg_idx):
                 continue
             
-            seg_duration = seg.t_end - seg.t_start
-            if seg_duration <= 0:
-                raise InvalidSegmentError(
-                    seg_idx, seg.t_start, seg.t_end,
-                    f"Invalid segment {seg_idx} in _get_x_coord: "
-                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
-                )
-            
-            # M_{s,i}(p): trades at this price in this segment
-            m_si = seg.trades.get((side, price), 0)
-            
-            # C_{s,i}(p): cancels at this price in this segment
-            c_si = seg.cancels.get((side, price), 0)
-            
-            # Compute Q_mkt (market queue depth) at segment start
-            q_mkt_at_seg_start = self._get_q_mkt(side, price, seg.t_start)
-            
-            # The current X coordinate at segment start is 'x' (accumulated from previous segments)
-            # The "remaining queue ahead" = shadow_pos - x
-            remaining_ahead = shadow_pos - x
-            
-            # Compute normalized position and cancel probability
-            if q_mkt_at_seg_start > EPSILON and remaining_ahead > 0:
-                x_norm = remaining_ahead / q_mkt_at_seg_start
-                x_norm = min(1.0, max(0.0, x_norm))
-                cancel_prob = self._compute_cancel_front_prob(x_norm)
-            else:
-                # Shadow order at or ahead of queue front: p(0) = 0
-                cancel_prob = 0.0
-            
-            rate = (m_si + cancel_prob * c_si) / seg_duration
+            # Compute rate for this segment (reuse _compute_rate_for_segment)
+            rate = self._compute_rate_for_segment(side, price, seg_idx, x, shadow_pos)
             
             # Add contribution from this segment
             x += rate * (seg_end - seg_start)
