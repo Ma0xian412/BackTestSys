@@ -5189,6 +5189,86 @@ def test_cancel_only_segment_fill_correctness():
     print("✓ Cancel-only segment fill correctness test passed")
 
 
+def test_multi_advance_partial_fill():
+    """测试：多次advance中partial fill的累积成交。
+    
+    场景：
+    - 1个segment，trades=5，订单qty=5，pos=0
+    - 分多次advance推进，每次只推进一部分
+    - 验证：第一次成交3手后(filled_qty=3)，第二次应该还能成交剩余2手
+    - 这个测试验证 new_fill 计算不会因为 filled_qty 已有值而被错误跳过
+    """
+    print("\n--- Test 56: Multi-Advance Partial Fill ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    
+    # 1个segment，5手trade，无cancel
+    seg = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=1500 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 5},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -5},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    
+    # 订单 pos=0, qty=5
+    order = Order(order_id="multi-partial", side=Side.BUY, price=100.0, qty=5)
+    exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
+    
+    # 第一次advance：推进到60%位置，应该成交约3手
+    t_mid = 1000 * TICK_PER_MS + int(0.6 * 500 * TICK_PER_MS)
+    receipts_1, stopped_1 = exchange.advance(1000 * TICK_PER_MS, t_mid, seg)
+    
+    fill_qty_1 = sum(r.fill_qty for r in receipts_1)
+    shadow = exchange._find_order_by_id("multi-partial")
+    print(f"  第1次advance: fill_qty={fill_qty_1}, filled_qty={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    assert fill_qty_1 > 0, "第一次advance应该有成交"
+    assert shadow.filled_qty == fill_qty_1, f"filled_qty({shadow.filled_qty})应该等于fill_qty({fill_qty_1})"
+    
+    # 第二次advance：从stopped_1推进到seg结束
+    receipts_2, stopped_2 = exchange.advance(stopped_1, seg.t_end, seg)
+    
+    fill_qty_2 = sum(r.fill_qty for r in receipts_2)
+    print(f"  第2次advance: fill_qty={fill_qty_2}, filled_qty={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    # 如果第一次没有完全成交，第二次应该继续成交
+    if shadow.remaining_qty > 0:
+        # 可能需要更多次advance
+        t = stopped_2
+        all_extra = []
+        while t < seg.t_end and shadow.status == "ACTIVE":
+            r, t = exchange.advance(t, seg.t_end, seg)
+            all_extra.extend(r)
+        extra_qty = sum(r.fill_qty for r in all_extra)
+        print(f"  后续advance: fill_qty={extra_qty}, filled_qty={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    total_fill = shadow.filled_qty
+    print(f"  总成交量: {total_fill}手")
+    
+    # 关键断言：
+    # 1. 总成交量应该等于5手（全部成交）
+    assert total_fill == 5, f"总成交量应为5手，实际{total_fill}手"
+    
+    # 2. 如果第一次成交3手，第二次应该还能继续成交（不被错误跳过）
+    assert fill_qty_2 > 0 or shadow.filled_qty == 5, \
+        "第二次advance应该有成交（除非第一次已经全部成交）"
+    
+    # 3. 订单状态应为FILLED
+    assert shadow.status == "FILLED", f"订单应为FILLED状态，实际{shadow.status}"
+    
+    print("✓ Multi-advance partial fill test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -5257,6 +5337,7 @@ def run_all_tests():
         test_post_crossing_pos_uses_x_coord,
         test_advance_early_return_new_order_not_missed,
         test_cancel_only_segment_fill_correctness,
+        test_multi_advance_partial_fill,
     ]
     
     passed = 0

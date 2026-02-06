@@ -1439,8 +1439,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
     def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> Tuple[List[OrderReceipt], int]:
         """Advance simulation from t_from to t_to using tape segment.
         
-        遇到最早的成交即停止返回，保证event loop可以在成交后检查新事件。
-        对于partial fill（发生在t_to时刻），当没有更早的full fill时才处理。
+        遇到最早的成交即停止返回（无论partial还是full fill），
+        保证event loop可以在成交后检查新事件。
+        
+        对于full fill，fill_time为X越过threshold的精确时刻。
+        对于partial fill，fill_time为t_to（推进到t_to时确认成交量）。
+        两者统一排序，最早的先处理。
         
         Args:
             t_from: Start time
@@ -1455,8 +1459,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             return [], t_from
         
         # Phase 1: 扫描所有订单，找到最早的成交时间
+        # partial fill 和 full fill 统一作为成交事件处理
         earliest_fill_candidates = []  # [(fill_time, side, price, shadow_idx, fill_info)]
-        partial_fill_candidates = []   # [(side, price, shadow_idx, fill_info)] - 在t_to时刻的partial fill
         
         # Find segment index
         seg_idx = -1
@@ -1466,28 +1470,22 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 break
         
         # 从segment.trades中获取正在成交的价位集合
-        # 只有在trades中出现的(side, price)才会有成交发生，
-        # 非成交价位的普通订单不需要计算X坐标和检查成交
         trading_prices = set(segment.trades.keys()) if segment.trades else set()
         
         for (side, price), level in list(self._levels.items()):
             if not level.queue:
                 continue
             
-            # 检查该价位是否有成交：直接看segment.trades中是否有该(side, price)
             has_trades = (side, price) in trading_prices
             
-            # 检查该level是否有post-crossing订单需要处理
             has_post_crossing = any(
                 s.is_post_crossing and s.status == "ACTIVE" and s.arrival_time <= t_to
                 for s in level.queue
             )
             
-            # 如果该价位没有成交且没有post-crossing订单，整个level可以跳过
             if not has_trades and not has_post_crossing:
                 continue
             
-            # 只有有成交的价位才需要计算X坐标
             x_t_to = 0
             if has_trades:
                 first_active_shadow_pos = None
@@ -1516,51 +1514,47 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         ))
                     continue
                 
-                # 非post-crossing订单：只有该价位有成交时才可能成交
                 if not has_trades:
                     continue
                 
                 threshold = shadow.pos + shadow.original_qty
                 
-                # 成交量受限于实际trade量：只有trades才能消耗订单，cancels只能推进排队位置
-                # trades_for_order 是从interval开始到t_to的累积trade消耗量
+                # 成交量受限于实际trade量
                 trades_for_order = self._compute_trades_for_order(
                     side, price, shadow, t_to
                 )
-                # 累积trade消耗量cap在原始数量内
                 cumulative_fill = min(int(trades_for_order), shadow.original_qty)
-                # 本次新增成交量 = 累积量 - 已成交量
                 new_fill = cumulative_fill - shadow.filled_qty
                 
+                if new_fill <= 0:
+                    continue
+                
                 if x_t_to >= threshold and new_fill >= shadow.remaining_qty:
-                    # X坐标越过阈值 且 trade量足够完全成交
+                    # full fill: X越过阈值且trade量足够
                     fill_time = self._compute_fill_time(shadow, shadow.original_qty)
                     if fill_time is not None and t_from < fill_time <= t_to:
                         earliest_fill_candidates.append((
                             fill_time, side, price, shadow_idx,
                             {'type': 'full_fill', 'fill_time': fill_time}
                         ))
-                elif new_fill > 0:
-                    # 有新增trade可消耗订单，但不足以完全成交 → partial fill
-                    # partial fill 也是成交事件，统一放入earliest_fill_candidates
-                    # fill_time为t_to（连续模型下到t_to才能确认成交量）
+                else:
+                    # partial fill: 有新增成交但不足以完全成交
+                    # fill_time为t_to（推进到t_to时成交执行完成）
                     earliest_fill_candidates.append((
                         t_to, side, price, shadow_idx,
                         {'type': 'partial', 'new_fill': new_fill}
                     ))
         
-        # Phase 2: 确定最终行为
+        # Phase 2: 统一处理所有成交事件（按时间排序，最早的先处理）
         if earliest_fill_candidates:
-            # 有成交候选：找最早的成交时间
             earliest_fill_candidates.sort(key=lambda x: x[0])
             earliest_time = earliest_fill_candidates[0][0]
             
-            # Phase 3: 处理所有在earliest_time发生的成交
             receipts = []
             
             for fill_time, side, price, shadow_idx, fill_info in earliest_fill_candidates:
                 if fill_time != earliest_time:
-                    break  # 只处理最早时间点的成交
+                    break
                 
                 level = self._get_level(side, price)
                 shadow = level.queue[shadow_idx]
@@ -1586,11 +1580,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             fill_price=shadow.price,
                             remaining_qty=0,
                         )
-                        logger.debug(
-                            f"[Exchange] Advance: post-crossing FILL for {shadow.order_id}, "
-                            f"fill_qty={fill_qty}, price={shadow.price}, time={ft}"
-                        )
-                        receipts.append(receipt)
                     else:
                         receipt = OrderReceipt(
                             order_id=shadow.order_id,
@@ -1600,11 +1589,11 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             fill_price=shadow.price,
                             remaining_qty=shadow.remaining_qty,
                         )
-                        logger.debug(
-                            f"[Exchange] Advance: post-crossing PARTIAL for {shadow.order_id}, "
-                            f"fill_qty={fill_qty}, remaining={shadow.remaining_qty}"
-                        )
-                        receipts.append(receipt)
+                    logger.debug(
+                        f"[Exchange] Advance: post-crossing {receipt.receipt_type} for {shadow.order_id}, "
+                        f"fill_qty={fill_qty}, price={shadow.price}, time={ft}"
+                    )
+                    receipts.append(receipt)
                 
                 elif fill_info['type'] == 'full_fill':
                     ft = fill_info['fill_time']
@@ -1638,74 +1627,56 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         f"fill_qty={remaining_to_fill}, price={shadow.price}, time={ft}"
                     )
                     receipts.append(receipt)
+                
+                elif fill_info['type'] == 'partial':
+                    new_fill = fill_info['new_fill']
+                    
+                    if not self._validate_fill_delta(
+                        shadow.order_id,
+                        new_fill,
+                        shadow.filled_qty,
+                        shadow.original_qty,
+                    ):
+                        continue
+                    
+                    # cap new_fill at remaining_qty
+                    if new_fill >= shadow.remaining_qty:
+                        new_fill = shadow.remaining_qty
+                    
+                    level._active_shadow_qty -= new_fill
+                    shadow.filled_qty += new_fill
+                    shadow.remaining_qty -= new_fill
+                    
+                    if shadow.remaining_qty <= 0:
+                        shadow.status = "FILLED"
+                        receipt = OrderReceipt(
+                            order_id=shadow.order_id,
+                            receipt_type="FILL",
+                            timestamp=earliest_time,
+                            fill_qty=new_fill,
+                            fill_price=shadow.price,
+                            remaining_qty=0,
+                        )
+                    else:
+                        receipt = OrderReceipt(
+                            order_id=shadow.order_id,
+                            receipt_type="PARTIAL",
+                            timestamp=earliest_time,
+                            fill_qty=new_fill,
+                            fill_price=shadow.price,
+                            remaining_qty=shadow.remaining_qty,
+                        )
+                    logger.debug(
+                        f"[Exchange] Advance: {receipt.receipt_type} for {shadow.order_id}, "
+                        f"fill_qty={new_fill}, remaining={shadow.remaining_qty}, time={earliest_time}"
+                    )
+                    receipts.append(receipt)
             
             self.current_time = earliest_time
             return receipts, earliest_time
         
-        # Phase 3b: 没有full fill / post-crossing fill，处理partial fills at t_to
-        receipts = []
-        for side, price, shadow_idx, fill_info in partial_fill_candidates:
-            level = self._get_level(side, price)
-            shadow = level.queue[shadow_idx]
-            
-            if shadow.status != "ACTIVE":
-                continue
-            
-            current_fill = fill_info['current_fill']
-            new_fill = fill_info['new_fill']
-            
-            if not self._validate_fill_delta(
-                shadow.order_id,
-                new_fill,
-                shadow.filled_qty,
-                shadow.original_qty,
-            ):
-                continue
-            
-            completes_order = new_fill >= shadow.remaining_qty
-            if completes_order:
-                new_fill = shadow.remaining_qty
-            
-            level._active_shadow_qty -= new_fill
-            
-            if completes_order:
-                shadow.filled_qty += new_fill
-                shadow.remaining_qty = 0
-                shadow.status = "FILLED"
-                
-                receipt = OrderReceipt(
-                    order_id=shadow.order_id,
-                    receipt_type="FILL",
-                    timestamp=t_to,
-                    fill_qty=new_fill,
-                    fill_price=shadow.price,
-                    remaining_qty=0,
-                )
-                logger.debug(
-                    f"[Exchange] Advance: FILL for {shadow.order_id}, "
-                    f"fill_qty={new_fill}, price={shadow.price}, time={t_to}"
-                )
-                receipts.append(receipt)
-            else:
-                shadow.filled_qty = current_fill
-                shadow.remaining_qty = shadow.original_qty - current_fill
-                
-                receipt = OrderReceipt(
-                    order_id=shadow.order_id,
-                    receipt_type="PARTIAL",
-                    timestamp=t_to,
-                    fill_qty=new_fill,
-                    fill_price=shadow.price,
-                    remaining_qty=shadow.remaining_qty,
-                )
-                logger.debug(
-                    f"[Exchange] Advance: PARTIAL for {shadow.order_id}, "
-                    f"fill_qty={new_fill}, remaining={shadow.remaining_qty}"
-                )
-                receipts.append(receipt)
-        
         self.current_time = t_to
-        return receipts, t_to
+        return [], t_to
     
     def align_at_boundary(self, snapshot: NormalizedSnapshot) -> None:
         """Align state at interval boundary.
