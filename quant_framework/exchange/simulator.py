@@ -1166,12 +1166,16 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 # trade在segment内的增长量（按时间比例）
                 trade_in_window = m_si * time_span / seg_duration
                 
-                # trade在X增长中的占比
-                total_rate_components = m_si + self._compute_cancel_front_prob(
-                    min(1.0, max(0.0, (shadow.pos - x_running) / max(
-                        self._get_q_mkt(side, price, seg.t_start), EPSILON
-                    ))) if shadow.pos > x_running else 0.0
-                ) * c_si
+                # 计算cancel_prob来确定trade在X增长中的占比
+                remaining_ahead = shadow.pos - x_running
+                if remaining_ahead > 0:
+                    q_mkt = self._get_q_mkt(side, price, seg.t_start)
+                    position_fraction = min(1.0, max(0.0, remaining_ahead / max(q_mkt, EPSILON)))
+                    cancel_prob = self._compute_cancel_front_prob(position_fraction)
+                else:
+                    cancel_prob = 0.0
+                
+                total_rate_components = m_si + cancel_prob * c_si
                 if total_rate_components > EPSILON:
                     trade_ratio = m_si / total_rate_components
                 else:
@@ -1485,8 +1489,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             # 只有有成交的价位才需要计算X坐标
             x_t_to = 0
-            first_active_shadow_pos = None
             if has_trades:
+                first_active_shadow_pos = None
                 for shadow in level.queue:
                     if shadow.status == "ACTIVE" and shadow.arrival_time <= t_to:
                         first_active_shadow_pos = shadow.pos
