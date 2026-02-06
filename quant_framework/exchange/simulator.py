@@ -1360,23 +1360,39 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 seg_idx = i
                 break
         
+        # 从segment.trades中获取正在成交的价位集合
+        # 只有在trades中出现的(side, price)才会有成交发生，
+        # 非成交价位的普通订单不需要计算X坐标和检查成交
+        trading_prices = set(segment.trades.keys()) if segment.trades else set()
+        
         for (side, price), level in list(self._levels.items()):
             if not level.queue:
                 continue
             
-            in_activation = seg_idx < 0 or self._is_in_activation_window(side, price, seg_idx)
-            at_best_price = seg_idx < 0 or self._is_at_best_price(side, price, seg_idx)
+            # 检查该价位是否有成交：直接看segment.trades中是否有该(side, price)
+            has_trades = (side, price) in trading_prices
             
-            first_active_shadow_pos = None
-            for shadow in level.queue:
-                if shadow.status == "ACTIVE" and shadow.arrival_time <= t_to:
-                    first_active_shadow_pos = shadow.pos
-                    break
+            # 检查该level是否有post-crossing订单需要处理
+            has_post_crossing = any(
+                s.is_post_crossing and s.status == "ACTIVE" and s.arrival_time <= t_to
+                for s in level.queue
+            )
             
-            if in_activation and first_active_shadow_pos is not None:
-                x_t_to = self._get_x_coord(side, price, t_to, first_active_shadow_pos)
-            else:
-                x_t_to = 0
+            # 如果该价位没有成交且没有post-crossing订单，整个level可以跳过
+            if not has_trades and not has_post_crossing:
+                continue
+            
+            # 只有有成交的价位才需要计算X坐标
+            x_t_to = 0
+            if has_trades:
+                first_active_shadow_pos = None
+                for shadow in level.queue:
+                    if shadow.status == "ACTIVE" and shadow.arrival_time <= t_to:
+                        first_active_shadow_pos = shadow.pos
+                        break
+                
+                if first_active_shadow_pos is not None:
+                    x_t_to = self._get_x_coord(side, price, t_to, first_active_shadow_pos)
             
             for shadow_idx, shadow in enumerate(level.queue):
                 if shadow.status != "ACTIVE":
@@ -1395,7 +1411,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         ))
                     continue
                 
-                if not in_activation or not at_best_price:
+                # 非post-crossing订单：只有该价位有成交时才可能成交
+                if not has_trades:
                     continue
                 
                 threshold = shadow.pos + shadow.original_qty
