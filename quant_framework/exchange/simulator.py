@@ -150,9 +150,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._interval_start: int = 0
         self._interval_end: int = 0
         
-        # Precomputed X coordinate at segment start for fast fill time calculation
-        self._x_at_seg_start: Dict[Tuple[Side, Price, int], float] = {}
-        
         # Track order IDs that were fully filled immediately (crossing orders)
         # This allows cancel requests to return REJECTED instead of OrderNotFoundError
         # Note: Order IDs are removed from this set after being referenced in a cancel,
@@ -351,7 +348,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self.current_time = 0
         self._current_tape = []
         self._current_seg_idx = 0
-        self._x_at_seg_start.clear()
         self._trade_pause_intervals[Side.BUY].clear()
         self._trade_pause_intervals[Side.SELL].clear()
         
@@ -431,8 +427,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # No need to restore orders - reset() now preserves _levels
         # Shadow orders remain in their price levels across intervals
         
-        self._x_at_seg_start.clear()
-        
         # Validate segments
         for seg_idx, seg in enumerate(tape):
             seg_duration = seg.t_end - seg.t_start
@@ -450,27 +444,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         seg = self._current_tape[seg_idx]
         activation_set = seg.activation_bid if side == Side.BUY else seg.activation_ask
         return round(price, 8) in {round(p, 8) for p in activation_set}
-    
-    def _is_at_best_price(self, side: Side, price: Price, seg_idx: int) -> bool:
-        """Check if price is at the best price level for given segment.
-        
-        Only orders at the best price can be filled during advance.
-        - BUY orders: price must equal segment.bid_price (best bid)
-        - SELL orders: price must equal segment.ask_price (best ask)
-        
-        Args:
-            side: Order side
-            price: Order price
-            seg_idx: Segment index
-            
-        Returns:
-            True if price is at the best price level
-        """
-        if seg_idx < 0 or seg_idx >= len(self._current_tape):
-            return False
-        seg = self._current_tape[seg_idx]
-        best_price = seg.bid_price if side == Side.BUY else seg.ask_price
-        return abs(price - best_price) < EPSILON
     
     def _get_x_coord(self, side: Side, price: Price, t: int, shadow_pos: int) -> float:
         """Get X coordinate at time t for given side and price.
@@ -1273,79 +1246,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         if fill_time > t_to:
             return None
         return fill_time
-    
-    def _compute_fill_time(self, shadow: ShadowOrder, qty_to_fill: int) -> Optional[int]:
-        """Compute exchtime when order reaches fill threshold.
-        
-        Uses piecewise linear X to find when X(t) >= pos + qty_to_fill.
-        
-        Args:
-            shadow: The shadow order
-            qty_to_fill: Quantity threshold (usually original_qty for full fill)
-            
-        Returns:
-            Fill time (exchtime) or None if not fillable in interval
-        """
-        threshold = shadow.pos + qty_to_fill
-        side = shadow.side
-        price = shadow.price
-        
-        level = self._get_level(side, price)
-        
-        # Start X from level's base
-        x_running = level.x_coord
-        
-        for seg_idx, seg in enumerate(self._current_tape):
-            if seg.t_end <= shadow.arrival_time:
-                # Skip segments before order arrival
-                # But still need to accumulate X using shadow's position
-                if self._is_in_activation_window(side, price, seg_idx):
-                    seg_duration = seg.t_end - seg.t_start
-                    if seg_duration > 0:
-                        rate = self._compute_rate_for_segment(
-                            side, price, seg_idx, x_running, shadow.pos
-                        )
-                        x_running += rate * seg_duration
-                continue
-            
-            seg_duration = seg.t_end - seg.t_start
-            if seg_duration <= 0:
-                raise InvalidSegmentError(
-                    seg_idx, seg.t_start, seg.t_end,
-                    f"Invalid segment {seg_idx} in _compute_fill_time: "
-                    f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
-                )
-            
-            # Check activation
-            if not self._is_in_activation_window(side, price, seg_idx):
-                continue
-            
-            rate = self._compute_rate_for_segment(
-                side, price, seg_idx, x_running, shadow.pos
-            )
-            
-            # Effective start time for this segment
-            effective_start = max(seg.t_start, shadow.arrival_time)
-            
-            # X at effective start
-            if effective_start > seg.t_start:
-                x_at_start = x_running + rate * (effective_start - seg.t_start)
-            else:
-                x_at_start = x_running
-            
-            # X at segment end
-            x_at_end = x_running + rate * seg_duration
-            
-            # Check if threshold is crossed in this segment
-            if x_at_start < threshold <= x_at_end and rate > EPSILON:
-                # Solve: x_at_start + rate * (t - effective_start) = threshold
-                delta_t = (threshold - x_at_start) / rate
-                fill_time = int(effective_start + delta_t)
-                return max(fill_time, effective_start)
-            
-            x_running = x_at_end
-        
-        return None
     
     def _compute_rate_for_segment(
         self, side: Side, price: Price, seg_idx: int, x_running: float, shadow_pos: int
