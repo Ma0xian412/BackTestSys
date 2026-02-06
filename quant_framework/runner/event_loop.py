@@ -523,6 +523,10 @@ class EventLoopRunner:
 
         # 事件循环 - 使用"peek, advance, pop batch"范式
         # 避免"生成过去事件"的因果反转问题
+        # 
+        # 修改：advance每次遇到最早成交即返回，返回停止时间。
+        # 每次advance后需要重新检查event_queue是否有更早事件到来，
+        # 确保不会遗漏策略在收到回执后新下的订单。
         current_seg_idx = 0
         last_time = t_a
         
@@ -534,30 +538,59 @@ class EventLoopRunner:
             t_next = event_queue[0].time
             
             # Step 2: 将交易所推进到t_next，期间产生的回执会被调度
-            # 如果回执时间 <= t_next，会在同一轮被处理
+            # advance现在遇到最早成交即返回，需要循环推进直到到达t_next
+            # 每次advance后重新检查event_queue是否有更早事件
             if t_next > last_time and current_seg_idx < len(tape):
+                needs_recheck = False
+                
                 # 处理到t_next为止的所有完整段
                 while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= t_next:
                     seg = tape[current_seg_idx]
-                    receipts = self.exchange.advance(last_time, seg.t_end, seg)
+                    
+                    # 循环调用advance直到到达段结束时间
+                    # advance可能在中途因成交而提前返回
+                    while last_time < seg.t_end:
+                        receipts, stopped_time = self.exchange.advance(last_time, seg.t_end, seg)
+                        
+                        for receipt in receipts:
+                            self._schedule_receipt(receipt, event_queue, t_b)
+                        
+                        last_time = stopped_time
+                        
+                        # 如果有成交产生回执，检查event_queue是否有更早的事件
+                        if receipts and event_queue and event_queue[0].time < t_next:
+                            needs_recheck = True
+                            break
+                    
+                    if needs_recheck:
+                        break
+                    
+                    if last_time >= seg.t_end:
+                        current_seg_idx += 1
 
-                    # 调度回执发送到策略
-                    for receipt in receipts:
-                        self._schedule_receipt(receipt, event_queue, t_b)
-
-                    last_time = seg.t_end
-                    current_seg_idx += 1
+                if needs_recheck:
+                    # 有更早事件到来，回到循环顶部重新peek
+                    continue
 
                 # 如果t_next落在当前段内部，需要先将交易所推进到t_next
                 # 确保t_next时刻的事件发生之前的成交已被正确处理
                 if current_seg_idx < len(tape):
                     seg = tape[current_seg_idx]
                     if seg.t_start <= t_next < seg.t_end and t_next > last_time:
-                        # 推进到t_next（段内推进）
-                        receipts = self.exchange.advance(last_time, t_next, seg)
-                        for receipt in receipts:
-                            self._schedule_receipt(receipt, event_queue, t_b)
-                        last_time = t_next
+                        # 循环推进到t_next（段内推进），advance可能提前返回
+                        while last_time < t_next:
+                            receipts, stopped_time = self.exchange.advance(last_time, t_next, seg)
+                            for receipt in receipts:
+                                self._schedule_receipt(receipt, event_queue, t_b)
+                            last_time = stopped_time
+                            
+                            # 检查是否有更早事件
+                            if receipts and event_queue and event_queue[0].time < t_next:
+                                break
+                        
+                        if event_queue and event_queue[0].time < t_next:
+                            # 有更早事件，回到循环顶部重新peek
+                            continue
 
             # Step 3: Pop并处理所有time==t_next的事件（批处理）
             # 这样新生成的回执（如果时间 <= t_next）会在heap中排在后面

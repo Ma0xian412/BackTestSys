@@ -127,8 +127,15 @@ class IExchangeSimulator(ABC):
         pass
 
     @abstractmethod
-    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
-        """使用tape段推进仿真从t_from到t_to。
+    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> Tuple[List[OrderReceipt], int]:
+        """使用tape段推进仿真从t_from到t_to，遇到最早成交即停止返回。
+
+        在推进过程中，找到所有订单中最早的成交时间，只处理该最早成交，
+        然后返回成交回执和停止的时间点。如果没有成交，则推进到t_to。
+
+        这样设计确保：
+        - post-crossing订单和best price订单之间的成交先后关系正确
+        - 每次成交后event loop可以检查是否有新事件需要处理
 
         Args:
             t_from: 切片开始时间
@@ -136,7 +143,8 @@ class IExchangeSimulator(ABC):
             segment: 包含该区间M和C的Tape段
 
         Returns:
-            该时段内的成交回执列表
+            (成交回执列表, 停止时间点)。如果有成交，停止时间为最早成交时间；
+            如果无成交，停止时间为t_to。
         """
         pass
 
