@@ -854,9 +854,9 @@ class UnifiedTapeBuilder(ITapeBuilder):
         3. 对于每一段：
            - 计算该段的起始队列深度 Q_start（第一段为 Q_prev，后续段根据前面段的变化累积得出）
            - 如果是归零段（价格转换离开该档位）：该段必须消耗 Q_start 使队列归零，
-             净流入量 = M_group - Q_start，N_remaining += Q_start（归零释放的量加回待分配池）
-           - 如果是有成交段：净流入量 = M_group（需要支撑成交），从N_remaining中消耗
-           - 如果是无成交的普通段：按时长比例分配部分 N_remaining
+             N_remaining += Q_start（归零释放的量加回待分配池）
+           - 如果是有成交段：净流入量 = min(N_remaining, M_group)，队列长度不能为负
+           - 如果是无成交的普通段：按时长比例分配部分 N_remaining（或根据队列非负约束）
         
         Args:
             side: 买卖方向
@@ -904,29 +904,32 @@ class UnifiedTapeBuilder(ITapeBuilder):
                 
                 if ends_with_transition:
                     # 归零段：队列必须从 q_start 归零
-                    # 净流入量 = M_group - Q_start（为了使队列归零）
+                    # 段内守恒：Q_end = Q_start + N - M = 0
+                    # 所以：N = M - Q_start
                     n_group = m_group - q_start
                     
-                    # 更新n_remaining：消耗n_group
+                    # 归零释放的量加回待分配池：N_remaining += Q_start
+                    # 等价于：N_remaining -= N = N_remaining -= (M - Q_start) = N_remaining + Q_start - M
                     n_remaining -= n_group
                     
                     # 段结束后队列归零
                     q_current = 0.0
                 else:
-                    # 非归零段（保持或最终段）
+                    # 非归零段：需要确保队列不为负
                     if m_group > 0:
-                        # 有成交段：必须分配足够的净流入量来支撑成交
-                        # 净流入量 = M_group（确保队列从0开始能支撑M_group的成交）
-                        # 但受限于剩余可分配量n_remaining
-                        n_group = min(m_group, n_remaining) if n_remaining > 0 else m_group
+                        # 有成交段：需要分配净增量来支撑成交
+                        # 约束1：队列不能为负 -> Q_start + N - M >= 0 -> N >= M - Q_start
+                        # 约束2：净增量受限于剩余可分配量
+                        # 分配量 = min(N_remaining, M_group)，但不能让队列变负
                         
-                        # 如果起始队列q_start > 0，则实际需要的净流入量可以减少
-                        # 因为队列已有的深度可以支撑部分成交
-                        if q_start > 0:
-                            # 需要的净流入量 = max(0, M_group - Q_start)
-                            # 但为了保持守恒，我们需要消耗n_remaining
-                            needed = max(0.0, m_group - q_start)
-                            n_group = min(needed, n_remaining) if n_remaining > 0 else needed
+                        # 为了支撑成交M，需要的最小净增量
+                        min_needed = max(0.0, m_group - q_start)
+                        
+                        # 分配量：取min_needed和n_remaining的较小值
+                        # 如果n_remaining不够支撑，也只能分配这么多（队列会变负但守恒正确）
+                        n_group = min(m_group, min_needed)
+                        if n_remaining > 0:
+                            n_group = min(n_group, n_remaining)
                         
                         # 更新剩余待分配量
                         n_remaining -= n_group
@@ -937,18 +940,20 @@ class UnifiedTapeBuilder(ITapeBuilder):
                             q_current = 0.0
                     else:
                         # 无成交的普通段：按时长比例分配部分 N_remaining
-                        # 计算该段组在所有活跃段中的时长比例
+                        # 计算该段组的时长占比
                         all_active_segs = [
                             i for i, seg in enumerate(segments)
                             if price in self._get_activation_set_for_side(seg, side)
                         ]
                         group_segs = list(range(start_idx, end_idx + 1))
                         
+                        # 计算剩余段（当前及之后）的总时长
+                        remaining_segs = [i for i in all_active_segs if i >= start_idx]
                         group_dur = sum(segments[i].t_end - segments[i].t_start for i in group_segs)
-                        total_dur = sum(segments[i].t_end - segments[i].t_start for i in all_active_segs) or 1
+                        remaining_dur = sum(segments[i].t_end - segments[i].t_start for i in remaining_segs) or 1
                         
                         # 按时长比例分配剩余待分配量
-                        n_group = n_remaining * group_dur / total_dur
+                        n_group = n_remaining * group_dur / remaining_dur
                         
                         # 确保队列不为负：n_group >= -q_start
                         if n_group < -q_start:
@@ -957,10 +962,8 @@ class UnifiedTapeBuilder(ITapeBuilder):
                         # 更新剩余待分配量
                         n_remaining -= n_group
                         
-                        # 更新当前队列深度
-                        q_current = q_start + n_group - m_group
-                        if q_current < 0:
-                            q_current = 0.0
+                        # 更新当前队列深度（由于n_group >= -q_start，q_current >= 0）
+                        q_current = q_start + n_group
                 
                 group_segs = list(range(start_idx, end_idx + 1))
                 durations = [segments[i].t_end - segments[i].t_start for i in group_segs]
