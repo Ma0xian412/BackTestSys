@@ -1519,18 +1519,22 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 
                 threshold = shadow.pos + shadow.original_qty
                 
-                # 成交量受限于实际trade量
+                # 成交量受限于实际trade量：_compute_trades_for_order返回从interval开始
+                # 到t_to的累积trade消耗量（不是增量）
                 trades_for_order = self._compute_trades_for_order(
                     side, price, shadow, t_to
                 )
                 cumulative_fill = min(int(trades_for_order), shadow.original_qty)
+                # 本次新增 = 累积 - 已成交（已成交部分在之前的advance中已处理）
                 new_fill = cumulative_fill - shadow.filled_qty
                 
+                # new_fill <= 0 表示没有新的trade消耗订单，跳过
                 if new_fill <= 0:
                     continue
                 
                 if x_t_to >= threshold and new_fill >= shadow.remaining_qty:
-                    # full fill: X越过阈值且trade量足够
+                    # full fill: X越过阈值（包含cancel推进）且trade量足够完全成交
+                    # 两个条件缺一不可：X确认排队位置已被清空，trade确认成交量足够
                     fill_time = self._compute_fill_time(shadow, shadow.original_qty)
                     if fill_time is not None and t_from < fill_time <= t_to:
                         earliest_fill_candidates.append((
@@ -1639,7 +1643,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     ):
                         continue
                     
-                    # cap new_fill at remaining_qty
+                    # 防御性检查：cap new_fill防止超出remaining_qty
+                    # 正常路径下不会触发（Phase 1中new_fill已被正确计算）
                     if new_fill >= shadow.remaining_qty:
                         new_fill = shadow.remaining_qty
                     
