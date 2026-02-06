@@ -1102,6 +1102,107 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 return i
         return -1
     
+    def _compute_trades_for_order(
+        self, side: Side, price: Price, shadow: 'ShadowOrder', t_to: int
+    ) -> float:
+        """计算到t_to为止，trade对订单的实际消耗量。
+        
+        逐segment计算：在每个segment中，X的增长 = (M + φ·C) * time
+        其中trade的增长贡献 = M * time / duration
+        当X越过shadow.pos后，trade的贡献才开始消耗订单。
+        
+        在一个segment内部，trade和cancel是按时间均匀混合发生的。
+        如果segment只有cancel没有trade（M=0），则该segment不消耗订单。
+        如果segment只有trade没有cancel（C=0），则X增长全部是trade，直接消耗。
+        
+        Args:
+            side: 订单方向
+            price: 价格
+            shadow: shadow order
+            t_to: 结束时间
+            
+        Returns:
+            到t_to时刻，trade对订单的累积消耗量（浮点数）
+        """
+        level = self._get_level(side, price)
+        
+        if not self._current_tape or t_to <= self._interval_start:
+            return 0.0
+        
+        x_running = level.x_coord
+        trades_consumed_by_order = 0.0
+        
+        for seg_idx, seg in enumerate(self._current_tape):
+            if t_to <= seg.t_start:
+                break
+            
+            seg_start = max(seg.t_start, self._interval_start)
+            seg_end = min(seg.t_end, t_to)
+            
+            if seg_end <= seg_start:
+                continue
+            
+            if not self._is_in_activation_window(side, price, seg_idx):
+                continue
+            
+            seg_duration = seg.t_end - seg.t_start
+            if seg_duration <= 0:
+                continue
+            
+            # 该segment中的M和C
+            m_si = seg.trades.get((side, price), 0)
+            c_si = seg.cancels.get((side, price), 0)
+            
+            # 计算该segment的rate（和_get_x_coord一致）
+            rate = self._compute_rate_for_segment(side, price, seg_idx, x_running, shadow.pos)
+            
+            # X在这个segment窗口内的增长
+            time_span = seg_end - seg_start
+            x_delta = rate * time_span
+            x_at_end = x_running + x_delta
+            
+            if m_si > 0 and rate > EPSILON:
+                # 该segment有trade，计算trade对订单的贡献
+                # trade在segment内的增长量（按时间比例）
+                trade_in_window = m_si * time_span / seg_duration
+                
+                # trade在X增长中的占比
+                total_rate_components = m_si + self._compute_cancel_front_prob(
+                    min(1.0, max(0.0, (shadow.pos - x_running) / max(
+                        self._get_q_mkt(side, price, seg.t_start), EPSILON
+                    ))) if shadow.pos > x_running else 0.0
+                ) * c_si
+                if total_rate_components > EPSILON:
+                    trade_ratio = m_si / total_rate_components
+                else:
+                    trade_ratio = 1.0 if m_si > 0 else 0.0
+                
+                # 在这个segment中，X从x_running增长到x_at_end
+                # 如果x_running < pos，X需要先越过pos
+                if x_at_end > shadow.pos:
+                    # X越过了pos（至少部分越过）
+                    if x_running >= shadow.pos:
+                        # 整个segment中X都在pos之后，所有trade都消耗订单
+                        trades_consumed_by_order += trade_in_window
+                    else:
+                        # X在segment中间越过pos
+                        # pos之后的X增长占比
+                        x_beyond_pos = x_at_end - shadow.pos
+                        x_total_delta = x_at_end - x_running
+                        if x_total_delta > EPSILON:
+                            beyond_ratio = x_beyond_pos / x_total_delta
+                        else:
+                            beyond_ratio = 0.0
+                        # 越过pos之后的trade贡献
+                        trades_consumed_by_order += trade_in_window * beyond_ratio
+            
+            x_running = x_at_end
+            
+            if t_to <= seg.t_end:
+                break
+        
+        return trades_consumed_by_order
+    
     def _compute_fill_time(self, shadow: ShadowOrder, qty_to_fill: int) -> Optional[int]:
         """Compute exchtime when order reaches fill threshold.
         
@@ -1384,8 +1485,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             # 只有有成交的价位才需要计算X坐标
             x_t_to = 0
+            first_active_shadow_pos = None
             if has_trades:
-                first_active_shadow_pos = None
                 for shadow in level.queue:
                     if shadow.status == "ACTIVE" and shadow.arrival_time <= t_to:
                         first_active_shadow_pos = shadow.pos
@@ -1417,23 +1518,33 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 
                 threshold = shadow.pos + shadow.original_qty
                 
-                if x_t_to >= threshold:
+                # 成交量受限于实际trade量：只有trades才能消耗订单，cancels只能推进排队位置
+                # 逐segment计算trade对订单的实际贡献：
+                # 在每个segment中，X的增长 = (M + φ·C) * time_fraction
+                # 其中trade的贡献比例 = M / (M + φ·C)
+                # 当X越过pos后，trade贡献才开始消耗订单
+                trades_for_order = self._compute_trades_for_order(
+                    side, price, shadow, t_to
+                )
+                max_fill_by_trades = min(int(trades_for_order), shadow.original_qty - shadow.filled_qty)
+                
+                if x_t_to >= threshold and max_fill_by_trades >= shadow.original_qty - shadow.filled_qty:
+                    # X坐标越过阈值 且 trade量足够完全成交
                     fill_time = self._compute_fill_time(shadow, shadow.original_qty)
                     if fill_time is not None and t_from < fill_time <= t_to:
                         earliest_fill_candidates.append((
                             fill_time, side, price, shadow_idx,
                             {'type': 'full_fill', 'fill_time': fill_time}
                         ))
-                elif x_t_to > shadow.pos:
-                    # Partial fill at t_to
-                    current_fill = int(x_t_to - shadow.pos)
-                    if current_fill > shadow.filled_qty:
-                        new_fill = current_fill - shadow.filled_qty
-                        if new_fill > 0:
-                            partial_fill_candidates.append((
-                                side, price, shadow_idx,
-                                {'type': 'partial', 'current_fill': current_fill, 'new_fill': new_fill, 'x_t_to': x_t_to}
-                            ))
+                elif max_fill_by_trades > 0 and max_fill_by_trades > shadow.filled_qty:
+                    # 有trade可消耗订单，但不足以完全成交 → partial fill
+                    new_fill = max_fill_by_trades - shadow.filled_qty
+                    if new_fill > 0:
+                        current_fill = shadow.filled_qty + new_fill
+                        partial_fill_candidates.append((
+                            side, price, shadow_idx,
+                            {'type': 'partial', 'current_fill': current_fill, 'new_fill': new_fill, 'x_t_to': x_t_to}
+                        ))
         
         # Phase 2: 确定最终行为
         if earliest_fill_candidates:
