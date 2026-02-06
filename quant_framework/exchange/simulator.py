@@ -84,6 +84,7 @@ class ShadowOrder:
     tif: TimeInForce = TimeInForce.GTC
     is_post_crossing: bool = False  # True if this is remainder after crossing
     crossed_prices: List[Tuple[Side, Price]] = field(default_factory=list)  # Prices that were crossed
+    interval_filled_qty: Qty = 0  # Filled qty within current interval (reset at align_at_boundary)
 
 
 @dataclass
@@ -1520,13 +1521,18 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 threshold = shadow.pos + shadow.original_qty
                 
                 # 成交量受限于实际trade量：_compute_trades_for_order返回从interval开始
-                # 到t_to的累积trade消耗量（不是增量）
+                # 到t_to的累积trade消耗量（当前interval内的累积，不是跨interval的）
                 trades_for_order = self._compute_trades_for_order(
                     side, price, shadow, t_to
                 )
-                cumulative_fill = min(int(trades_for_order), shadow.original_qty)
-                # 本次新增 = 累积 - 已成交（已成交部分在之前的advance中已处理）
-                new_fill = cumulative_fill - shadow.filled_qty
+                # cap在当前interval可成交的最大量（remaining + 本interval已成交的）
+                interval_remaining = shadow.remaining_qty + shadow.interval_filled_qty
+                cumulative_fill = min(int(trades_for_order), interval_remaining)
+                # 本次新增 = 当前interval累积 - 当前interval内已处理的成交量
+                # 注意：使用 interval_filled_qty 而非 filled_qty，因为
+                # _compute_trades_for_order 只计算当前interval内的累积量，
+                # 而 filled_qty 包含跨interval的历史成交
+                new_fill = cumulative_fill - shadow.interval_filled_qty
                 
                 # new_fill <= 0 表示没有新的trade消耗订单，跳过
                 if new_fill <= 0:
@@ -1572,6 +1578,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     
                     level._active_shadow_qty -= fill_qty
                     shadow.filled_qty += fill_qty
+                    shadow.interval_filled_qty += fill_qty
                     shadow.remaining_qty -= fill_qty
                     
                     if shadow.remaining_qty <= 0:
@@ -1615,6 +1622,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     
                     level._active_shadow_qty -= shadow.remaining_qty
                     shadow.filled_qty = shadow.original_qty
+                    shadow.interval_filled_qty += remaining_to_fill
                     shadow.remaining_qty = 0
                     shadow.status = "FILLED"
                     
@@ -1650,6 +1658,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     
                     level._active_shadow_qty -= new_fill
                     shadow.filled_qty += new_fill
+                    shadow.interval_filled_qty += new_fill
                     shadow.remaining_qty -= new_fill
                     
                     if shadow.remaining_qty <= 0:
@@ -1722,6 +1731,8 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 if shadow.status == "ACTIVE":
                     # Adjust pos relative to new X = 0
                     shadow.pos = shadow.pos - current_x
+                    # Reset interval-specific filled counter for new interval
+                    shadow.interval_filled_qty = 0
             
             # Reset X to 0
             level.x_coord = 0.0

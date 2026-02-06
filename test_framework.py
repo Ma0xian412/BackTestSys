@@ -5269,6 +5269,116 @@ def test_multi_advance_partial_fill():
     print("✓ Multi-advance partial fill test passed")
 
 
+def test_cross_interval_partial_fill_continues():
+    """测试：跨interval的订单在新interval中继续成交。
+    
+    场景（来自用户问题）：
+    - interval1中订单部分成交了5手（filled_qty=5）
+    - interval2中有4手trade
+    - 验证：新interval中的成交不会因为filled_qty > cumulative_fill而被跳过
+    """
+    print("\n--- Test 57: Cross-Interval Partial Fill Continues ---")
+    
+    from quant_framework.core.types import TapeSegment, NormalizedSnapshot, Level
+    
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    
+    # === Interval 1 ===
+    seg1 = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=2000 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 10},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -10},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg1], 1000 * TICK_PER_MS, 2000 * TICK_PER_MS)
+    
+    # 订单 pos=0, qty=10（前面没人排队）
+    order = Order(order_id="cross-interval", side=Side.BUY, price=100.0, qty=10)
+    exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
+    
+    # 推进interval1，收集所有成交（应该成交~5手，取决于推进范围）
+    t_mid = 1000 * TICK_PER_MS + int(0.5 * 1000 * TICK_PER_MS)
+    all_receipts_1 = []
+    t = 1000 * TICK_PER_MS
+    while t < t_mid:
+        receipts, t = exchange.advance(t, t_mid, seg1)
+        all_receipts_1.extend(receipts)
+    
+    shadow = exchange._find_order_by_id("cross-interval")
+    filled_after_interval1 = shadow.filled_qty
+    print(f"  Interval1结束后: filled_qty={filled_after_interval1}, remaining={shadow.remaining_qty}")
+    
+    assert filled_after_interval1 > 0, "Interval1应该有成交"
+    assert shadow.remaining_qty > 0, "Interval1不应该完全成交（只推进了一半）"
+    
+    # === 模拟跨interval边界 ===
+    exchange.current_time = t_mid
+    
+    # 创建snapshot用于align
+    snap = NormalizedSnapshot(
+        ts_recv=t_mid,
+        bids=[Level(price=100.0, qty=20)],
+        asks=[Level(price=101.0, qty=20)],
+    )
+    exchange.align_at_boundary(snap)
+    
+    # 验证 interval_filled_qty 已重置
+    assert shadow.interval_filled_qty == 0, \
+        f"align后interval_filled_qty应为0，实际{shadow.interval_filled_qty}"
+    print(f"  align后: filled_qty={shadow.filled_qty}, interval_filled_qty={shadow.interval_filled_qty}")
+    
+    # === Interval 2 ===
+    remaining_before = shadow.remaining_qty
+    seg2 = TapeSegment(
+        index=2,
+        t_start=2000 * TICK_PER_MS,
+        t_end=3000 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 4},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -4},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg2], 2000 * TICK_PER_MS, 3000 * TICK_PER_MS)
+    
+    # 推进interval2
+    all_receipts_2 = []
+    t = 2000 * TICK_PER_MS
+    while t < 3000 * TICK_PER_MS:
+        receipts, t = exchange.advance(t, 3000 * TICK_PER_MS, seg2)
+        all_receipts_2.extend(receipts)
+        if not receipts:
+            break
+    
+    filled_in_interval2 = sum(r.fill_qty for r in all_receipts_2)
+    print(f"  Interval2: filled={filled_in_interval2}手, total_filled={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    # 关键断言：
+    # 1. interval2中应该有成交（不会因为filled_qty > cumulative_fill而被跳过）
+    assert filled_in_interval2 > 0, \
+        f"Interval2应该有成交！filled_qty={shadow.filled_qty}, " \
+        f"但new_fill不应该为负（这是修复的bug）"
+    
+    # 2. interval2中成交量不应超过trade总量（4手）和remaining
+    assert filled_in_interval2 <= 4, \
+        f"Interval2成交量({filled_in_interval2})不应超过trade总量(4)"
+    assert filled_in_interval2 <= remaining_before, \
+        f"Interval2成交量({filled_in_interval2})不应超过remaining({remaining_before})"
+    
+    print(f"  总成交量: {shadow.filled_qty}手 (interval1={filled_after_interval1} + interval2={filled_in_interval2})")
+    print("✓ Cross-interval partial fill continues test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -5338,6 +5448,7 @@ def run_all_tests():
         test_advance_early_return_new_order_not_missed,
         test_cancel_only_segment_fill_correctness,
         test_multi_advance_partial_fill,
+        test_cross_interval_partial_fill_continues,
     ]
     
     passed = 0
