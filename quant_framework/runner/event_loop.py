@@ -521,53 +521,51 @@ class EventLoopRunner:
                     data=order,
                 ))
 
-        # 事件循环 - 使用"peek, advance, pop batch"范式
-        # 避免"生成过去事件"的因果反转问题
+        # 事件循环 - 事件化推进，遇到最早成交立即停住
         current_seg_idx = 0
-        last_time = t_a
+        t_cur = t_a
         
         # 调度区间内的撤单请求
         self._schedule_pending_cancels(event_queue, t_a, t_b)
 
         while event_queue:
-            # Step 1: Peek 下一个事件的时间（不弹出）
-            t_next = event_queue[0].time
-            
-            # Step 2: 将交易所推进到t_next，期间产生的回执会被调度
-            # 如果回执时间 <= t_next，会在同一轮被处理
-            if t_next > last_time and current_seg_idx < len(tape):
-                # 处理到t_next为止的所有完整段
-                while current_seg_idx < len(tape) and tape[current_seg_idx].t_end <= t_next:
-                    seg = tape[current_seg_idx]
-                    receipts = self.exchange.advance(last_time, seg.t_end, seg)
+            # 更新当前段索引
+            while current_seg_idx < len(tape) and t_cur >= tape[current_seg_idx].t_end:
+                current_seg_idx += 1
 
-                    # 调度回执发送到策略
+            t_evt = event_queue[0].time if event_queue else t_b
+            seg_end = tape[current_seg_idx].t_end if current_seg_idx < len(tape) else t_b
+            t_limit = min(t_evt, seg_end, t_b)
+
+            # 同一时间戳：先处理外部事件，再推进
+            if t_limit == t_cur:
+                events_at_t_cur = []
+                while event_queue and event_queue[0].time == t_cur:
+                    events_at_t_cur.append(heapq.heappop(event_queue))
+                for event in events_at_t_cur:
+                    self._process_single_event(event, event_queue, tape, t_b)
+                continue
+
+            # 推进到t_limit或最早成交
+            if current_seg_idx < len(tape):
+                seg = tape[current_seg_idx]
+                receipts, t_stop = self.exchange.advance(t_cur, t_limit, seg)
+                t_cur = t_stop
+
+                if receipts:
                     for receipt in receipts:
                         self._schedule_receipt(receipt, event_queue, t_b)
+                    # 重新peek事件队列，避免跨过新回执引发的事件
+                    continue
+            else:
+                # 无有效segment，仅推进时间
+                t_cur = t_limit
 
-                    last_time = seg.t_end
-                    current_seg_idx += 1
-
-                # 如果t_next落在当前段内部，需要先将交易所推进到t_next
-                # 确保t_next时刻的事件发生之前的成交已被正确处理
-                if current_seg_idx < len(tape):
-                    seg = tape[current_seg_idx]
-                    if seg.t_start <= t_next < seg.t_end and t_next > last_time:
-                        # 推进到t_next（段内推进）
-                        receipts = self.exchange.advance(last_time, t_next, seg)
-                        for receipt in receipts:
-                            self._schedule_receipt(receipt, event_queue, t_b)
-                        last_time = t_next
-
-            # Step 3: Pop并处理所有time==t_next的事件（批处理）
-            # 这样新生成的回执（如果时间 <= t_next）会在heap中排在后面
-            # 但因为我们是批处理同一时刻的事件，它们会被正确处理
-            events_at_t_next = []
-            while event_queue and event_queue[0].time == t_next:
-                events_at_t_next.append(heapq.heappop(event_queue))
-            
-            # 处理同一时刻的所有事件（已按priority和seq排序）
-            for event in events_at_t_next:
+            # 推进到t_limit仍无成交，处理当前时刻的事件
+            events_at_t_cur = []
+            while event_queue and event_queue[0].time == t_cur:
+                events_at_t_cur.append(heapq.heappop(event_queue))
+            for event in events_at_t_cur:
                 self._process_single_event(event, event_queue, tape, t_b)
 
     def _process_single_event(

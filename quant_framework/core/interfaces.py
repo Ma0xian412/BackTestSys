@@ -127,7 +127,7 @@ class IExchangeSimulator(ABC):
         pass
 
     @abstractmethod
-    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> List[OrderReceipt]:
+    def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> Tuple[List[OrderReceipt], int]:
         """使用tape段推进仿真从t_from到t_to。
 
         Args:
@@ -136,7 +136,7 @@ class IExchangeSimulator(ABC):
             segment: 包含该区间M和C的Tape段
 
         Returns:
-            该时段内的成交回执列表
+            (该时段最早成交回执列表, 停止时间)
         """
         pass
 
