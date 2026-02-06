@@ -1523,16 +1523,16 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 threshold = shadow.pos + shadow.original_qty
                 
                 # 成交量受限于实际trade量：只有trades才能消耗订单，cancels只能推进排队位置
-                # 逐segment计算trade对订单的实际贡献：
-                # 在每个segment中，X的增长 = (M + φ·C) * time_fraction
-                # 其中trade的贡献比例 = M / (M + φ·C)
-                # 当X越过pos后，trade贡献才开始消耗订单
+                # trades_for_order 是从interval开始到t_to的累积trade消耗量
                 trades_for_order = self._compute_trades_for_order(
                     side, price, shadow, t_to
                 )
-                max_fill_by_trades = min(int(trades_for_order), shadow.original_qty - shadow.filled_qty)
+                # 累积trade消耗量cap在原始数量内
+                cumulative_fill = min(int(trades_for_order), shadow.original_qty)
+                # 本次新增成交量 = 累积量 - 已成交量
+                new_fill = cumulative_fill - shadow.filled_qty
                 
-                if x_t_to >= threshold and max_fill_by_trades >= shadow.original_qty - shadow.filled_qty:
+                if x_t_to >= threshold and new_fill >= shadow.remaining_qty:
                     # X坐标越过阈值 且 trade量足够完全成交
                     fill_time = self._compute_fill_time(shadow, shadow.original_qty)
                     if fill_time is not None and t_from < fill_time <= t_to:
@@ -1540,15 +1540,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                             fill_time, side, price, shadow_idx,
                             {'type': 'full_fill', 'fill_time': fill_time}
                         ))
-                elif max_fill_by_trades > 0 and max_fill_by_trades > shadow.filled_qty:
-                    # 有trade可消耗订单，但不足以完全成交 → partial fill
-                    new_fill = max_fill_by_trades - shadow.filled_qty
-                    if new_fill > 0:
-                        current_fill = shadow.filled_qty + new_fill
-                        partial_fill_candidates.append((
-                            side, price, shadow_idx,
-                            {'type': 'partial', 'current_fill': current_fill, 'new_fill': new_fill, 'x_t_to': x_t_to}
-                        ))
+                elif new_fill > 0:
+                    # 有新增trade可消耗订单，但不足以完全成交 → partial fill
+                    # partial fill 也是成交事件，统一放入earliest_fill_candidates
+                    # fill_time为t_to（连续模型下到t_to才能确认成交量）
+                    earliest_fill_candidates.append((
+                        t_to, side, price, shadow_idx,
+                        {'type': 'partial', 'new_fill': new_fill}
+                    ))
         
         # Phase 2: 确定最终行为
         if earliest_fill_candidates:
