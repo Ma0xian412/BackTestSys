@@ -763,7 +763,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                         fill_price=immediate_fill_price,
                         remaining_qty=0,  # Canceled, so remaining is 0
                     )
-                    logger.debug(f"[Exchange] IOC Order {order.order_id}: PARTIAL receipt (rest canceled)")
+                    logger.debug(
+                        f"[Exchange] IOC Order {order.order_id}: PARTIAL fill, "
+                        f"remaining_qty=0 (rest canceled)"
+                    )
                     return receipt
             else:
                 # No immediate fill, cancel
@@ -781,7 +784,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         # Non-IOC (GTC): Queue remaining if any
         if remaining_qty > 0:
             # Queue the remaining order using coordinate-axis model
-            # Pass crossed_prices for post-crossing fill calculation
+            # Pass crossed_prices for diagnostics
             receipt = self._queue_order(
                 order, arrival_time, market_qty, remaining_qty, immediate_fill_qty, crossed_prices
             )
@@ -1007,7 +1010,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             market_qty: 区间起点T_A时的市场队列深度（作为插值计算的基础值）
             remaining_qty: 需要排队的剩余数量
             already_filled: 已经立即成交的数量
-            crossed_prices: 被crossed的价格列表（用于post-crossing fill计算）
+            crossed_prices: 被crossed的价格列表（用于诊断）
             
         Returns:
             可选的回执（通常为None，表示已入队）
@@ -1102,7 +1105,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             tif=order.tif,
             filled_qty=0,  # Already filled part is tracked separately
             is_post_crossing=(already_filled > 0),  # True if this is remainder after crossing
-            crossed_prices=crossed_prices or [],  # Store crossed prices for post-crossing fill
+            crossed_prices=crossed_prices or [],  # Store crossed prices for diagnostics
         )
         
         level.queue.append(shadow)
@@ -1368,120 +1371,6 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         cancel_rate = self._compute_cancel_rate_for_segment(side, price, seg_idx, x_running, shadow_pos)
         return trade_rate + cancel_rate
     
-    def _compute_post_crossing_fill(
-        self, 
-        shadow: ShadowOrder, 
-        seg: TapeSegment, 
-        t_from: int, 
-        t_to: int
-    ) -> Tuple[Qty, Optional[int]]:
-        """计算post-crossing订单的成交量和成交时间。
-        
-        Post-crossing订单的成交逻辑：
-        - 获取所有被crossed的对手方价位的净增量之和N
-        - 如果N >= 0：成交量 = min(剩余数量, N)
-        - 如果N < 0：不成交
-        - 成交时间是消耗完剩余数量或消耗完N的时刻
-        
-        Args:
-            shadow: post-crossing的shadow订单
-            seg: 当前segment
-            t_from: segment开始时间
-            t_to: segment结束时间
-            
-        Returns:
-            (成交数量, 成交时间)，如果不成交则返回(0, None)
-        """
-        # 获取聚合净增量N（所有crossed价位的净增量之和）
-        n = self._compute_aggregated_net_increment(shadow, seg)
-        
-        # 如果N < 0，不成交
-        if n < 0:
-            return 0, None
-        
-        # 成交量 = min(剩余数量, N)
-        fill_qty = min(shadow.remaining_qty, n)
-        
-        if fill_qty <= 0:
-            return 0, None
-        
-        # 计算成交时间
-        # 假设净增量在segment内均匀分布
-        # 成交时间是消耗完fill_qty的时刻
-        seg_duration = t_to - t_from
-        if seg_duration <= 0:
-            raise InvalidSegmentError(
-                seg.index, t_from, t_to,
-                f"Invalid segment duration in _compute_post_crossing_fill: "
-                f"seg_duration={seg_duration} <= 0 (t_from={t_from}, t_to={t_to})"
-            )
-        
-        # 如果remaining_qty <= N，则成交时间是消耗完remaining_qty的时刻
-        # 如果remaining_qty > N，则成交时间是消耗完N的时刻（即segment结束）
-        if shadow.remaining_qty <= n:
-            # 消耗完remaining_qty的时刻
-            # 进度 = remaining_qty / N
-            progress = shadow.remaining_qty / n if n > 0 else 1.0
-            fill_time = int(t_from + seg_duration * progress)
-        else:
-            # 消耗完N的时刻（即segment结束）
-            fill_time = t_to
-        
-        # 确保fill_time在有效范围内
-        fill_time = max(t_from, min(t_to, fill_time))
-        
-        # 确保fill_time晚于订单到达时间
-        fill_time = max(fill_time, shadow.arrival_time)
-        
-        return fill_qty, fill_time
-    
-    def _compute_aggregated_net_increment(
-        self,
-        shadow: ShadowOrder,
-        seg: TapeSegment
-    ) -> int:
-        """计算所有越过订单价格的档位的聚合净增量N。
-        
-        对于post-crossing订单，N应该是所有"越过订单价格"的对手方价位的净增量之和。
-        
-        例如：
-        - BUY@100 的 post-crossing 订单：汇总所有 ask price <= 100 的档位的净增量
-        - SELL@100 的 post-crossing 订单：汇总所有 bid price >= 100 的档位的净增量
-        
-        这样当市场价格变动时（如 ask 从 100 变到 99），post-crossing 订单可以
-        利用所有越过其价格的档位的流动性。
-        
-        Args:
-            shadow: post-crossing的shadow订单
-            seg: 当前segment
-            
-        Returns:
-            聚合净增量N（所有越过订单价格的档位的净增量之和）
-        """
-        order_price = shadow.price
-        opposite_side = Side.SELL if shadow.side == Side.BUY else Side.BUY
-        
-        # 收集所有越过订单价格的档位的净增量
-        total_n = 0
-        
-        for (flow_side, flow_price), n in seg.net_flow.items():
-            if flow_side != opposite_side:
-                continue
-            
-            # 判断该档位是否"越过"订单价格
-            # BUY订单：对手方是SELL/ask，越过条件是 ask_price <= order_price
-            # SELL订单：对手方是BUY/bid，越过条件是 bid_price >= order_price
-            if shadow.side == Side.BUY:
-                # BUY@100，对手方ask，越过条件：ask_price <= 100
-                if flow_price <= order_price + EPSILON:
-                    total_n += n
-            else:
-                # SELL@100，对手方bid，越过条件：bid_price >= 100
-                if flow_price >= order_price - EPSILON:
-                    total_n += n
-        
-        return total_n
-    
     def advance(self, t_from: int, t_to: int, segment: TapeSegment) -> Tuple[List[OrderReceipt], int]:
         """Advance simulation from t_from to t_to using tape segment.
         
@@ -1613,10 +1502,17 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 if fill_qty <= 0:
                     continue
                 receipt = self._apply_shadow_fill(shadow, fill_qty, t_stop)
-                logger.debug(
-                    f"[Exchange] Advance: improvement {receipt.receipt_type} for {shadow.order_id}, "
-                    f"fill_qty={fill_qty}, price={shadow.price}, time={t_stop}"
-                )
+                if receipt.receipt_type == "PARTIAL":
+                    logger.debug(
+                        f"[Exchange] Advance: improvement PARTIAL fill for {shadow.order_id}, "
+                        f"fill_qty={fill_qty}, remaining_qty={receipt.remaining_qty}, "
+                        f"price={shadow.price}, time={t_stop}"
+                    )
+                else:
+                    logger.debug(
+                        f"[Exchange] Advance: improvement FILL for {shadow.order_id}, "
+                        f"fill_qty={fill_qty}, price={shadow.price}, time={t_stop}"
+                    )
                 receipts.append(receipt)
             else:
                 exec_best = state["exec_best"]
@@ -1636,10 +1532,17 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                     if new_fill > shadow.remaining_qty:
                         new_fill = shadow.remaining_qty
                     receipt = self._apply_shadow_fill(shadow, new_fill, t_stop)
-                    logger.debug(
-                        f"[Exchange] Advance: {receipt.receipt_type} for {shadow.order_id}, "
-                        f"fill_qty={new_fill}, price={shadow.price}, time={t_stop}"
-                    )
+                    if receipt.receipt_type == "PARTIAL":
+                        logger.debug(
+                            f"[Exchange] Advance: PARTIAL fill for {shadow.order_id}, "
+                            f"fill_qty={new_fill}, remaining_qty={receipt.remaining_qty}, "
+                            f"price={shadow.price}, time={t_stop}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[Exchange] Advance: FILL for {shadow.order_id}, "
+                            f"fill_qty={new_fill}, price={shadow.price}, time={t_stop}"
+                        )
                     receipts.append(receipt)
 
         self.current_time = t_stop
