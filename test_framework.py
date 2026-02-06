@@ -407,9 +407,13 @@ def test_exchange_simulator_fill():
     # Advance through segments
     all_receipts = []
     for seg in tape:
-        receipts = exchange.advance(seg.t_start, seg.t_end, seg)
-        all_receipts.extend(receipts)
-        print(f"Segment {seg.index}: generated {len(receipts)} receipts")
+        seg_receipts = []
+        t = seg.t_start
+        while t < seg.t_end:
+            r, t = exchange.advance(t, seg.t_end, seg)
+            seg_receipts.extend(r)
+        all_receipts.extend(seg_receipts)
+        print(f"Segment {seg.index}: generated {len(seg_receipts)} receipts")
     
     print(f"Total receipts: {len(all_receipts)}")
     for r in all_receipts:
@@ -448,9 +452,9 @@ def test_exchange_simulator_multi_partial_to_fill():
     order = Order(order_id="multi-fill", side=Side.BUY, price=100.0, qty=4)
     exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
     
-    receipt_1 = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
-    receipt_2 = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
-    receipt_3 = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
+    receipt_1, _ = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
+    receipt_2, _ = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
+    receipt_3, _ = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
     
     receipts = receipt_1 + receipt_2 + receipt_3
     fill_types = [r.receipt_type for r in receipts]
@@ -607,7 +611,11 @@ def test_integration_basic():
     # Advance exchange through first segment
     if tape:
         seg = tape[0]
-        receipts = exchange.advance(seg.t_start, seg.t_end, seg)
+        receipts = []
+        t = seg.t_start
+        while t < seg.t_end:
+            r, t = exchange.advance(t, seg.t_end, seg)
+            receipts.extend(r)
         print(f"Exchange generated {len(receipts)} receipts")
         
         for receipt in receipts:
@@ -727,13 +735,19 @@ def test_fill_priority():
     
     exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
 
-    exchange.advance(0, 1010 * TICK_PER_MS, tape[0])
-    exchange.advance(1010 * TICK_PER_MS, 1100 * TICK_PER_MS, tape[1])
+    t = 0
+    while t < 1010 * TICK_PER_MS:
+        _, t = exchange.advance(t, 1010 * TICK_PER_MS, tape[0])
+    t = 1010 * TICK_PER_MS
+    while t < 1100 * TICK_PER_MS:
+        _, t = exchange.advance(t, 1100 * TICK_PER_MS, tape[1])
 
     order1 = Order(order_id="order1", side=Side.BUY, price=100.0, qty=20)
     exchange.on_order_arrival(order1, 1100 * TICK_PER_MS, market_qty=30)
 
-    exchange.advance(1100 * TICK_PER_MS, 1300 * TICK_PER_MS, tape[1])
+    t = 1100 * TICK_PER_MS
+    while t < 1300 * TICK_PER_MS:
+        _, t = exchange.advance(t, 1300 * TICK_PER_MS, tape[1])
     
     order2 = Order(order_id="order2", side=Side.BUY, price=100.0, qty=10)
     exchange.on_order_arrival(order2, 1300 * TICK_PER_MS, market_qty=30)
@@ -749,11 +763,12 @@ def test_fill_priority():
     # Advance and collect fills
     all_receipts = []
     last_t = 1300 * TICK_PER_MS
-    receipts = exchange.advance(last_t, tape[1].t_end, tape[1])
-    all_receipts.extend(receipts)
-    last_t = tape[1].t_end
-    receipts = exchange.advance(last_t, tape[2].t_end, tape[2])
-    all_receipts.extend(receipts)
+    while last_t < tape[1].t_end:
+        r, last_t = exchange.advance(last_t, tape[1].t_end, tape[1])
+        all_receipts.extend(r)
+    while last_t < tape[2].t_end:
+        r, last_t = exchange.advance(last_t, tape[2].t_end, tape[2])
+        all_receipts.extend(r)
     
     # With 50 trades: first 30 consume market queue, then order1 (20), then order2 (10)
     # Order 1 should fill first
@@ -3030,7 +3045,11 @@ def test_post_crossing_fill_with_net_increment():
     print(f"  Crossed prices: {shadow1.crossed_prices}")
     
     # 推进时间，应该根据净增量成交
-    receipts1 = exchange1.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg1)
+    receipts1 = []
+    t = 1050 * TICK_PER_MS
+    while t < 1500 * TICK_PER_MS:
+        r, t = exchange1.advance(t, 1500 * TICK_PER_MS, seg1)
+        receipts1.extend(r)
     print(f"  Advance生成的回执: {receipts1}")
     
     # post-crossing fill应该基于聚合净增量N=80
@@ -3082,7 +3101,11 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill2 = receipt2.fill_qty
     expected_remaining2 = 150 - crossing_fill2
     
-    receipts2 = exchange2.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg2)
+    receipts2 = []
+    t = 1050 * TICK_PER_MS
+    while t < 1500 * TICK_PER_MS:
+        r, t = exchange2.advance(t, 1500 * TICK_PER_MS, seg2)
+        receipts2.extend(r)
     print(f"  Advance生成的回执: {receipts2}")
     
     # post-crossing fill应该基于聚合净增量N=30
@@ -3134,7 +3157,11 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill3 = receipt3.fill_qty
     expected_remaining3 = 150 - crossing_fill3
     
-    receipts3 = exchange3.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg3)
+    receipts3 = []
+    t = 1050 * TICK_PER_MS
+    while t < 1500 * TICK_PER_MS:
+        r, t = exchange3.advance(t, 1500 * TICK_PER_MS, seg3)
+        receipts3.extend(r)
     print(f"  Advance生成的回执: {receipts3}")
     
     # 净增量N=-10 < 0，post-crossing订单不应该成交
@@ -3181,7 +3208,11 @@ def test_post_crossing_fill_with_net_increment():
     crossing_fill4 = receipt4.fill_qty
     expected_remaining4 = 150 - crossing_fill4
     
-    receipts4 = exchange4.advance(1050 * TICK_PER_MS, 1500 * TICK_PER_MS, seg4)
+    receipts4 = []
+    t = 1050 * TICK_PER_MS
+    while t < 1500 * TICK_PER_MS:
+        r, t = exchange4.advance(t, 1500 * TICK_PER_MS, seg4)
+        receipts4.extend(r)
     print(f"  Advance生成的回执: {receipts4}")
     
     # 净增量N=0，post-crossing订单不应该成交
@@ -4488,7 +4519,11 @@ def test_cross_interval_order_fill():
     assert shadow.original_qty == 10
     
     # 推进区间 [A, B]
-    receipts = exchange.advance(t_A, t_B, tape_AB[0])
+    receipts = []
+    t = t_A
+    while t < t_B:
+        r, t = exchange.advance(t, t_B, tape_AB[0])
+        receipts.extend(r)
     print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     assert len(receipts) == 0, "Should not fill yet (X=30 < threshold=110)"
@@ -4540,7 +4575,11 @@ def test_cross_interval_order_fill():
     # 这是当前实现的bug - reset清空了_levels，advance找不到订单
     
     # 尝试推进 - 期望订单能被找到并处理
-    receipts = exchange.advance(t_B, t_C, tape_BC[0])
+    receipts = []
+    t = t_B
+    while t < t_C:
+        r, t = exchange.advance(t, t_C, tape_BC[0])
+        receipts.extend(r)
     print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     
@@ -4592,7 +4631,11 @@ def test_cross_interval_order_fill():
     
     exchange.set_tape(tape_CD, t_C, t_D)
     
-    receipts = exchange.advance(t_C, t_D, tape_CD[0])
+    receipts = []
+    t = t_C
+    while t < t_D:
+        r, t = exchange.advance(t, t_D, tape_CD[0])
+        receipts.extend(r)
     print(f"    区间结束时X坐标: {exchange.get_x_coord(Side.BUY, 100.0)}")
     print(f"    生成回执数: {len(receipts)}")
     
@@ -4899,6 +4942,443 @@ def test_post_crossing_pos_uses_x_coord():
     print("✓ Post-crossing pos uses x_coord test passed")
 
 
+def test_advance_early_return_new_order_not_missed():
+    """测试advance遇到最早成交即返回，策略下的新订单不会被遗漏。
+    
+    测试场景（对应issue描述的ABCDG问题）：
+    1. 策略在快照时下单B（在区间内到达交易所）
+    2. 区间内有足够成交量使B成交
+    3. 策略收到B的成交回执后，立即下单F（F到达时间在区间内）
+    4. 验证F也被正确处理（到达交易所、入队）
+    
+    关键验证：
+    - advance在B成交时返回（而非推进到区间结束后才返回）
+    - B的回执触发策略下单F
+    - F在区间内被正确调度和处理
+    """
+    print("\n--- Test 54: Advance Early Return - New Order Not Missed ---")
+    
+    from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+    
+    class MockFeed:
+        def __init__(self, snapshots):
+            self.snapshots = snapshots
+            self.idx = 0
+        
+        def next(self):
+            if self.idx < len(self.snapshots):
+                snap = self.snapshots[self.idx]
+                self.idx += 1
+                return snap
+            return None
+        
+        def reset(self):
+            self.idx = 0
+    
+    # 创建测试快照: 500ms interval
+    # bid_qty=50 提供足够的市场队列深度让订单排队
+    # 100笔成交确保最终能消耗完队列并成交
+    snapshots = [
+        create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=50, last_vol_split=[(100.0, 100)]),
+        create_test_snapshot(1500 * TICK_PER_MS, 100.0, 101.0, bid_qty=10, last_vol_split=[(100.0, 100)]),
+    ]
+    
+    feed = MockFeed(snapshots)
+    tape_config = TapeConfig()
+    tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    oms = OrderManager()
+    
+    # 策略：先下单B，B成交后下单F
+    class ReactiveStrategy:
+        def __init__(self):
+            self.b_placed = False
+            self.f_placed = False
+            self.b_filled = False
+            self.f_arrived = False
+            self.event_log = []
+        
+        def on_snapshot(self, snapshot, oms):
+            self.event_log.append(("SNAPSHOT", snapshot.ts_recv))
+            if not self.b_placed:
+                self.b_placed = True
+                # 下单B
+                return [Order(
+                    order_id="order-B",
+                    side=Side.BUY,
+                    price=100.0,
+                    qty=3,
+                )]
+            return []
+        
+        def on_receipt(self, receipt, snapshot, oms):
+            self.event_log.append(("RECEIPT", receipt.order_id, receipt.receipt_type, receipt.timestamp))
+            if receipt.order_id == "order-B" and receipt.receipt_type == "FILL":
+                self.b_filled = True
+                if not self.f_placed:
+                    self.f_placed = True
+                    # B成交后下单F
+                    return [Order(
+                        order_id="order-F",
+                        side=Side.BUY,
+                        price=100.0,
+                        qty=2,
+                    )]
+            return []
+    
+    strategy = ReactiveStrategy()
+    
+    # delay_out=50ms: 订单很快到达
+    # delay_in=10ms: 回执很快返回
+    runner_config = RunnerConfig(
+        delay_out=50 * TICK_PER_MS,
+        delay_in=10 * TICK_PER_MS,
+        timeline=TimelineConfig(a=1.0, b=0),
+    )
+    
+    runner = EventLoopRunner(
+        feed=feed,
+        tape_builder=tape_builder,
+        exchange=exchange,
+        strategy=strategy,
+        oms=oms,
+        config=runner_config,
+    )
+    
+    results = runner.run()
+    
+    print(f"事件日志: {strategy.event_log}")
+    print(f"订单提交数: {results['diagnostics']['orders_submitted']}")
+    print(f"回执生成数: {results['diagnostics']['receipts_generated']}")
+    print(f"B是否成交: {strategy.b_filled}")
+    print(f"F是否下单: {strategy.f_placed}")
+    
+    # 验证B成交了
+    assert strategy.b_filled, "订单B应该成交"
+    # 验证F被下单了（B成交触发策略下单F）
+    assert strategy.f_placed, "策略应该在B成交后下单F"
+    # 验证F被提交到OMS（2个订单：B和F）
+    assert results['diagnostics']['orders_submitted'] >= 2, \
+        f"应至少提交2个订单，实际: {results['diagnostics']['orders_submitted']}"
+    
+    # 验证至少有B的FILL回执
+    assert results['diagnostics']['receipts_generated'] >= 1, \
+        f"应至少生成1个回执，实际: {results['diagnostics']['receipts_generated']}"
+    
+    # 验证事件顺序：B的FILL receipt应该在F下单之前
+    b_fill_idx = None
+    for i, e in enumerate(strategy.event_log):
+        if e[0] == "RECEIPT" and e[1] == "order-B" and e[2] == "FILL":
+            b_fill_idx = i
+            break
+    
+    assert b_fill_idx is not None, "应该有B的FILL回执"
+    print(f"✓ B成交回执在事件日志中的位置: {b_fill_idx}")
+    
+    print("✓ Advance early return - new order not missed test passed")
+
+
+def test_cancel_only_segment_fill_correctness():
+    """测试：大量撤单推高X坐标后，后续仅有少量trade的segment中成交判断是否正确。
+    
+    场景描述（来自用户问题）：
+    - tape有多个segments
+    - 前面的seg有大量撤单(cancels)但没有trades → X因撤单而增长
+    - 后面的seg有少量trades(例如1手) → has_trades=True
+    - 由于前面大量撤单已将X推高超过 pos+qty，但实际trade只有1手
+    
+    核心验证：
+    - 只有trades才能消耗订单，cancels只能推进排队位置
+    - trade只有1手时，5手订单最多只能成交1手，不应该被判定为完全成交
+    """
+    print("\n--- Test 55: Cancel-Only Segment Fill Correctness ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    
+    # 构造tape：2个segments
+    # seg1: 大量撤单(50手)，没有trades → X因撤单增长
+    # seg2: 只有1手trade → has_trades=True
+    seg1 = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=1250 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={},  # 没有trades！
+        cancels={(Side.BUY, 100.0): 50},  # 50手撤单
+        net_flow={(Side.BUY, 100.0): -50},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    seg2 = TapeSegment(
+        index=2,
+        t_start=1250 * TICK_PER_MS,
+        t_end=1500 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 1},  # 只有1手trade
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -1},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    tape = [seg1, seg2]
+    exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    
+    # 提交订单：市场队列深度=20 → pos=20, qty=5, threshold=25
+    order = Order(order_id="cancel-fill-test", side=Side.BUY, price=100.0, qty=5)
+    receipt = exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=20)
+    assert receipt is None, "订单应被接受"
+    
+    shadow = exchange._find_order_by_id("cancel-fill-test")
+    print(f"  订单位置: pos={shadow.pos}, qty={shadow.original_qty}, threshold={shadow.pos + shadow.original_qty}")
+    
+    # 推进seg1：大量撤单但没有trades
+    print("\n  推进seg1 (大量撤单, 无trades)...")
+    all_receipts_seg1 = []
+    t = seg1.t_start
+    while t < seg1.t_end:
+        r, t = exchange.advance(t, seg1.t_end, seg1)
+        all_receipts_seg1.extend(r)
+    
+    x_after_seg1 = exchange._get_x_coord(Side.BUY, 100.0, seg1.t_end, shadow.pos)
+    print(f"  seg1结束后X坐标: {x_after_seg1:.1f}")
+    print(f"  seg1期间产生的回执: {len(all_receipts_seg1)}")
+    
+    # seg1没有trades，不应该有任何成交
+    assert len(all_receipts_seg1) == 0, f"seg1无trades，不应该有成交，但产生了{len(all_receipts_seg1)}个回执"
+    
+    # 推进seg2：只有1手trade
+    print("\n  推进seg2 (1手trade)...")
+    all_receipts_seg2 = []
+    t = seg2.t_start
+    while t < seg2.t_end:
+        r, t = exchange.advance(t, seg2.t_end, seg2)
+        all_receipts_seg2.extend(r)
+    
+    x_after_seg2 = exchange._get_x_coord(Side.BUY, 100.0, seg2.t_end, shadow.pos)
+    print(f"  seg2结束后X坐标: {x_after_seg2:.1f}")
+    print(f"  seg2期间产生的回执: {len(all_receipts_seg2)}")
+    for r in all_receipts_seg2:
+        print(f"    {r.order_id}: {r.receipt_type}, fill_qty={r.fill_qty}")
+    
+    all_receipts = all_receipts_seg1 + all_receipts_seg2
+    fill_receipts = [r for r in all_receipts if r.receipt_type in ("FILL", "PARTIAL")]
+    total_fill_qty = sum(r.fill_qty for r in fill_receipts)
+    
+    print(f"\n  总成交量: {total_fill_qty}手 (实际market trade总量: 1手)")
+    print(f"  X坐标最终值: {x_after_seg2:.1f} (threshold: {shadow.pos + shadow.original_qty})")
+    
+    # 关键断言：
+    # 1. X坐标因撤单确实被推高了（验证测试场景有效）
+    assert x_after_seg2 >= shadow.pos + shadow.original_qty, \
+        f"X坐标({x_after_seg2:.1f})应该因撤单被推过threshold({shadow.pos + shadow.original_qty})"
+    
+    # 2. 成交量不能超过实际trade量（1手）
+    assert total_fill_qty <= 1, \
+        f"成交量({total_fill_qty})不应超过实际trade量(1手)，cancels不能消耗订单"
+    
+    # 3. 不应该有FILL回执（5手完全成交），因为trade只有1手
+    has_full_fill = any(r.receipt_type == "FILL" for r in all_receipts)
+    assert not has_full_fill, "trade只有1手，5手订单不应该被判定为完全成交(FILL)"
+    
+    print("✓ Cancel-only segment fill correctness test passed")
+
+
+def test_multi_advance_partial_fill():
+    """测试：多次advance中partial fill的累积成交。
+    
+    场景：
+    - 1个segment，trades=5，订单qty=5，pos=0
+    - 分多次advance推进，每次只推进一部分
+    - 验证：第一次成交3手后(filled_qty=3)，第二次应该还能成交剩余2手
+    - 这个测试验证 new_fill 计算不会因为 filled_qty 已有值而被错误跳过
+    """
+    print("\n--- Test 56: Multi-Advance Partial Fill ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    
+    # 1个segment，5手trade，无cancel
+    seg = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=1500 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 5},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -5},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg], 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    
+    # 订单 pos=0, qty=5
+    order = Order(order_id="multi-partial", side=Side.BUY, price=100.0, qty=5)
+    exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
+    
+    # 第一次advance：推进到60%位置，应该成交约3手
+    t_mid = 1000 * TICK_PER_MS + int(0.6 * 500 * TICK_PER_MS)
+    receipts_1, stopped_1 = exchange.advance(1000 * TICK_PER_MS, t_mid, seg)
+    
+    fill_qty_1 = sum(r.fill_qty for r in receipts_1)
+    shadow = exchange._find_order_by_id("multi-partial")
+    print(f"  第1次advance: fill_qty={fill_qty_1}, filled_qty={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    assert fill_qty_1 > 0, "第一次advance应该有成交"
+    assert shadow.filled_qty == fill_qty_1, f"filled_qty({shadow.filled_qty})应该等于fill_qty({fill_qty_1})"
+    
+    # 第二次advance：从stopped_1推进到seg结束
+    receipts_2, stopped_2 = exchange.advance(stopped_1, seg.t_end, seg)
+    
+    fill_qty_2 = sum(r.fill_qty for r in receipts_2)
+    print(f"  第2次advance: fill_qty={fill_qty_2}, filled_qty={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    # 如果第一次没有完全成交，第二次应该继续成交
+    if shadow.remaining_qty > 0:
+        # 可能需要更多次advance
+        t = stopped_2
+        all_extra = []
+        while t < seg.t_end and shadow.status == "ACTIVE":
+            r, t = exchange.advance(t, seg.t_end, seg)
+            all_extra.extend(r)
+        extra_qty = sum(r.fill_qty for r in all_extra)
+        print(f"  后续advance: fill_qty={extra_qty}, filled_qty={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    total_fill = shadow.filled_qty
+    print(f"  总成交量: {total_fill}手")
+    
+    # 关键断言：
+    # 1. 总成交量应该等于5手（全部成交）
+    assert total_fill == 5, f"总成交量应为5手，实际{total_fill}手"
+    
+    # 2. 如果第一次成交3手，第二次应该还能继续成交（不被错误跳过）
+    assert fill_qty_2 > 0 or shadow.filled_qty == 5, \
+        "第二次advance应该有成交（除非第一次已经全部成交）"
+    
+    # 3. 订单状态应为FILLED
+    assert shadow.status == "FILLED", f"订单应为FILLED状态，实际{shadow.status}"
+    
+    print("✓ Multi-advance partial fill test passed")
+
+
+def test_cross_interval_partial_fill_continues():
+    """测试：跨interval的订单在新interval中继续成交。
+    
+    场景（来自用户问题）：
+    - interval1中订单部分成交了5手（filled_qty=5）
+    - interval2中有4手trade
+    - 验证：新interval中的成交不会因为filled_qty > cumulative_fill而被跳过
+    """
+    print("\n--- Test 57: Cross-Interval Partial Fill Continues ---")
+    
+    from quant_framework.core.types import TapeSegment, NormalizedSnapshot, Level
+    
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    
+    # === Interval 1 ===
+    seg1 = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=2000 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 10},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -10},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg1], 1000 * TICK_PER_MS, 2000 * TICK_PER_MS)
+    
+    # 订单 pos=0, qty=10（前面没人排队）
+    order = Order(order_id="cross-interval", side=Side.BUY, price=100.0, qty=10)
+    exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
+    
+    # 推进interval1，收集所有成交（应该成交~5手，取决于推进范围）
+    t_mid = 1000 * TICK_PER_MS + int(0.5 * 1000 * TICK_PER_MS)
+    all_receipts_1 = []
+    t = 1000 * TICK_PER_MS
+    while t < t_mid:
+        receipts, t = exchange.advance(t, t_mid, seg1)
+        all_receipts_1.extend(receipts)
+    
+    shadow = exchange._find_order_by_id("cross-interval")
+    filled_after_interval1 = shadow.filled_qty
+    print(f"  Interval1结束后: filled_qty={filled_after_interval1}, remaining={shadow.remaining_qty}")
+    
+    assert filled_after_interval1 > 0, "Interval1应该有成交"
+    assert shadow.remaining_qty > 0, "Interval1不应该完全成交（只推进了一半）"
+    
+    # === 模拟跨interval边界 ===
+    exchange.current_time = t_mid
+    
+    # 创建snapshot用于align
+    snap = NormalizedSnapshot(
+        ts_recv=t_mid,
+        bids=[Level(price=100.0, qty=20)],
+        asks=[Level(price=101.0, qty=20)],
+    )
+    exchange.align_at_boundary(snap)
+    
+    # 验证 interval_filled_qty 已重置
+    assert shadow.interval_filled_qty == 0, \
+        f"align后interval_filled_qty应为0，实际{shadow.interval_filled_qty}"
+    print(f"  align后: filled_qty={shadow.filled_qty}, interval_filled_qty={shadow.interval_filled_qty}")
+    
+    # === Interval 2 ===
+    remaining_before = shadow.remaining_qty
+    seg2 = TapeSegment(
+        index=2,
+        t_start=2000 * TICK_PER_MS,
+        t_end=3000 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 4},
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -4},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    exchange.set_tape([seg2], 2000 * TICK_PER_MS, 3000 * TICK_PER_MS)
+    
+    # 推进interval2
+    all_receipts_2 = []
+    t = 2000 * TICK_PER_MS
+    while t < 3000 * TICK_PER_MS:
+        receipts, t = exchange.advance(t, 3000 * TICK_PER_MS, seg2)
+        all_receipts_2.extend(receipts)
+        if not receipts:
+            break
+    
+    filled_in_interval2 = sum(r.fill_qty for r in all_receipts_2)
+    print(f"  Interval2: filled={filled_in_interval2}手, total_filled={shadow.filled_qty}, remaining={shadow.remaining_qty}")
+    
+    # 关键断言：
+    # 1. interval2中应该有成交（不会因为filled_qty > cumulative_fill而被跳过）
+    assert filled_in_interval2 > 0, \
+        f"Interval2应该有成交！filled_qty={shadow.filled_qty}, " \
+        f"但new_fill不应该为负（这是修复的bug）"
+    
+    # 2. interval2中成交量不应超过trade总量（4手）和remaining
+    assert filled_in_interval2 <= 4, \
+        f"Interval2成交量({filled_in_interval2})不应超过trade总量(4)"
+    assert filled_in_interval2 <= remaining_before, \
+        f"Interval2成交量({filled_in_interval2})不应超过remaining({remaining_before})"
+    
+    print(f"  总成交量: {shadow.filled_qty}手 (interval1={filled_after_interval1} + interval2={filled_in_interval2})")
+    print("✓ Cross-interval partial fill continues test passed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4965,6 +5445,10 @@ def run_all_tests():
         test_cross_interval_order_fill,
         test_floating_point_precision_in_last_vol_split,
         test_post_crossing_pos_uses_x_coord,
+        test_advance_early_return_new_order_not_missed,
+        test_cancel_only_segment_fill_correctness,
+        test_multi_advance_partial_fill,
+        test_cross_interval_partial_fill_continues,
     ]
     
     passed = 0
