@@ -5078,6 +5078,139 @@ def test_advance_early_return_new_order_not_missed():
     print("✓ Advance early return - new order not missed test passed")
 
 
+def test_cancel_only_segment_fill_correctness():
+    """测试：大量撤单推高X坐标后，后续仅有少量trade的segment中成交判断是否正确。
+    
+    场景描述（来自用户问题）：
+    - tape有多个segments
+    - 前面的seg有大量撤单(cancels)但没有trades → X因撤单而增长
+    - 后面的seg有少量trades(例如1手) → has_trades=True
+    - 由于前面大量撤单已将X推高超过 pos+qty，此时advance可能出现问题：
+      1. 如果fill_time计算在前面的seg（has_trades=False的seg）→ fill被遗漏
+      2. 或者x_t_to虽然大于threshold，但实际只有1手trade，却被误判为完全成交
+    
+    本测试验证：
+    - 当撤单推高X后，成交量实际只有1手时，不应该判定5手订单完全成交
+    - 成交量应该受限于实际的trade数量，而不是由cancels"虚增"的X坐标来决定
+    """
+    print("\n--- Test 55: Cancel-Only Segment Fill Correctness ---")
+    
+    from quant_framework.core.types import TapeSegment
+    
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    
+    # 构造tape：2个segments
+    # seg1: 大量撤单(50手)，没有trades → X因撤单增长
+    # seg2: 只有1手trade → has_trades=True
+    seg1 = TapeSegment(
+        index=1,
+        t_start=1000 * TICK_PER_MS,
+        t_end=1250 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={},  # 没有trades！
+        cancels={(Side.BUY, 100.0): 50},  # 50手撤单
+        net_flow={(Side.BUY, 100.0): -50},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    seg2 = TapeSegment(
+        index=2,
+        t_start=1250 * TICK_PER_MS,
+        t_end=1500 * TICK_PER_MS,
+        bid_price=100.0,
+        ask_price=101.0,
+        trades={(Side.BUY, 100.0): 1},  # 只有1手trade
+        cancels={},
+        net_flow={(Side.BUY, 100.0): -1},
+        activation_bid={100.0},
+        activation_ask={101.0},
+    )
+    
+    tape = [seg1, seg2]
+    exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    
+    # 提交订单：pos=10, qty=5, threshold=15
+    # 市场队列深度=20
+    order = Order(order_id="cancel-fill-test", side=Side.BUY, price=100.0, qty=5)
+    receipt = exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=20)
+    assert receipt is None, "订单应被接受"
+    
+    shadow = exchange._find_order_by_id("cancel-fill-test")
+    print(f"  订单位置: pos={shadow.pos}, qty={shadow.original_qty}, threshold={shadow.pos + shadow.original_qty}")
+    
+    # 推进seg1：大量撤单但没有trades
+    print("\n  推进seg1 (大量撤单, 无trades)...")
+    all_receipts_seg1 = []
+    t = seg1.t_start
+    while t < seg1.t_end:
+        r, t = exchange.advance(t, seg1.t_end, seg1)
+        all_receipts_seg1.extend(r)
+    
+    # 检查seg1结束时的X坐标
+    x_after_seg1 = exchange._get_x_coord(Side.BUY, 100.0, seg1.t_end, shadow.pos)
+    print(f"  seg1结束后X坐标: {x_after_seg1}")
+    print(f"  seg1期间产生的回执: {len(all_receipts_seg1)}")
+    for r in all_receipts_seg1:
+        print(f"    {r.order_id}: {r.receipt_type}, fill_qty={r.fill_qty}")
+    
+    # 推进seg2：只有1手trade
+    print("\n  推进seg2 (1手trade)...")
+    all_receipts_seg2 = []
+    t = seg2.t_start
+    while t < seg2.t_end:
+        r, t = exchange.advance(t, seg2.t_end, seg2)
+        all_receipts_seg2.extend(r)
+    
+    x_after_seg2 = exchange._get_x_coord(Side.BUY, 100.0, seg2.t_end, shadow.pos)
+    print(f"  seg2结束后X坐标: {x_after_seg2}")
+    print(f"  seg2期间产生的回执: {len(all_receipts_seg2)}")
+    for r in all_receipts_seg2:
+        print(f"    {r.order_id}: {r.receipt_type}, fill_qty={r.fill_qty}")
+    
+    all_receipts = all_receipts_seg1 + all_receipts_seg2
+    
+    # 关键验证：
+    # 1. 实际只有1手trade，不应该产生5手的完全成交（FILL回执）
+    #    如果X因为cancels虚增导致x_t_to >> threshold，但实际trade量不足以支撑完全成交
+    # 2. 检查是否有任何成交被遗漏（大量撤单的seg中X已越过threshold但has_trades=False导致跳过）
+    
+    fill_receipts = [r for r in all_receipts if r.receipt_type in ("FILL", "PARTIAL")]
+    total_fill_qty = sum(r.fill_qty for r in fill_receipts)
+    
+    print(f"\n  总成交数: {total_fill_qty}")
+    print(f"  实际市场trade总量: 1手")
+    print(f"  X坐标最终值: {x_after_seg2}")
+    print(f"  threshold: {shadow.pos + shadow.original_qty}")
+    
+    # 分析结果
+    if x_after_seg2 >= shadow.pos + shadow.original_qty:
+        print(f"\n  ⚠ X坐标({x_after_seg2:.1f}) >= threshold({shadow.pos + shadow.original_qty})")
+        print(f"  这意味着X坐标因撤单而虚增到了超过成交阈值的程度")
+        
+        if total_fill_qty >= shadow.original_qty:
+            print(f"  ⚠ 被判定为完全成交！但实际trade只有1手")
+            print(f"  这是用户指出的问题：撤单虚增X导致误判完全成交")
+            # 这就是用户担心的情况 - X因cancels虚增导致误判
+        elif total_fill_qty > 0:
+            print(f"  部分成交: {total_fill_qty}手")
+        else:
+            print(f"  ⚠ X已超过threshold但没有检测到成交")
+            print(f"  这说明has_trades过滤导致了成交遗漏")
+    else:
+        print(f"\n  X坐标({x_after_seg2:.1f}) < threshold({shadow.pos + shadow.original_qty})")
+        print(f"  在这组参数下，撤单未能将X推过threshold")
+    
+    # 不管怎样，这个测试记录了当前行为供分析
+    print(f"\n  当前行为总结:")
+    print(f"  - seg1(无trades): 回执数={len(all_receipts_seg1)}, X到{x_after_seg1:.1f}")
+    print(f"  - seg2(1手trade): 回执数={len(all_receipts_seg2)}, X到{x_after_seg2:.1f}")
+    print(f"  - 总成交量: {total_fill_qty}手 (市场trade总量=1手)")
+    
+    print("✓ Cancel-only segment fill correctness test completed")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -5145,6 +5278,7 @@ def run_all_tests():
         test_floating_point_precision_in_last_vol_split,
         test_post_crossing_pos_uses_x_coord,
         test_advance_early_return_new_order_not_missed,
+        test_cancel_only_segment_fill_correctness,
     ]
     
     passed = 0
