@@ -264,6 +264,223 @@ class FIFOExchangeSimulator(IExchangeSimulator):
 
         return cancel_prob * c_si / seg_duration
 
+    # ── Zone-aware cancel distribution helpers ──────────────────────────
+
+    def _get_active_shadows_sorted(self, side: Side, price: Price) -> List[ShadowOrder]:
+        """Get active shadow orders at a price level, sorted by pos."""
+        level = self._get_level(side, price)
+        return sorted(
+            [s for s in level.queue if s.status == "ACTIVE" and s.remaining_qty > 0],
+            key=lambda s: s.pos,
+        )
+
+    def _build_queue_zones(
+        self, side: Side, price: Price, x_running: float, q_mkt: float
+    ) -> List[Tuple[str, float, float, Optional[ShadowOrder]]]:
+        """Build zone structure from current x position.
+
+        Zones alternate between "public" (market orders) and "shadow" (our
+        orders).  A trailing public zone is appended so that the sum of all
+        public zone sizes equals *q_mkt* – this is needed for correct CDF-
+        based cancel distribution.
+
+        Returns:
+            List of (zone_type, start_coord, size, shadow_or_None).
+        """
+        shadows = self._get_active_shadows_sorted(side, price)
+        zones: List[Tuple[str, float, float, Optional[ShadowOrder]]] = []
+        cursor = x_running
+
+        for shadow in shadows:
+            shadow_start = float(shadow.pos)
+            shadow_end = float(shadow.pos + shadow.original_qty)
+
+            # Already past this shadow
+            if cursor >= shadow_end - EPSILON:
+                continue
+
+            # Currently inside this shadow
+            if cursor >= shadow_start - EPSILON:
+                remaining = shadow_end - cursor
+                if remaining > EPSILON:
+                    zones.append(("shadow", cursor, remaining, shadow))
+                cursor = shadow_end
+                continue
+
+            # Public zone before this shadow
+            pub_size = shadow_start - cursor
+            if pub_size > EPSILON:
+                zones.append(("public", cursor, pub_size, None))
+
+            # Shadow zone
+            shadow_size = shadow_end - shadow_start
+            if shadow_size > EPSILON:
+                zones.append(("shadow", shadow_start, shadow_size, shadow))
+            cursor = shadow_end
+
+        # Trailing public zone (orders behind all shadows)
+        total_pub_in_zones = sum(sz for zt, _, sz, _ in zones if zt == "public")
+        trailing = max(0.0, q_mkt - total_pub_in_zones)
+        if trailing > EPSILON:
+            zones.append(("public", cursor, trailing, None))
+
+        return zones
+
+    def _distribute_cancels_to_zones(
+        self,
+        zones: List[Tuple[str, float, float, Optional[ShadowOrder]]],
+        total_cancels: float,
+        q_mkt: float,
+    ) -> Dict[int, float]:
+        """Distribute cancels to public zones using cancel_prob CDF + cap.
+
+        Algorithm:
+        1. Compute cumulative public position for each public zone.
+        2. Use cancel_prob CDF to derive raw share per zone.
+        3. Front-to-back cap (zone cancels ≤ zone size) + overflow.
+
+        Returns:
+            dict  zone_index → cancel_count  (only public zones).
+        """
+        if total_cancels <= EPSILON or q_mkt <= EPSILON:
+            return {}
+
+        pub_info: List[Tuple[int, float]] = [
+            (i, sz) for i, (zt, _, sz, _) in enumerate(zones) if zt == "public"
+        ]
+        if not pub_info:
+            return {}
+
+        sizes = [sz for _, sz in pub_info]
+
+        # Cumulative public position → CDF boundaries
+        cum = [0.0]
+        for s in sizes:
+            cum.append(cum[-1] + s)
+
+        # Raw shares from CDF
+        raw_shares: List[float] = []
+        for j in range(len(sizes)):
+            x_lo = min(1.0, max(0.0, cum[j] / q_mkt))
+            x_hi = min(1.0, max(0.0, cum[j + 1] / q_mkt))
+            p_lo = self._compute_cancel_front_prob(x_lo)
+            p_hi = self._compute_cancel_front_prob(x_hi)
+            raw_shares.append(total_cancels * max(0.0, p_hi - p_lo))
+
+        # Front-to-back cap + overflow redistribution
+        result: Dict[int, float] = {}
+        excess = 0.0
+        for j, (idx, sz) in enumerate(pub_info):
+            available = raw_shares[j] + excess
+            actual = min(available, max(0.0, sz))
+            result[idx] = actual
+            excess = max(0.0, available - actual)
+
+        return result
+
+    def _traverse_zones_for_x(
+        self,
+        x_start: float,
+        zones: List[Tuple[str, float, float, Optional[ShadowOrder]]],
+        cancel_dist: Dict[int, float],
+        trade_rate: float,
+        seg_duration: int,
+        t_abs_start: int,
+        dt_available: int,
+        target_x: Optional[int] = None,
+    ) -> Tuple[float, float]:
+        """Piece-wise zone traversal.
+
+        * Public zones:  rate = trade_rate + cancel_rate_i
+          (cancel_rate_i = zone_cancels / seg_duration).
+          Pre-shrinkage from cancels that occurred before *t_abs_start +
+          t_elapsed* is subtracted from the remaining zone size.
+        * Shadow zones:  rate = trade_rate  (cancels skip shadows).
+
+        If *target_x* is given the traversal stops as soon as *x* reaches
+        that coordinate and the elapsed time is returned.
+
+        Returns:
+            (x_end, time_elapsed)
+        """
+        x = x_start
+        t_elapsed = 0.0
+
+        for i, (ztype, zone_start, zone_size, _shadow) in enumerate(zones):
+            remaining_dt = dt_available - t_elapsed
+            if remaining_dt <= EPSILON:
+                break
+            if target_x is not None and x >= target_x - EPSILON:
+                break
+
+            zone_end = zone_start + zone_size
+
+            if ztype == "public":
+                cancel_count = cancel_dist.get(i, 0.0)
+                cancel_rate = cancel_count / seg_duration if seg_duration > EPSILON else 0.0
+
+                # Zone may have pre-shrunk from cancels before our window
+                t_abs = t_abs_start + t_elapsed
+                pre_shrunk = cancel_rate * t_abs
+                remaining = max(0.0, zone_size - pre_shrunk)
+
+                if remaining <= EPSILON:
+                    # Already consumed by cancels
+                    x = zone_end
+                    continue
+
+                consumption_rate = trade_rate + cancel_rate
+                if consumption_rate <= EPSILON:
+                    # No way to advance; stop here
+                    break
+
+                # Check whether target_x falls inside this zone
+                if target_x is not None and x < target_x <= zone_end + EPSILON:
+                    dt_to_target = max(0.0, target_x - x) / consumption_rate
+                    if dt_to_target <= remaining_dt + EPSILON:
+                        t_elapsed += dt_to_target
+                        x = target_x
+                        break
+
+                dt_to_clear = remaining / consumption_rate
+                if dt_to_clear <= remaining_dt + EPSILON:
+                    x = zone_end
+                    t_elapsed += dt_to_clear
+                else:
+                    x += consumption_rate * remaining_dt
+                    t_elapsed = dt_available
+                    break
+
+            else:  # shadow
+                if trade_rate <= EPSILON:
+                    break  # cannot advance through shadow without trades
+
+                remaining_shadow = max(0.0, zone_end - x)
+                if remaining_shadow <= EPSILON:
+                    x = zone_end
+                    continue
+
+                # Check whether target_x falls inside this shadow
+                if target_x is not None and x < target_x <= zone_end + EPSILON:
+                    dt_to_target = max(0.0, target_x - x) / trade_rate
+                    if dt_to_target <= remaining_dt + EPSILON:
+                        t_elapsed += dt_to_target
+                        x = target_x
+                        break
+
+                dt_to_clear = remaining_shadow / trade_rate
+                if dt_to_clear <= remaining_dt + EPSILON:
+                    x = zone_end
+                    t_elapsed += dt_to_clear
+                else:
+                    x += trade_rate * remaining_dt
+                    t_elapsed = dt_available
+                    break
+
+        return x, t_elapsed
+
+    # ── End zone-aware helpers ────────────────────────────────────────
+
     def _validate_fill_delta(self, order_id: str, delta: int, filled_qty: int, original_qty: int) -> bool:
         """Validate fill delta to avoid negative fill quantities."""
         if delta < 0:
@@ -445,60 +662,67 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         activation_set = seg.activation_bid if side == Side.BUY else seg.activation_ask
         return round(price, 8) in {round(p, 8) for p in activation_set}
     
-    def _get_x_coord(self, side: Side, price: Price, t: int, shadow_pos: int) -> float:
-        """Get X coordinate at time t for given side and price.
-        
-        Uses position-dependent cancel probability p_k(x):
-        - The normalized position x = (shadow_pos - X) / Q_mkt
-        - x = 0: order at front of queue, all cancels happen behind (p=0)
-        - x = 1: order at tail of queue, all cancels happen in front (p=1)
-        - p_k(x) model with cancel_bias_k parameter controls the bias
-        
-        Args:
-            side: Order side
-            price: Price level
-            t: Target time
-            shadow_pos: Position of the first shadow order in the queue
-            
-        Returns:
-            X coordinate at time t
+    def _get_x_coord(self, side: Side, price: Price, t: int, shadow_pos: int = 0) -> float:
+        """Get X coordinate at time t using zone-aware model.
+
+        The queue is split into *public* zones (market orders) and *shadow*
+        zones (our orders).  Cancels are distributed to public zones via the
+        cancel_prob CDF + cap algorithm.  x advances through public zones at
+        ``trade_rate + cancel_rate`` and through shadow zones at ``trade_rate``
+        only (cancels skip shadows).
+
+        The *shadow_pos* parameter is retained for API compatibility but is no
+        longer used — zone structure considers ALL active shadow orders.
         """
         level = self._get_level(side, price)
-        
+
         if not self._current_tape or t <= self._interval_start:
             return level.x_coord
-        
-        # Find which segment t falls into
+
         x = level.x_coord
         for seg_idx, seg in enumerate(self._current_tape):
             if t <= seg.t_start:
                 break
-            
+
             seg_start = max(seg.t_start, self._interval_start)
             seg_end = min(seg.t_end, t)
-            
+
             if seg_end <= seg_start:
                 continue
-            
-            # Check activation
+
             if not self._is_in_activation_window(side, price, seg_idx):
                 continue
-            
-            # Compute trade and cancel rates for this segment
-            cancel_rate = self._compute_cancel_rate_for_segment(
-                side, price, seg_idx, x, shadow_pos
-            )
-            trade_rate = self._compute_trade_rate_for_segment(side, price, seg_idx)
 
-            # Trade contribution respects improvement-mode pauses
+            seg_duration = seg.t_end - seg.t_start
+            if seg_duration <= 0:
+                continue
+
+            total_cancels = seg.cancels.get((side, price), 0)
+            total_trades = seg.trades.get((side, price), 0)
+            q_mkt = self._get_q_mkt(side, price, seg.t_start)
+
+            # Effective trade rate (accounts for improvement-mode pauses)
+            trade_rate_base = total_trades / seg_duration
+            dt = seg_end - seg_start
             trade_active = self._get_trade_active_duration(side, seg_start, seg_end)
+            effective_trade_rate = (
+                trade_rate_base * trade_active / dt if dt > 0 else 0.0
+            )
 
-            # Add contribution from this segment
-            x += cancel_rate * (seg_end - seg_start) + trade_rate * trade_active
-            
+            # Build zones & distribute cancels
+            zones = self._build_queue_zones(side, price, x, q_mkt)
+            cancel_dist = self._distribute_cancels_to_zones(zones, total_cancels, q_mkt)
+
+            # Piece-wise traversal
+            t_abs_start = seg_start - seg.t_start
+            x, _ = self._traverse_zones_for_x(
+                x, zones, cancel_dist, effective_trade_rate,
+                seg_duration, t_abs_start, dt,
+            )
+
             if t <= seg.t_end:
                 break
-        
+
         return x
     
     def _get_q_mkt(self, side: Side, price: Price, t: int) -> float:
@@ -1214,7 +1438,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         t_to: int,
         segment: TapeSegment,
     ) -> Optional[int]:
-        """Compute full fill time within [t_from, t_to] at execution best."""
+        """Compute full fill time within [t_from, t_to] using zone-aware model."""
         if t_to <= t_from or seg_idx < 0:
             return None
 
@@ -1230,22 +1454,39 @@ class FIFOExchangeSimulator(IExchangeSimulator):
 
         threshold = shadow.pos + shadow.original_qty
         x_start = self._get_x_coord(side, price, t_from, shadow.pos)
-        if x_start >= threshold:
+        if x_start >= threshold - EPSILON:
             return t_from
 
-        x_seg_start = self._get_x_coord(side, price, segment.t_start, shadow.pos)
-        trade_rate = self._compute_trade_rate_for_segment(side, price, seg_idx)
-        cancel_rate = self._compute_cancel_rate_for_segment(side, price, seg_idx, x_seg_start, shadow.pos)
-        rate = trade_rate + cancel_rate
-        if rate <= EPSILON:
+        # Segment parameters
+        total_cancels = segment.cancels.get((side, price), 0)
+        total_trades = segment.trades.get((side, price), 0)
+        q_mkt = self._get_q_mkt(side, price, segment.t_start)
+        trade_rate = total_trades / seg_duration if seg_duration > 0 else 0.0
+
+        if trade_rate <= EPSILON and total_cancels <= EPSILON:
             return None
 
-        delta_t = (threshold - x_start) / rate
-        fill_time = int(t_from + delta_t)
-        fill_time = max(fill_time, t_from)
-        if fill_time > t_to:
-            return None
-        return fill_time
+        # Build zones from x_start & distribute cancels
+        zones = self._build_queue_zones(side, price, x_start, q_mkt)
+        cancel_dist = self._distribute_cancels_to_zones(zones, total_cancels, q_mkt)
+
+        t_abs_start = t_from - segment.t_start
+        dt_available = t_to - t_from
+
+        x_end, time_elapsed = self._traverse_zones_for_x(
+            x_start, zones, cancel_dist, trade_rate,
+            seg_duration, t_abs_start, dt_available,
+            target_x=threshold,
+        )
+
+        if x_end >= threshold - EPSILON and time_elapsed <= dt_available + EPSILON:
+            fill_time = int(t_from + time_elapsed)
+            fill_time = max(fill_time, t_from)
+            if fill_time > t_to:
+                return None
+            return fill_time
+
+        return None
     
     def _compute_rate_for_segment(
         self, side: Side, price: Price, seg_idx: int, x_running: float, shadow_pos: int
