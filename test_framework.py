@@ -4740,6 +4740,426 @@ def test_post_crossing_pos_uses_x_coord():
     print("✓ Post-crossing pos uses x_coord test passed")
 
 
+def test_cancel_bias_causes_fill_without_sufficient_trades():
+    """验证：cancel_bias_k=-0.8时，大量撤单使x_coord虚高，导致订单被错误成交。
+
+    场景：
+    - 订单到达时 market_qty=20，pos=20，qty=5，threshold=25
+    - Segment 1：队列增长80手（新订单涌入），无撤单无成交
+      → q_mkt 从20增长到100
+    - Segment 2：80手撤单 + 1手成交
+      → 由于 cancel_bias_k=-0.8，cancel_prob = (20/100)^0.2 ≈ 0.725
+      → cancel贡献 = 0.725 * 80 = 58（远超前方队列深度20！）
+      → x_coord ≈ 58 + 1 = 59，远超 threshold=25
+      → 系统误判订单在seg2中期就完全成交（5手）
+
+    问题：
+    - 实际只有1手trade，最多成交1手
+    - 但因cancel_bias导致cancel_prob被放大，x_coord被虚高推过threshold
+    - cancel贡献(58)超过了前方实际队列深度(20)，这在物理上不可能
+
+    期望行为：成交量 ≤ 实际trade量（1手）
+    """
+    print("\n--- Test: cancel bias causes fill without sufficient trades ---")
+
+    from quant_framework.core.types import TapeSegment
+
+    exchange = FIFOExchangeSimulator(cancel_bias_k=-0.8)
+
+    t0 = 1000 * TICK_PER_MS
+    t1 = 1200 * TICK_PER_MS
+    t2 = 1500 * TICK_PER_MS
+
+    price = 100.0
+
+    # Segment 1: 队列增长80手（无撤单无成交）
+    seg1 = TapeSegment(
+        index=1, t_start=t0, t_end=t1,
+        bid_price=price, ask_price=101.0,
+        trades={},
+        cancels={},
+        net_flow={(Side.BUY, price): 80},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    # Segment 2: 80手撤单 + 1手成交
+    # 守恒检查: Q_B = Q_A + N_total - M_total = 20 + (80-80) - (0+1) = 19
+    seg2 = TapeSegment(
+        index=2, t_start=t1, t_end=t2,
+        bid_price=price, ask_price=101.0,
+        trades={(Side.BUY, price): 1},
+        cancels={(Side.BUY, price): 80},
+        net_flow={(Side.BUY, price): -80},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    tape = [seg1, seg2]
+    exchange.set_tape(tape, t0, t2)
+
+    # 订单到达：market_qty=20 → pos=20, qty=5, threshold=25
+    order = Order(order_id="cancel-bias-overfill", side=Side.BUY, price=price, qty=5)
+    exchange.on_order_arrival(order, t0, market_qty=20)
+
+    shadow = exchange.get_shadow_orders()[0]
+    print(f"  Shadow: pos={shadow.pos}, qty={shadow.original_qty}, "
+          f"threshold={shadow.pos + shadow.original_qty}")
+
+    # 计算关键参数
+    q_mkt_at_seg2_start = exchange._get_q_mkt(Side.BUY, price, t1)
+    x_norm = (shadow.pos - 0) / q_mkt_at_seg2_start if q_mkt_at_seg2_start > 0 else 0
+    cancel_prob = exchange._compute_cancel_front_prob(x_norm)
+    cancel_contribution = cancel_prob * 80
+    print(f"  q_mkt at seg2 start: {q_mkt_at_seg2_start}")
+    print(f"  x_norm: {x_norm:.4f}")
+    print(f"  cancel_prob (k=-0.8): {cancel_prob:.4f}")
+    print(f"  cancel_contribution: {cancel_contribution:.2f} (前方实际队列深度仅{shadow.pos})")
+
+    # 推进所有segments
+    all_receipts = []
+    t_cur = t0
+    for seg in tape:
+        t_seg = max(seg.t_start, t_cur)
+        while t_seg < seg.t_end:
+            receipts, t_stop = exchange.advance(t_seg, seg.t_end, seg)
+            all_receipts.extend(receipts)
+            if t_stop <= t_seg:
+                break
+            t_seg = t_stop
+        t_cur = seg.t_end
+
+    total_fill = sum(r.fill_qty for r in all_receipts if r.receipt_type in ["FILL", "PARTIAL"])
+    total_trades = 1  # 只有seg2有1手trade
+
+    print(f"  Receipts: {len(all_receipts)}")
+    for r in all_receipts:
+        print(f"    {r.order_id}: type={r.receipt_type}, fill_qty={r.fill_qty}, time={r.timestamp}")
+    print(f"  Total fill qty: {total_fill}")
+    print(f"  Total actual trades at this price: {total_trades}")
+
+    # 核心断言：成交量不应超过实际trade量
+    assert total_fill <= total_trades, (
+        f"BUG: 成交量({total_fill})超过了实际trade量({total_trades})！"
+        f"cancel_bias_k=-0.8导致cancel贡献({cancel_contribution:.1f})"
+        f"超过前方队列深度({shadow.pos})，x_coord被虚高推过threshold"
+    )
+
+    print("✓ Test passed: fill quantity bounded by actual trades")
+
+
+def test_zero_trades_should_not_fill_order():
+    """验证：即使撤单量巨大，没有成交（trades=0）时订单不应被成交。
+
+    场景：
+    - 订单到达时 market_qty=20，pos=20，qty=5，threshold=25
+    - Segment 1：队列增长80手
+    - Segment 2：80手撤单，0手成交
+
+    当 cancel_bias_k=-0.8 时：
+    - cancel_prob = 0.725，cancel贡献 = 58
+    - x_coord = 58（来自cancel） > threshold=25
+    - 系统误判5手完全成交，但实际0手trade！
+
+    这是物理上不可能的：没有成交发生，订单不可能被成交。
+
+    期望行为：成交量 = 0
+    """
+    print("\n--- Test: zero trades should not fill order ---")
+
+    from quant_framework.core.types import TapeSegment
+
+    exchange = FIFOExchangeSimulator(cancel_bias_k=-0.8)
+
+    t0 = 1000 * TICK_PER_MS
+    t1 = 1200 * TICK_PER_MS
+    t2 = 1500 * TICK_PER_MS
+
+    price = 100.0
+
+    # Segment 1: 队列增长80手
+    seg1 = TapeSegment(
+        index=1, t_start=t0, t_end=t1,
+        bid_price=price, ask_price=101.0,
+        trades={},
+        cancels={},
+        net_flow={(Side.BUY, price): 80},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    # Segment 2: 80手撤单，0手成交!
+    # 守恒: Q_B = 20 + (80-80) - 0 = 20
+    seg2 = TapeSegment(
+        index=2, t_start=t1, t_end=t2,
+        bid_price=price, ask_price=101.0,
+        trades={},  # 关键：没有任何trade
+        cancels={(Side.BUY, price): 80},
+        net_flow={(Side.BUY, price): -80},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    tape = [seg1, seg2]
+    exchange.set_tape(tape, t0, t2)
+
+    order = Order(order_id="zero-trade-test", side=Side.BUY, price=price, qty=5)
+    exchange.on_order_arrival(order, t0, market_qty=20)
+
+    shadow = exchange.get_shadow_orders()[0]
+    print(f"  Shadow: pos={shadow.pos}, qty={shadow.original_qty}, "
+          f"threshold={shadow.pos + shadow.original_qty}")
+
+    # 推进所有segments
+    all_receipts = []
+    t_cur = t0
+    for seg in tape:
+        t_seg = max(seg.t_start, t_cur)
+        while t_seg < seg.t_end:
+            receipts, t_stop = exchange.advance(t_seg, seg.t_end, seg)
+            all_receipts.extend(receipts)
+            if t_stop <= t_seg:
+                break
+            t_seg = t_stop
+        t_cur = seg.t_end
+
+    total_fill = sum(r.fill_qty for r in all_receipts if r.receipt_type in ["FILL", "PARTIAL"])
+
+    print(f"  Receipts: {len(all_receipts)}")
+    for r in all_receipts:
+        print(f"    {r.order_id}: type={r.receipt_type}, fill_qty={r.fill_qty}")
+    print(f"  Total fill qty: {total_fill}")
+    print(f"  Total actual trades at this price: 0")
+
+    # 核心断言：没有trade发生时，不应有任何成交
+    assert total_fill == 0, (
+        f"BUG: 没有任何trade发生，但成交了{total_fill}手！"
+        f"cancel_bias_k=-0.8导致cancel贡献被虚高计入x_coord"
+    )
+
+    print("✓ Test passed: no fill without trades")
+
+
+def test_uniform_cancel_bias_prevents_overfill():
+    """验证：cancel_bias_k=0（均匀分布）时，同样场景不会产生过度成交。
+
+    这是test_cancel_bias_causes_fill_without_sufficient_trades的对照测试。
+    使用完全相同的tape和订单参数，只是k=0。
+
+    k=0时：
+    - cancel_prob = x_norm = 20/100 = 0.2
+    - cancel贡献 = 0.2 * 80 = 16 ≤ 前方队列深度(20)
+    - x_coord = 16 + 1 = 17 < threshold=25
+    - 订单不会成交（正确）
+
+    期望行为：无过度成交
+    """
+    print("\n--- Test: uniform cancel bias prevents overfill (k=0 control) ---")
+
+    from quant_framework.core.types import TapeSegment
+
+    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+
+    t0 = 1000 * TICK_PER_MS
+    t1 = 1200 * TICK_PER_MS
+    t2 = 1500 * TICK_PER_MS
+
+    price = 100.0
+
+    seg1 = TapeSegment(
+        index=1, t_start=t0, t_end=t1,
+        bid_price=price, ask_price=101.0,
+        trades={},
+        cancels={},
+        net_flow={(Side.BUY, price): 80},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    seg2 = TapeSegment(
+        index=2, t_start=t1, t_end=t2,
+        bid_price=price, ask_price=101.0,
+        trades={(Side.BUY, price): 1},
+        cancels={(Side.BUY, price): 80},
+        net_flow={(Side.BUY, price): -80},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    tape = [seg1, seg2]
+    exchange.set_tape(tape, t0, t2)
+
+    order = Order(order_id="uniform-bias-test", side=Side.BUY, price=price, qty=5)
+    exchange.on_order_arrival(order, t0, market_qty=20)
+
+    shadow = exchange.get_shadow_orders()[0]
+    threshold = shadow.pos + shadow.original_qty
+    print(f"  Shadow: pos={shadow.pos}, qty={shadow.original_qty}, threshold={threshold}")
+
+    # 计算关键参数
+    q_mkt_at_seg2 = exchange._get_q_mkt(Side.BUY, price, t1)
+    x_norm = shadow.pos / q_mkt_at_seg2 if q_mkt_at_seg2 > 0 else 0
+    cancel_prob = exchange._compute_cancel_front_prob(x_norm)
+    cancel_contribution = cancel_prob * 80
+    print(f"  q_mkt at seg2 start: {q_mkt_at_seg2}")
+    print(f"  x_norm: {x_norm:.4f}")
+    print(f"  cancel_prob (k=0): {cancel_prob:.4f}")
+    print(f"  cancel_contribution: {cancel_contribution:.2f} (前方队列深度{shadow.pos})")
+
+    # 推进所有segments
+    all_receipts = []
+    t_cur = t0
+    for seg in tape:
+        t_seg = max(seg.t_start, t_cur)
+        while t_seg < seg.t_end:
+            receipts, t_stop = exchange.advance(t_seg, seg.t_end, seg)
+            all_receipts.extend(receipts)
+            if t_stop <= t_seg:
+                break
+            t_seg = t_stop
+        t_cur = seg.t_end
+
+    total_fill = sum(r.fill_qty for r in all_receipts if r.receipt_type in ["FILL", "PARTIAL"])
+    total_trades = 1
+
+    print(f"  Total fill qty: {total_fill}")
+    print(f"  Total actual trades: {total_trades}")
+
+    # k=0时，cancel贡献被正确限制，不会导致过度成交
+    assert total_fill <= total_trades, (
+        f"k=0时不应过度成交: fill={total_fill}, trades={total_trades}"
+    )
+
+    # 验证x_coord在合理范围内
+    x_at_end = exchange._get_x_coord(Side.BUY, price, t2, shadow.pos)
+    print(f"  x_coord at end: {x_at_end:.2f} (threshold: {threshold})")
+    assert x_at_end <= threshold, (
+        f"k=0时x_coord({x_at_end:.2f})不应超过threshold({threshold})"
+    )
+
+    print("✓ Test passed: uniform cancel bias prevents overfill")
+
+
+def test_fill_exceeds_cumulative_trade_volume():
+    """验证：成交量不应超过该价位的累计实际成交量。
+
+    场景（多段累积）：
+    - 订单：pos=20, qty=5, threshold=25
+    - Segment 1: 队列增长80手
+    - Segment 2: 40手撤单, 0手成交
+    - Segment 3: 40手撤单, 1手成交
+
+    cancel_bias_k=-0.8时：
+    - Seg2: cancel_prob=0.725, cancel贡献=29, x=29 > threshold=25
+    - 在seg2中就被判定完全成交，但seg2没有任何trade！
+
+    期望行为：总成交量 ≤ 总trade量（1手）
+    """
+    print("\n--- Test: fill should not exceed cumulative trade volume ---")
+
+    from quant_framework.core.types import TapeSegment
+
+    exchange = FIFOExchangeSimulator(cancel_bias_k=-0.8)
+
+    t0 = 1000 * TICK_PER_MS
+    t1 = 1150 * TICK_PER_MS
+    t2 = 1300 * TICK_PER_MS
+    t3 = 1500 * TICK_PER_MS
+
+    price = 100.0
+
+    # Segment 1: 队列增长80手
+    seg1 = TapeSegment(
+        index=1, t_start=t0, t_end=t1,
+        bid_price=price, ask_price=101.0,
+        trades={},
+        cancels={},
+        net_flow={(Side.BUY, price): 80},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    # Segment 2: 40手撤单, 0手成交
+    # 守恒: seg2结束后 q = 20 + 80 - 40 = 60
+    seg2 = TapeSegment(
+        index=2, t_start=t1, t_end=t2,
+        bid_price=price, ask_price=101.0,
+        trades={},
+        cancels={(Side.BUY, price): 40},
+        net_flow={(Side.BUY, price): -40},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    # Segment 3: 40手撤单, 1手成交
+    # 守恒: Q_B = 20 + (80-40-40) - (0+0+1) = 19
+    seg3 = TapeSegment(
+        index=3, t_start=t2, t_end=t3,
+        bid_price=price, ask_price=101.0,
+        trades={(Side.BUY, price): 1},
+        cancels={(Side.BUY, price): 40},
+        net_flow={(Side.BUY, price): -40},
+        activation_bid={price, 99.0, 98.0, 97.0, 96.0},
+        activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
+    )
+
+    tape = [seg1, seg2, seg3]
+    exchange.set_tape(tape, t0, t3)
+
+    order = Order(order_id="multi-seg-cancel-test", side=Side.BUY, price=price, qty=5)
+    exchange.on_order_arrival(order, t0, market_qty=20)
+
+    shadow = exchange.get_shadow_orders()[0]
+    print(f"  Shadow: pos={shadow.pos}, qty={shadow.original_qty}, "
+          f"threshold={shadow.pos + shadow.original_qty}")
+
+    # 推进所有segments
+    all_receipts = []
+    fill_segment_info = []
+    t_cur = t0
+    for seg in tape:
+        t_seg = max(seg.t_start, t_cur)
+        while t_seg < seg.t_end:
+            receipts, t_stop = exchange.advance(t_seg, seg.t_end, seg)
+            for r in receipts:
+                if r.receipt_type in ["FILL", "PARTIAL"]:
+                    fill_segment_info.append((seg.index, r.fill_qty, r.timestamp))
+            all_receipts.extend(receipts)
+            if t_stop <= t_seg:
+                break
+            t_seg = t_stop
+        t_cur = seg.t_end
+
+    total_fill = sum(r.fill_qty for r in all_receipts if r.receipt_type in ["FILL", "PARTIAL"])
+    total_trades = 1  # 只有seg3有1手trade
+
+    print(f"  Fill details:")
+    for seg_idx, fill_qty, fill_time in fill_segment_info:
+        seg_trades = tape[seg_idx - 1].trades.get((Side.BUY, price), 0)
+        print(f"    Seg{seg_idx}: fill_qty={fill_qty}, "
+              f"seg_trades={seg_trades}, fill_time={fill_time}")
+
+    print(f"  Total fill qty: {total_fill}")
+    print(f"  Total actual trades at this price: {total_trades}")
+
+    # 核心断言：成交量不应超过累计实际trade量
+    assert total_fill <= total_trades, (
+        f"BUG: 总成交量({total_fill})超过了累计trade量({total_trades})！"
+        f"cancel_bias_k=-0.8导致x_coord在无trade的段中就被推过threshold"
+    )
+
+    # 额外检查：成交不应发生在没有trade的segment中
+    for seg_idx, fill_qty, fill_time in fill_segment_info:
+        seg_trades = tape[seg_idx - 1].trades.get((Side.BUY, price), 0)
+        if seg_trades == 0:
+            assert fill_qty == 0, (
+                f"BUG: 在Seg{seg_idx}（无trade）中产生了{fill_qty}手成交！"
+                f"成交只应发生在有trade的segment中"
+            )
+
+    print("✓ Test passed: fill bounded by cumulative trade volume")
+
+
 def run_all_tests():
     """Run all tests.
     
@@ -4806,6 +5226,10 @@ def run_all_tests():
         test_cross_interval_order_fill,
         test_floating_point_precision_in_last_vol_split,
         test_post_crossing_pos_uses_x_coord,
+        test_cancel_bias_causes_fill_without_sufficient_trades,
+        test_zero_trades_should_not_fill_order,
+        test_uniform_cancel_bias_prevents_overfill,
+        test_fill_exceeds_cumulative_trade_volume,
     ]
     
     passed = 0
