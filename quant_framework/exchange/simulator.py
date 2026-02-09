@@ -26,34 +26,6 @@ logger = logging.getLogger(__name__)
 EPSILON = 1e-12
 
 
-class OrderNotFoundError(Exception):
-    """Exception raised when attempting to cancel an order that doesn't exist.
-    
-    This exception is raised during cancel operations when the order_id
-    cannot be found in the exchange's order registry. This typically indicates
-    a bug in order management or an invalid cancel request.
-    """
-    def __init__(self, order_id: str, message: str = None):
-        self.order_id = order_id
-        if message is None:
-            message = f"Order not found: {order_id}"
-        super().__init__(message)
-
-
-class InvalidSegmentError(Exception):
-    """Exception raised when a tape segment has invalid properties.
-    
-    This exception is raised when segment validation fails, indicating
-    a bug in the tape builder or corrupted segment data.
-    """
-    def __init__(self, seg_idx: int, t_start: int, t_end: int, message: str = None):
-        self.seg_idx = seg_idx
-        self.t_start = t_start
-        self.t_end = t_end
-        if message is None:
-            message = f"Invalid segment {seg_idx}: t_start={t_start}, t_end={t_end}, duration={t_end - t_start}"
-        super().__init__(message)
-
 
 @dataclass
 class ShadowOrder:
@@ -151,7 +123,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         self._interval_end: int = 0
         
         # Track order IDs that were fully filled immediately (crossing orders)
-        # This allows cancel requests to return REJECTED instead of OrderNotFoundError
+        # This allows cancel requests to return REJECTED instead of ValueError
         # Note: Order IDs are removed from this set after being referenced in a cancel,
         # preventing unbounded growth. full_reset() also clears this set.
         self._filled_order_ids: set = set()
@@ -648,8 +620,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         for seg_idx, seg in enumerate(tape):
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                raise InvalidSegmentError(
-                    seg_idx, seg.t_start, seg.t_end,
+                raise ValueError(
                     f"Invalid segment {seg_idx} in set_tape: "
                     f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
                 )
@@ -765,8 +736,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                raise InvalidSegmentError(
-                    seg_idx, seg.t_start, seg.t_end,
+                raise ValueError(
                     f"Invalid segment {seg_idx} in _get_q_mkt: "
                     f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
                 )
@@ -828,8 +798,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             
             seg_duration = seg.t_end - seg.t_start
             if seg_duration <= 0:
-                raise InvalidSegmentError(
-                    seg_idx, seg.t_start, seg.t_end,
+                raise ValueError(
                     f"Invalid segment {seg_idx} in _get_positive_netflow_between: "
                     f"seg_duration={seg_duration} <= 0 (t_start={seg.t_start}, t_end={seg.t_end})"
                 )
@@ -1321,7 +1290,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             Receipt for the cancel operation
             
         Raises:
-            OrderNotFoundError: If the order_id is not found in price levels
+            ValueError: If the order_id is not found in price levels
                 and was not previously fully filled immediately.
                 This indicates a bug in order management or an invalid cancel request.
         """
@@ -1343,7 +1312,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         if shadow is None:
             logger.error(f"[Exchange] Cancel {order_id}: order not found")
-            raise OrderNotFoundError(order_id)
+            raise ValueError(f"Order not found: {order_id}")
         
         if shadow.status == "FILLED":
             logger.debug(f"[Exchange] Cancel {order_id}: REJECTED (already filled)")
@@ -1447,8 +1416,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
 
         seg_duration = segment.t_end - segment.t_start
         if seg_duration <= 0:
-            raise InvalidSegmentError(
-                segment.index, segment.t_start, segment.t_end,
+            raise ValueError(
                 f"Invalid segment duration in _compute_full_fill_time_at_best: seg_duration={seg_duration}"
             )
 
@@ -1529,8 +1497,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
 
         seg_duration = segment.t_end - segment.t_start
         if seg_duration <= 0:
-            raise InvalidSegmentError(
-                segment.index, segment.t_start, segment.t_end,
+            raise ValueError(
                 f"Invalid segment duration in advance: seg_duration={seg_duration}"
             )
 
