@@ -384,10 +384,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         zones: List[Tuple[str, float, float, Optional[ShadowOrder]]],
         cancel_dist: Dict[int, float],
         trade_rate: float,
-        seg_duration: float,
-        t_abs_start: float,
-        dt_available: float,
-        target_x: Optional[float] = None,
+        seg_duration: int,
+        t_abs_start: int,
+        dt_available: int,
+        target_x: Optional[int] = None,
     ) -> Tuple[float, float]:
         """Piece-wise zone traversal.
 
@@ -703,10 +703,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
 
             # Effective trade rate (accounts for improvement-mode pauses)
             trade_rate_base = total_trades / seg_duration
-            dt = float(seg_end - seg_start)
+            dt = seg_end - seg_start
             trade_active = self._get_trade_active_duration(side, seg_start, seg_end)
             effective_trade_rate = (
-                trade_rate_base * trade_active / dt if dt > EPSILON else 0.0
+                trade_rate_base * trade_active / dt if dt > 0 else 0.0
             )
 
             # Build zones & distribute cancels
@@ -714,10 +714,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             cancel_dist = self._distribute_cancels_to_zones(zones, total_cancels, q_mkt)
 
             # Piece-wise traversal
-            t_abs_start = float(seg_start - seg.t_start)
+            t_abs_start = seg_start - seg.t_start
             x, _ = self._traverse_zones_for_x(
                 x, zones, cancel_dist, effective_trade_rate,
-                float(seg_duration), t_abs_start, dt,
+                seg_duration, t_abs_start, dt,
             )
 
             if t <= seg.t_end:
@@ -1470,12 +1470,12 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         zones = self._build_queue_zones(side, price, x_start, q_mkt)
         cancel_dist = self._distribute_cancels_to_zones(zones, total_cancels, q_mkt)
 
-        t_abs_start = float(t_from - segment.t_start)
-        dt_available = float(t_to - t_from)
+        t_abs_start = t_from - segment.t_start
+        dt_available = t_to - t_from
 
         x_end, time_elapsed = self._traverse_zones_for_x(
             x_start, zones, cancel_dist, trade_rate,
-            float(seg_duration), t_abs_start, dt_available,
+            seg_duration, t_abs_start, dt_available,
             target_x=threshold,
         )
 
