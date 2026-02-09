@@ -1452,7 +1452,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 f"Invalid segment duration in _compute_full_fill_time_at_best: seg_duration={seg_duration}"
             )
 
-        threshold = float(shadow.pos + shadow.original_qty)
+        threshold = shadow.pos + shadow.original_qty
         x_start = self._get_x_coord(side, price, t_from, shadow.pos)
         if x_start >= threshold - EPSILON:
             return t_from
