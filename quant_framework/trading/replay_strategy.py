@@ -106,7 +106,7 @@ class ReplayStrategy(IStrategy):
                     volume = int(row['Volume'])
                     direction = row['OrderDirection']
                     
-                    order_id_str = f"{self.name}-{order_id}"
+                    order_id_str = str(order_id)
                     self._order_id_map[order_id] = order_id_str
                     
                     side = Side.BUY if direction.upper() == "BUY" else Side.SELL
@@ -137,7 +137,7 @@ class ReplayStrategy(IStrategy):
                     # 撤单时需要使用映射后的订单ID
                     order_id_str = self._order_id_map.get(
                         order_id, 
-                        f"{self.name}-{order_id}"
+                        str(order_id)
                     )
                     cancel_request = CancelRequest(
                         order_id=order_id_str,

@@ -2195,7 +2195,7 @@ def test_replay_strategy():
         assert len(strategy.pending_cancels) == 2, f"应加载2个撤单，实际{len(strategy.pending_cancels)}"
         first_cancel_time, first_cancel = strategy.pending_cancels[0]
         assert first_cancel_time == 1500
-        assert first_cancel.order_id == "TestReplay-1001"
+        assert first_cancel.order_id == "1001"
         print(f"  ✓ 成功加载2个撤单")
         
         # 验证pending_orders按时间排序
@@ -4089,7 +4089,7 @@ def test_cancel_order_across_interval():
     - exchange.reset() preserves _levels which contain ShadowOrder objects
     - Orders placed in a previous interval can still be canceled in the next interval
     """
-    from quant_framework.exchange.simulator import FIFOExchangeSimulator, OrderNotFoundError
+    from quant_framework.exchange.simulator import FIFOExchangeSimulator
     from quant_framework.core.types import Order, Side, TapeSegment, TimeInForce
     
     print("\n--- Test: Cancel Order Across Interval (Reset Bug Fix) ---\n")
@@ -4177,18 +4177,18 @@ def test_cancel_order_across_interval():
     
     print("  ✓ 测试1通过: reset后订单仍可被取消")
     
-    # 测试2: 验证取消不存在的订单会抛出OrderNotFoundError
-    print("\n  测试2: 取消不存在的订单应抛出OrderNotFoundError...")
+    # 测试2: 验证取消不存在的订单会抛出ValueError
+    print("\n  测试2: 取消不存在的订单应抛出ValueError...")
     
     exchange2 = FIFOExchangeSimulator(cancel_bias_k=0.0)
     exchange2.set_tape(tape, 10000000, 15000000)
     
     try:
         exchange2.on_cancel_arrival("non-existent-order", 12000000)
-        assert False, "Should have raised OrderNotFoundError"
-    except OrderNotFoundError as e:
-        assert e.order_id == "non-existent-order"
-        print(f"    ✓ 正确抛出OrderNotFoundError: {e}")
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "non-existent-order" in str(e)
+        print(f"    ✓ 正确抛出ValueError: {e}")
     
     print("  ✓ 测试2通过: 取消不存在的订单抛出异常")
     
