@@ -13,6 +13,7 @@ from typing import List, Dict, Optional, Callable, Set
 from datetime import datetime
 
 from ..core.types import OrderReceipt, ReceiptType
+from ..core.interfaces import IReceiptLogger
 
 
 # 设置模块级logger
@@ -45,7 +46,7 @@ class ReceiptRecord:
 ReceiptCallback = Callable[[OrderReceipt], None]
 
 
-class ReceiptLogger:
+class ReceiptLogger(IReceiptLogger):
     """回执记录器。
     
     功能：
