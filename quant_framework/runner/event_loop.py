@@ -19,15 +19,12 @@
 import heapq
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from enum import Enum, auto
 
 from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager, IReceiptLogger
 from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest
 from ..core.trading_hours import TradingHoursHelper
-
-if TYPE_CHECKING:
-    pass
 
 # 设置模块级logger
 logger = logging.getLogger(__name__)
