@@ -9,11 +9,12 @@
 - IExchangeSimulator: 交易所模拟器接口
 - IStrategy: 策略接口（使用DTO，支持回执处理）
 - IOrderManager: 订单管理器接口
+- IReceiptLogger: 回执记录器接口
 """
 
 from abc import ABC, abstractmethod
 from typing import Iterator, List, Optional, Tuple, Any, TYPE_CHECKING
-from .types import Order, NormalizedSnapshot, Price, Qty, Side, TapeSegment, OrderReceipt
+from .types import Order, CancelRequest, NormalizedSnapshot, Price, Qty, Side, TapeSegment, OrderReceipt
 from .events import SimulationEvent
 
 if TYPE_CHECKING:
@@ -97,6 +98,27 @@ class IExchangeSimulator(ABC):
     @abstractmethod
     def reset(self) -> None:
         """重置模拟器状态（用于新区间）。"""
+        pass
+
+    def full_reset(self) -> None:
+        """完全重置模拟器状态（用于新回测会话）。
+        
+        清除所有状态，包括跨区间保留的持久状态。
+        默认实现调用reset()，子类可覆写以清除额外的持久状态。
+        """
+        self.reset()
+
+    def set_tape(self, tape: List[TapeSegment], t_a: int, t_b: int) -> None:
+        """设置当前区间的Tape段列表。
+        
+        在每个区间开始时调用，用于预计算速率等。
+        默认实现为空（子类按需覆写）。
+
+        Args:
+            tape: Tape段列表
+            t_a: 区间开始时间
+            t_b: 区间结束时间
+        """
         pass
 
     @abstractmethod
@@ -203,6 +225,16 @@ class IStrategy(ABC):
         """
         pass
 
+    def get_pending_cancels(self) -> List[Tuple[int, CancelRequest]]:
+        """获取待处理的撤单请求列表。
+
+        默认返回空列表。需要支持撤单的策略应覆写此方法。
+
+        Returns:
+            (发送时间, 撤单请求) 元组列表
+        """
+        return []
+
 
 class IOrderManager(ABC):
     """订单管理器接口。
@@ -275,5 +307,31 @@ class IOrderManager(ABC):
         Args:
             order_id: 订单ID
             arrival_time: 到达时间
+        """
+        pass
+
+
+class IReceiptLogger(ABC):
+    """回执记录器接口。
+
+    提供订单注册和回执记录功能，由EventLoop调用。
+    """
+
+    @abstractmethod
+    def register_order(self, order_id: str, qty: int) -> None:
+        """注册新订单，用于统计。
+
+        Args:
+            order_id: 订单ID
+            qty: 订单数量
+        """
+        pass
+
+    @abstractmethod
+    def log_receipt(self, receipt: OrderReceipt) -> None:
+        """记录一条回执。
+
+        Args:
+            receipt: 订单回执
         """
         pass

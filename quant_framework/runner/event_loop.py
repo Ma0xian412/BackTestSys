@@ -19,30 +19,15 @@
 import heapq
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Protocol, TYPE_CHECKING, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from enum import Enum, auto
 
-from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager
+from ..core.interfaces import IMarketDataFeed, ITapeBuilder, IExchangeSimulator, IStrategy, IOrderManager, IReceiptLogger
 from ..core.types import NormalizedSnapshot, Order, OrderReceipt, TapeSegment, CancelRequest
 from ..core.trading_hours import TradingHoursHelper
 
-if TYPE_CHECKING:
-    from ..trading.receipt_logger import ReceiptLogger
-
 # 设置模块级logger
 logger = logging.getLogger(__name__)
-
-
-class IReceiptLogger(Protocol):
-    """回执记录器接口协议。"""
-    
-    def register_order(self, order_id: str, qty: int) -> None:
-        """注册订单。"""
-        ...
-    
-    def log_receipt(self, receipt: OrderReceipt) -> None:
-        """记录回执。"""
-        ...
 
 
 class EventType(Enum):
@@ -328,11 +313,7 @@ class EventLoopRunner:
         self.feed.reset()
         
         # Full reset the exchange to ensure clean state for new backtest session
-        # This clears both interval-specific state and the order registry
-        if hasattr(self.exchange, 'full_reset'):
-            self.exchange.full_reset()
-        else:
-            self.exchange.reset()
+        self.exchange.full_reset()
         
         prev = self.feed.next()
 
@@ -354,10 +335,9 @@ class EventLoopRunner:
             if self.receipt_logger:
                 self.receipt_logger.register_order(order.order_id, order.qty)
         
-        # 从策略获取待处理的撤单请求（如果策略支持）
-        if hasattr(self.strategy, 'get_pending_cancels'):
-            self._pending_cancels = self.strategy.get_pending_cancels()
-            self.diagnostics["cancels_submitted"] = len(self._pending_cancels)
+        # 从策略获取待处理的撤单请求
+        self._pending_cancels = self.strategy.get_pending_cancels()
+        self.diagnostics["cancels_submitted"] = len(self._pending_cancels)
 
         interval_count = 0
         
@@ -448,8 +428,7 @@ class EventLoopRunner:
         self.exchange.reset()
 
         # 如果交易所支持set_tape方法则调用
-        if hasattr(self.exchange, 'set_tape'):
-            self.exchange.set_tape(tape, t_a, t_b)
+        self.exchange.set_tape(tape, t_a, t_b)
 
         # 初始化事件队列（统一时间线）
         event_queue: List[Event] = []

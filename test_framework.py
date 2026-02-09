@@ -19,6 +19,7 @@ import sys
 from quant_framework.core.types import (
     NormalizedSnapshot, Level, Order, Side, TimeInForce, OrderStatus, TICK_PER_MS
 )
+from quant_framework.core.interfaces import IStrategy
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.trading.oms import OrderManager, Portfolio
@@ -663,7 +664,7 @@ def test_integration_with_delays():
     oms = OrderManager()
     
     # Strategy that places orders more frequently
-    class FrequentStrategy:
+    class FrequentStrategy(IStrategy):
         def __init__(self):
             self.count = 0
         
@@ -1040,7 +1041,7 @@ def test_historical_receipts_processing():
     oms = OrderManager()
     
     # 简单策略
-    class TestStrategy:
+    class TestStrategy(IStrategy):
         def __init__(self):
             self.snapshots_received = []
             self.receipts_received = []
@@ -1123,7 +1124,7 @@ def test_intra_segment_advancement():
     oms = OrderManager()
     
     # 记录交易所advance调用时间的策略
-    class TrackingStrategy:
+    class TrackingStrategy(IStrategy):
         def __init__(self):
             self.order_count = 0
             self.order_placed_at = None
@@ -1220,7 +1221,7 @@ def test_receipt_delay_consistency():
     oms = OrderManager()
     
     # 记录回执到达时间的策略
-    class IOCStrategy:
+    class IOCStrategy(IStrategy):
         def __init__(self):
             self.order_count = 0
             self.receipt_times = []  # (timestamp, recv_time) pairs
@@ -1414,7 +1415,7 @@ def test_peek_advance_pop_paradigm():
     oms = OrderManager()
     
     # 记录事件处理顺序的策略
-    class EventOrderTrackingStrategy:
+    class EventOrderTrackingStrategy(IStrategy):
         def __init__(self):
             self.event_log = []  # [(event_type, time)]
         
@@ -1518,7 +1519,7 @@ def test_receipt_recv_time_authority():
     # 记录recv_time的策略
     recorded_recv_times = []
     
-    class RecvTimeTrackingStrategy:
+    class RecvTimeTrackingStrategy(IStrategy):
         def __init__(self):
             self.order_placed = False
         
@@ -1615,7 +1616,7 @@ def test_no_causal_reversal_with_int_truncation():
     tape_builder = UnifiedTapeBuilder(config=tape_config, tick_size=1.0)
     
     # 测试策略：每个快照都下单
-    class FrequentOrderStrategy:
+    class FrequentOrderStrategy(IStrategy):
         def __init__(self):
             self.count = 0
         
@@ -2714,7 +2715,7 @@ def test_multiple_orders_at_same_price():
     
     # 创建策略：在第一个快照后提交3个订单
     # 订单时间均匀分布
-    class MultiOrderStrategy:
+    class MultiOrderStrategy(IStrategy):
         def __init__(self):
             self.orders_created = False
         
