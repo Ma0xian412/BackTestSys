@@ -9,6 +9,7 @@ This module implements exchange matching with:
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 EPSILON = 1e-12
+# Sentinel shadow position used to clamp cancel_prob to 1.0 (tail reference)
+TAIL_POS_SENTINEL = 10**12
 
 
 class OrderNotFoundError(Exception):
@@ -229,6 +232,30 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             if overlap > 0:
                 active -= overlap
         return max(0.0, active)
+
+    def _iter_trade_subintervals(
+        self, side: Side, t_start: float, t_end: float
+    ):
+        """Yield trade active/paused sub-intervals within [t_start, t_end]."""
+        if t_end <= t_start:
+            return
+        pauses = self._trade_pause_intervals[side]
+        cursor = float(t_start)
+        end = float(t_end)
+        for pause_start, pause_end in pauses:
+            if pause_end <= cursor:
+                continue
+            if pause_start >= end:
+                break
+            if pause_start > cursor:
+                yield cursor, min(pause_start, end), True
+            if pause_end > cursor:
+                yield max(cursor, pause_start), min(pause_end, end), False
+            cursor = max(cursor, pause_end)
+            if cursor >= end:
+                break
+        if cursor < end:
+            yield cursor, end, True
 
     def _compute_trade_rate_for_segment(self, side: Side, price: Price, seg_idx: int) -> float:
         """Compute trade rate for a segment (per time unit)."""
@@ -444,6 +471,99 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         seg = self._current_tape[seg_idx]
         activation_set = seg.activation_bid if side == Side.BUY else seg.activation_ask
         return round(price, 8) in {round(p, 8) for p in activation_set}
+
+    def _advance_x_with_cancel_cutoff(
+        self,
+        x_start: float,
+        shadow_pos: float,
+        side: Side,
+        t_start: float,
+        t_end: float,
+        cancel_rate: float,
+        trade_rate: float,
+    ) -> Tuple[float, Optional[float]]:
+        """Advance X with cancel contribution truncated at shadow_pos.
+
+        Invariant: cancel推进最多只能把X推到shadow_pos，一旦到达队首，
+        后续只有trade贡献才能继续推进。
+        """
+        if t_end <= t_start:
+            return x_start, None
+
+        x = float(x_start)
+        reach_time: Optional[float] = None
+
+        for sub_start, sub_end, trade_active in self._iter_trade_subintervals(
+            side, t_start, t_end
+        ):
+            duration = sub_end - sub_start
+            if duration <= 0:
+                continue
+
+            if x >= shadow_pos:
+                if trade_active and trade_rate > EPSILON:
+                    x += trade_rate * duration
+                continue
+
+            need = shadow_pos - x
+
+            if trade_active:
+                rate = cancel_rate + trade_rate
+                if rate <= EPSILON:
+                    continue
+                max_delta = rate * duration
+                if max_delta >= need:
+                    time_to_front = need / rate
+                    if reach_time is None:
+                        reach_time = sub_start + time_to_front
+                    remaining = duration - time_to_front
+                    x = shadow_pos + trade_rate * remaining
+                else:
+                    x += max_delta
+            else:
+                rate = cancel_rate
+                if rate <= EPSILON:
+                    continue
+                max_delta = rate * duration
+                if max_delta >= need:
+                    time_to_front = need / rate
+                    if reach_time is None:
+                        reach_time = sub_start + time_to_front
+                    x = shadow_pos
+                else:
+                    x += max_delta
+
+        return x, reach_time
+
+    def _find_time_for_trade_qty(
+        self,
+        side: Side,
+        t_start: float,
+        t_end: float,
+        trade_rate: float,
+        trade_qty: float,
+    ) -> Optional[float]:
+        """Find the time when active trade accumulation reaches trade_qty."""
+        if t_end <= t_start:
+            return None
+        if trade_qty <= EPSILON:
+            return t_start
+        if trade_rate <= EPSILON:
+            return None
+
+        remaining_active = trade_qty / trade_rate
+        for sub_start, sub_end, trade_active in self._iter_trade_subintervals(
+            side, t_start, t_end
+        ):
+            if not trade_active:
+                continue
+            duration = sub_end - sub_start
+            if duration <= 0:
+                continue
+            if duration >= remaining_active:
+                return sub_start + remaining_active
+            remaining_active -= duration
+        return None
     
     def _get_x_coord(self, side: Side, price: Price, t: int, shadow_pos: int) -> float:
         """Get X coordinate at time t for given side and price.
@@ -470,6 +590,7 @@ class FIFOExchangeSimulator(IExchangeSimulator):
         
         # Find which segment t falls into
         x = level.x_coord
+        # Invariant: cancel推进在到达shadow_pos后必须停止，仅trade可继续推进
         for seg_idx, seg in enumerate(self._current_tape):
             if t <= seg.t_start:
                 break
@@ -489,12 +610,10 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 side, price, seg_idx, x, shadow_pos
             )
             trade_rate = self._compute_trade_rate_for_segment(side, price, seg_idx)
-
-            # Trade contribution respects improvement-mode pauses
-            trade_active = self._get_trade_active_duration(side, seg_start, seg_end)
-
-            # Add contribution from this segment
-            x += cancel_rate * (seg_end - seg_start) + trade_rate * trade_active
+            # Add contribution with cancel cutoff at shadow_pos
+            x, _ = self._advance_x_with_cancel_cutoff(
+                x, shadow_pos, side, seg_start, seg_end, cancel_rate, trade_rate
+            )
             
             if t <= seg.t_end:
                 break
@@ -997,7 +1116,15 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             pass  # Still queue but won't have progress until activated
         
         level = self._get_level(side, price)
-        
+
+        # 初始化Q_mkt（仅在非crossing订单需要基准深度时）
+        if already_filled <= 0 and not level.queue and level.q_mkt == 0:
+            level.q_mkt = float(market_qty)
+
+        # Tail参考：用于把pos放到与X一致的绝对坐标系
+        x_tail = self._get_x_coord(side, price, arrival_time, TAIL_POS_SENTINEL)
+        min_pos = int(math.ceil(x_tail - EPSILON))
+
         # Calculate position based on whether crossing occurred
         if already_filled > 0:
             # 订单发生了crossing（吃掉了对手方流动性）
@@ -1013,7 +1140,9 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             # 
             # 注：由于 post-crossing 订单在本方队列没有前序 shadow 订单，
             #     shadow_pos 参数使用 0（对 X 计算无影响，因为队列为空时不涉及位置相关撤单）
-            pos = int(round(self._get_x_coord(side, price, arrival_time, 0)))
+            pos = int(math.ceil(self._get_x_coord(side, price, arrival_time, 0) - EPSILON))
+            if pos < min_pos:
+                pos = min_pos
         else:
             # 没有crossing，计算新订单在队列中的位置
             # 
@@ -1023,18 +1152,14 @@ class FIFOExchangeSimulator(IExchangeSimulator):
             #       导致后到达的订单先成交，违反FIFO原则
             # 
             # 新算法：
-            # - 第一个订单：pos = q_mkt(t)
+            # - 第一个订单：pos = X_tail(t) + q_mkt(t)
             # - 后续订单：pos = 前一个shadow订单的(pos + qty) + 正净流入增量
             #   - 正净流入增量 = 从前一个订单到达到当前订单到达期间的正netflow累计
             #   - 负netflow不增加距离（队列收缩不会让后续订单超过前面的订单）
+            # - 最终pos必须不小于X_tail(t)，避免落在历史X左侧
             # 
             # 这保证了FIFO：每个订单的threshold = pos + qty >= 前一个订单的threshold
             # 
-            # Initialize Q_mkt with base value at interval start T_A
-            # This serves as the starting point for interpolation
-            if not level.queue and level.q_mkt == 0:
-                level.q_mkt = float(market_qty)
-            
             # 找到该价位上最后一个活跃的shadow订单
             last_active_shadow = None
             for shadow_order in reversed(level.queue):
@@ -1053,17 +1178,31 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 )
                 
                 # 新订单位置 = 前序订单的threshold + 正净流入（只有队列增长才增加距离）
-                pos = int(round(prev_threshold + positive_netflow))
+                pos_candidate = prev_threshold + positive_netflow
+                pos = int(math.ceil(pos_candidate - EPSILON))
             else:
-                # 没有前序shadow订单，使用原始逻辑
-                # 根据arrival_time所在segment的进度计算当前队列深度
-                # q_mkt_t = 基础值 + Σ(net_flow - trades) * segment_progress
+                # 没有前序shadow订单：使用队尾坐标
                 q_mkt_t = self._get_q_mkt(side, price, arrival_time)  # 插值计算的当前队列深度
-                
-                # 新订单位置 = 当前队列深度
-                # 注意：不包含X坐标，X坐标只用于成交推进计算
-                # 手数必须是整数，所以需要取整
-                pos = int(round(q_mkt_t))
+                tail_coord = x_tail + q_mkt_t
+                pos = int(math.ceil(tail_coord - EPSILON))
+
+            if pos < min_pos:
+                pos = min_pos
+
+        # 到达一致性自检：确保 X(t_a) <= pos
+        x_at_arrival = self._get_x_coord(side, price, arrival_time, pos)
+        if x_at_arrival > pos + EPSILON:
+            adjusted_pos = int(math.ceil(x_at_arrival - EPSILON))
+            if adjusted_pos < min_pos:
+                adjusted_pos = min_pos
+            if adjusted_pos != pos:
+                logger.warning(
+                    "[Exchange] Order arrival pos adjusted to satisfy X(t_a)<=pos: "
+                    f"order_id={order.order_id}, side={side.value}, price={price}, "
+                    f"arrival_time={arrival_time}, old_pos={pos}, new_pos={adjusted_pos}, "
+                    f"x_at_arrival={x_at_arrival}, x_tail={x_tail}"
+                )
+                pos = adjusted_pos
         
         # Create shadow order with remaining qty
         # Mark as post-crossing if there was an immediate fill (crossing occurred)
@@ -1228,20 +1367,44 @@ class FIFOExchangeSimulator(IExchangeSimulator):
                 f"Invalid segment duration in _compute_full_fill_time_at_best: seg_duration={seg_duration}"
             )
 
-        threshold = shadow.pos + shadow.original_qty
+        threshold_full = shadow.pos + shadow.original_qty
         x_start = self._get_x_coord(side, price, t_from, shadow.pos)
-        if x_start >= threshold:
+        if x_start >= threshold_full:
             return t_from
 
         x_seg_start = self._get_x_coord(side, price, segment.t_start, shadow.pos)
         trade_rate = self._compute_trade_rate_for_segment(side, price, seg_idx)
-        cancel_rate = self._compute_cancel_rate_for_segment(side, price, seg_idx, x_seg_start, shadow.pos)
-        rate = trade_rate + cancel_rate
-        if rate <= EPSILON:
+        cancel_rate = self._compute_cancel_rate_for_segment(
+            side, price, seg_idx, x_seg_start, shadow.pos
+        )
+
+        # Stage 1: reach queue front (cancel + trade, with cancel cutoff)
+        if x_start < shadow.pos:
+            _, t_front = self._advance_x_with_cancel_cutoff(
+                x_start, shadow.pos, side, t_from, t_to, cancel_rate, trade_rate
+            )
+            if t_front is None or t_front > t_to:
+                return None
+            front_time = t_front
+            filled_before = 0.0
+        else:
+            front_time = float(t_from)
+            filled_before = max(0.0, x_start - shadow.pos)
+            if filled_before >= shadow.original_qty - EPSILON:
+                return t_from
+
+        remaining_qty = shadow.original_qty - filled_before
+        if remaining_qty <= EPSILON:
+            return t_from
+
+        # Stage 2: from front to full fill (trade only)
+        t_fill = self._find_time_for_trade_qty(
+            side, front_time, t_to, trade_rate, remaining_qty
+        )
+        if t_fill is None:
             return None
 
-        delta_t = (threshold - x_start) / rate
-        fill_time = int(t_from + delta_t)
+        fill_time = int(math.ceil(t_fill - EPSILON))
         fill_time = max(fill_time, t_from)
         if fill_time > t_to:
             return None
