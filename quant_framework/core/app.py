@@ -165,13 +165,13 @@ class BacktestApp:
         composition_root: Optional[CompositionRoot] = None,
         kernel: Optional[EventLoopKernel] = None,
     ) -> None:
+        self._config = config
         self._composition_root = composition_root or CompositionRoot()
         self._kernel = kernel or EventLoopKernel()
         self._last_context: Optional[RuntimeContext] = None
-        self._ctx = self._composition_root.build(config)
 
     def run(self) -> Dict[str, Any]:
-        # ctx = self._composition_root.build(self._config)
+        ctx = self._composition_root.build(self._config)
         self._last_context = self._ctx
         return self._kernel.run(self._ctx)
 
