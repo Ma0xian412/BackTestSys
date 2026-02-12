@@ -40,22 +40,24 @@ class EventLoopKernel:
             ctx.obs.on_run_end(final_time=0, error="No data")
             return ctx.obs.get_run_result()
 
-        self._t_cur = int(prev_snapshot.ts_recv)
+        first_t = int(prev_snapshot.ts_recv)
+        self._t_cur = first_t
+        self._scheduler.push(
+            Event(
+                time=first_t,
+                kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
+                priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
+                payload=prev_snapshot,
+            )
+        )
 
-        first_interval = True
         while True:
             curr_snapshot = ctx.feed.next()
             if curr_snapshot is None:
                 break
 
-            self._runInterval(
-                ctx,
-                prev_snapshot,
-                curr_snapshot,
-                include_prev_snapshot=first_interval,
-            )
+            self._runInterval(ctx, prev_snapshot, curr_snapshot)
             prev_snapshot = curr_snapshot
-            first_interval = False
 
         ctx.obs.on_run_end(final_time=self._t_cur, error=None)
         return ctx.obs.get_run_result()
@@ -65,7 +67,6 @@ class EventLoopKernel:
         ctx: RuntimeContext,
         prev: NormalizedSnapshot,
         curr: NormalizedSnapshot,
-        include_prev_snapshot: bool,
     ) -> None:
         t_a = int(prev.ts_recv)
         t_b = int(curr.ts_recv)
@@ -73,16 +74,6 @@ class EventLoopKernel:
             return
 
         ctx.venue.beginInterval(prev, curr)
-
-        if include_prev_snapshot:
-            self._scheduler.push(
-                Event(
-                    time=t_a,
-                    kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
-                    priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
-                    payload=prev,
-                )
-            )
 
         self._scheduler.push(
             Event(
@@ -117,7 +108,7 @@ class EventLoopKernel:
 
             for receipt in outcome.receipts_generated:
                 ctx.obs.on_receipt_generated(receipt)
-                t_deliver = ctx.timeModel.receipt_delivery_time(receipt)
+                t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
                 self._scheduler.push(
                     Event(
                         time=self._clampTime(int(t_deliver), next_time, t_b),

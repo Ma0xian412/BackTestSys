@@ -5,7 +5,7 @@ import logging
 import os
 from typing import List, Tuple, Optional
 
-from ..core.actions import CancelOrderAction, PlaceOrderAction
+from ..core.actions import Action, ActionType
 from ..core.interfaces import IStrategy
 from ..core.types import CancelRequest, Order, Side
 from ..core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL, StrategyContext
@@ -125,10 +125,10 @@ class ReplayStrategyImpl(IStrategy):
             actions = []
             for sent_time, order in self.pending_orders:
                 order.create_time = sent_time
-                actions.append(PlaceOrderAction(order=order))
+                actions.append(Action(action_type=ActionType.PLACE_ORDER, create_time=sent_time, payload=order))
             for sent_time, cancel in self.pending_cancels:
                 cancel.create_time = sent_time
-                actions.append(CancelOrderAction(request=cancel))
+                actions.append(Action(action_type=ActionType.CANCEL_ORDER, create_time=sent_time, payload=cancel))
             return actions
 
         if e.kind == EVENT_KIND_RECEIPT_DELIVERY:

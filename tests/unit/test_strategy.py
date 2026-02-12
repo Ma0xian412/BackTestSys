@@ -8,10 +8,10 @@
 import os
 import tempfile
 
-from quant_framework.core.actions import CancelOrderAction, PlaceOrderAction
+from quant_framework.core.actions import ActionType
 from quant_framework.core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL, Event, StrategyContext
 from quant_framework.core.types import OrderReceipt, Side, TICK_PER_MS
-from quant_framework.core.dto import ReadOnlyOMSView
+from quant_framework.core.read_only_view import ReadOnlyOMSView
 from quant_framework.trading.strategy import SimpleStrategyImpl
 from quant_framework.trading.replay_strategy import ReplayStrategyImpl
 from quant_framework.trading.oms import OMSImpl
@@ -34,9 +34,9 @@ def test_simple_strategy():
         all_orders.extend(strategy.on_event(ev, ctx))
 
     assert len(all_orders) == 1, f"15 个快照应生成 1 个订单，实际 {len(all_orders)}"
-    assert isinstance(all_orders[0], PlaceOrderAction)
-    assert all_orders[0].order.side == Side.BUY
-    assert all_orders[0].order.price == 100.0
+    assert all_orders[0].action_type == ActionType.PLACE_ORDER
+    assert all_orders[0].payload.side == Side.BUY
+    assert all_orders[0].payload.price == 100.0
 
 
 def test_replay_strategy():
@@ -85,8 +85,8 @@ def test_replay_strategy():
         sctx = StrategyContext(t=snap.ts_recv, snapshot=snap, omsView=_MockOMSView())
         actions = strategy.on_event(sev, sctx)
         assert len(actions) == 5, "第一次快照应返回 3 个订单 + 2 个撤单动作"
-        assert sum(1 for a in actions if isinstance(a, PlaceOrderAction)) == 3
-        assert sum(1 for a in actions if isinstance(a, CancelOrderAction)) == 2
+        assert sum(1 for a in actions if a.action_type == ActionType.PLACE_ORDER) == 3
+        assert sum(1 for a in actions if a.action_type == ActionType.CANCEL_ORDER) == 2
 
         # 后续不再返回
         assert len(strategy.on_event(sev, sctx)) == 0

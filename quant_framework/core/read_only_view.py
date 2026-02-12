@@ -1,4 +1,4 @@
-"""只读视图与 OMS 相关 DTO。"""
+"""OMS 只读视图与只读数据结构。"""
 
 from dataclasses import dataclass
 from typing import List, Optional
@@ -7,8 +7,8 @@ from .types import OrderStatus, Price, Qty, Side, TimeInForce, Timestamp
 
 
 @dataclass(frozen=True)
-class OrderInfoDTO:
-    """订单信息数据传输对象（不可变）。"""
+class OrderSnapshot:
+    """订单只读快照。"""
 
     order_id: str
     side: Side
@@ -31,8 +31,8 @@ class OrderInfoDTO:
 
 
 @dataclass(frozen=True)
-class PortfolioDTO:
-    """投资组合数据传输对象（不可变）。"""
+class PortfolioSnapshot:
+    """投资组合只读快照。"""
 
     cash: float
     position: int
@@ -40,32 +40,32 @@ class PortfolioDTO:
 
 
 class ReadOnlyOMSView:
-    """OMS 只读视图。"""
+    """OMS 只读访问视图。"""
 
     def __init__(self, oms: object):
         self._oms = oms
 
-    def get_active_orders(self) -> List[OrderInfoDTO]:
+    def get_active_orders(self) -> List[OrderSnapshot]:
         orders = self._oms.get_active_orders()
-        return [self._to_order_dto(o) for o in orders]
+        return [self._to_order_snapshot(o) for o in orders]
 
-    def get_order(self, order_id: str) -> Optional[OrderInfoDTO]:
+    def get_order(self, order_id: str) -> Optional[OrderSnapshot]:
         order = self._oms.get_order(order_id)
         if order is None:
             return None
-        return self._to_order_dto(order)
+        return self._to_order_snapshot(order)
 
-    def get_portfolio(self) -> PortfolioDTO:
+    def get_portfolio(self) -> PortfolioSnapshot:
         portfolio = self._oms.portfolio
-        return PortfolioDTO(
+        return PortfolioSnapshot(
             cash=portfolio.cash,
             position=portfolio.position,
             realized_pnl=portfolio.realized_pnl,
         )
 
     @staticmethod
-    def _to_order_dto(order) -> OrderInfoDTO:
-        return OrderInfoDTO(
+    def _to_order_snapshot(order) -> OrderSnapshot:
+        return OrderSnapshot(
             order_id=order.order_id,
             side=order.side,
             price=order.price,

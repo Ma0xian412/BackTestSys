@@ -1,7 +1,7 @@
 """因果一致性场景测试（新架构）。"""
 
 from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
-from quant_framework.core.actions import PlaceOrderAction
+from quant_framework.core.actions import Action, ActionType
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Order, Side, TICK_PER_MS
@@ -43,7 +43,8 @@ def test_event_causal_ordering():
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
                 self.log.append(("SNAPSHOT", e.time))
                 if len(self.log) == 1:
-                    return [PlaceOrderAction(Order(order_id="test-order", side=Side.BUY, price=100.0, qty=5))]
+                    order = Order(order_id="test-order", side=Side.BUY, price=100.0, qty=5)
+                    return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
                 return []
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
                 receipt = e.payload
@@ -79,7 +80,8 @@ def test_receipt_delay_consistency():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and not self.placed:
                 self.placed = True
-                return [PlaceOrderAction(Order(order_id="recv-test", side=Side.BUY, price=100.0, qty=3))]
+                order = Order(order_id="recv-test", side=Side.BUY, price=100.0, qty=3)
+                return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
                 receipt = e.payload
                 recorded.append({"timestamp": receipt.timestamp, "recv_time": receipt.recv_time})
@@ -105,7 +107,8 @@ def test_time_clamping():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
                 self.count += 1
-                return [PlaceOrderAction(Order(order_id=f"t-{self.count}", side=Side.BUY, price=100.0, qty=5))]
+                order = Order(order_id=f"t-{self.count}", side=Side.BUY, price=100.0, qty=5)
+                return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
             return []
 
     for label, delay_out, delay_in in [

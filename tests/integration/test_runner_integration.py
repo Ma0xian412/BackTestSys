@@ -4,7 +4,7 @@ import os
 import tempfile
 
 from quant_framework.adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
-from quant_framework.core.actions import PlaceOrderAction
+from quant_framework.core.actions import Action, ActionType
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
@@ -35,7 +35,8 @@ def test_basic_pipeline():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and not self.sent:
                 self.sent = True
-                return [PlaceOrderAction(Order(order_id="one-shot", side=Side.BUY, price=100.0, qty=1))]
+                order = Order(order_id="one-shot", side=Side.BUY, price=100.0, qty=1)
+                return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
             return []
 
     strategy = _OneShot()
@@ -86,15 +87,14 @@ def test_pipeline_with_delays():
                 self.count += 1
                 self.snapshots_received.append(e.time)
                 if ctx.snapshot and ctx.snapshot.bids:
+                    order = Order(
+                        order_id=f"order-{self.count}",
+                        side=Side.BUY,
+                        price=ctx.snapshot.bids[0].price,
+                        qty=5,
+                    )
                     return [
-                        PlaceOrderAction(
-                            Order(
-                                order_id=f"order-{self.count}",
-                                side=Side.BUY,
-                                price=ctx.snapshot.bids[0].price,
-                                qty=5,
-                            )
-                        )
+                        Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)
                     ]
                 return []
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:

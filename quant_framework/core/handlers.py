@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from .actions import Action
+from .actions import Action, ActionType
 from .dispatcher import IEventHandler
 from .runtime import (
     EVENT_KIND_ACTION_ARRIVAL,
@@ -13,7 +13,7 @@ from .runtime import (
     RuntimeContext,
     StrategyContext,
 )
-from .types import OrderReceipt
+from .types import CancelRequest, Order, OrderReceipt
 
 
 def _clamp_time(t: int, floor: int) -> int:
@@ -35,10 +35,19 @@ class SnapshotArrivalHandler(IEventHandler):
         actions: List[Action] = ctx.strategy.on_event(e, sctx) or []
         emitted: List[Event] = []
         for action in actions:
-            send_time = action.resolve_send_time(e.time)
-            action.submit_to_oms(ctx.oms, send_time)
-            action.record_submission(ctx.obs)
-            t_arrive = ctx.timeModel.action_arrival_time(send_time=send_time, action=action)
+            send_time = int(action.create_time) if int(action.create_time) > 0 else int(e.time)
+            action.create_time = send_time
+            if action.action_type == ActionType.PLACE_ORDER:
+                order: Order = action.payload
+                ctx.oms.submit_order(order, send_time)
+                ctx.obs.on_order_submitted(order)
+            elif action.action_type == ActionType.CANCEL_ORDER:
+                request: CancelRequest = action.payload
+                ctx.oms.submit_cancel(request, send_time)
+                ctx.obs.on_cancel_submitted(request)
+            else:
+                raise ValueError(f"Unsupported action type: {action.action_type!r}")
+            t_arrive = ctx.timeModel.delayout(send_time)
             emitted.append(
                 Event(
                     time=_clamp_time(int(t_arrive), e.time),
@@ -60,7 +69,7 @@ class ActionArrivalHandler(IEventHandler):
         emitted: List[Event] = []
         for receipt in receipts:
             ctx.obs.on_receipt_generated(receipt)
-            t_deliver = ctx.timeModel.receipt_delivery_time(receipt)
+            t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
             emitted.append(
                 Event(
                     time=_clamp_time(int(t_deliver), e.time),
@@ -92,10 +101,19 @@ class ReceiptDeliveryHandler(IEventHandler):
 
         emitted: List[Event] = []
         for action in actions:
-            send_time = action.resolve_send_time(e.time)
-            action.submit_to_oms(ctx.oms, send_time)
-            action.record_submission(ctx.obs)
-            t_arrive = ctx.timeModel.action_arrival_time(send_time=send_time, action=action)
+            send_time = int(action.create_time) if int(action.create_time) > 0 else int(e.time)
+            action.create_time = send_time
+            if action.action_type == ActionType.PLACE_ORDER:
+                order: Order = action.payload
+                ctx.oms.submit_order(order, send_time)
+                ctx.obs.on_order_submitted(order)
+            elif action.action_type == ActionType.CANCEL_ORDER:
+                request: CancelRequest = action.payload
+                ctx.oms.submit_cancel(request, send_time)
+                ctx.obs.on_cancel_submitted(request)
+            else:
+                raise ValueError(f"Unsupported action type: {action.action_type!r}")
+            t_arrive = ctx.timeModel.delayout(send_time)
             emitted.append(
                 Event(
                     time=_clamp_time(int(t_arrive), e.time),

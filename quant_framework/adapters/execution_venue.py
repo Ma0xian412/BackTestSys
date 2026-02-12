@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ..core.actions import Action
+from ..core.actions import Action, ActionType
 from ..core.interfaces import IExecutionVenue, ITapeBuilder, StepOutcome
 from ..core.types import CancelRequest, NormalizedSnapshot, Order, OrderReceipt
 from ..exchange.simulator import FIFOExchangeSimulator
@@ -41,7 +41,11 @@ class ExecutionVenueImpl(IExecutionVenue):
         self._simulator.set_tape(self._tape, self._interval_start, self._interval_end)
 
     def onActionArrival(self, action: Action, t_arrive: int) -> List[OrderReceipt]:
-        return action.execute_at_venue(self, t_arrive)
+        if action.action_type == ActionType.PLACE_ORDER:
+            return self.execute_place_order(action.payload, t_arrive)
+        if action.action_type == ActionType.CANCEL_ORDER:
+            return self.execute_cancel_order(action.payload, t_arrive)
+        raise ValueError(f"Unsupported action type: {action.action_type!r}")
 
     def step(self, t_cur: int, t_limit: int) -> StepOutcome:
         if t_limit <= t_cur:

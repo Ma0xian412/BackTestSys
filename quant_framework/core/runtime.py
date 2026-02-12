@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .actions import Action
-from .dto import ReadOnlyOMSView
+from .read_only_view import ReadOnlyOMSView
 from .types import NormalizedSnapshot, OrderReceipt
 
 

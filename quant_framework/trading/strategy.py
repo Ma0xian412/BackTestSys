@@ -2,7 +2,7 @@
 
 from typing import List
 
-from ..core.actions import PlaceOrderAction
+from ..core.actions import Action, ActionType
 from ..core.interfaces import IStrategy
 from ..core.types import Order, Side
 from ..core.runtime import (
@@ -20,21 +20,21 @@ class SimpleStrategyImpl(IStrategy):
         self.order_count = 0
         self.last_fill_time = 0
 
-    def on_event(self, e, ctx: StrategyContext) -> List[PlaceOrderAction]:
+    def on_event(self, e, ctx: StrategyContext) -> List[Action]:
         if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
             return self._on_snapshot(e, ctx)
         if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
             return self._on_receipt(e, ctx)
         return []
 
-    def _on_snapshot(self, e, ctx: StrategyContext) -> List[PlaceOrderAction]:
+    def _on_snapshot(self, e, ctx: StrategyContext) -> List[Action]:
         # 简单逻辑：每10个快照下一单
         self.order_count += 1
 
         if self.order_count % 10 != 0:
             return []
 
-        # 使用DTO的便捷属性获取最优买价
+        # 使用快照便捷属性获取最优买价
         snapshot = e.payload
         best_bid = snapshot.best_bid
         if best_bid is None:
@@ -53,9 +53,9 @@ class SimpleStrategyImpl(IStrategy):
             price=best_bid,
             qty=1,
         )
-        return [PlaceOrderAction(order=order)]
+        return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
 
-    def _on_receipt(self, e, ctx: StrategyContext) -> List[PlaceOrderAction]:
+    def _on_receipt(self, e, ctx: StrategyContext) -> List[Action]:
         receipt = e.payload
         # 响应成交
         if receipt.receipt_type in ["FILL", "PARTIAL"]:
@@ -80,6 +80,6 @@ class SimpleStrategyImpl(IStrategy):
                 price=best_ask,
                 qty=receipt.fill_qty,
             )
-            return [PlaceOrderAction(order=order)]
+            return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
 
         return []

@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Callable, Optional
 
-from ..core.dto import ReadOnlyOMSView
+from ..core.read_only_view import ReadOnlyOMSView
 from ..core.interfaces import IOMS
 from ..core.types import CancelRequest, Fill, Order, OrderId, OrderReceipt, OrderStatus
 

@@ -8,7 +8,7 @@ from quant_framework.adapters import (
     NullObservabilityImpl,
     TimeModelImpl,
 )
-from quant_framework.core.actions import PlaceOrderAction
+from quant_framework.core.actions import Action, ActionType
 from quant_framework.core.app import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Level, NormalizedSnapshot, Order, Side
@@ -29,7 +29,8 @@ class _FrequentOrderStrategy:
         if e.kind != EVENT_KIND_SNAPSHOT_ARRIVAL or ctx.snapshot is None or not ctx.snapshot.bids:
             return []
         self._seq += 1
-        return [PlaceOrderAction(Order(order_id=f"snap-{self._seq}", side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1))]
+        order = Order(order_id=f"snap-{self._seq}", side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)
+        return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
 
 def _build_basic_app(strategy, snapshots):
     builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)

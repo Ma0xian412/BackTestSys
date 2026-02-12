@@ -14,7 +14,7 @@ from quant_framework.core.types import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
 from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
-from quant_framework.core.actions import PlaceOrderAction
+from quant_framework.core.actions import Action, ActionType
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
@@ -245,7 +245,7 @@ def test_multiple_orders_same_price():
                 o = Order(order_id=f"buy-3318-{i+1}", side=Side.BUY,
                           price=3318.0, qty=100, tif=TimeInForce.GTC)
                 o.create_time = (1000 + i * 167) * TICK_PER_MS
-                orders.append(PlaceOrderAction(order=o))
+                orders.append(Action(action_type=ActionType.PLACE_ORDER, create_time=o.create_time, payload=o))
             return orders
 
     app = BacktestApp(

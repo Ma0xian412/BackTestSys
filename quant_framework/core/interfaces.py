@@ -8,7 +8,7 @@ from .actions import Action
 from .types import CancelRequest, NormalizedSnapshot, Order, OrderReceipt, TapeSegment
 
 if TYPE_CHECKING:
-    from .dto import ReadOnlyOMSView
+    from .read_only_view import ReadOnlyOMSView
 
 
 class IMarketDataFeed(ABC):
@@ -107,13 +107,13 @@ class ITimeModel(ABC):
     """时延模型端口。"""
 
     @abstractmethod
-    def action_arrival_time(self, send_time: int, action: Action) -> int:
-        """策略动作到达执行场所的时间。"""
+    def delayout(self, local_time: int) -> int:
+        """本地 -> 交易所延迟。"""
         raise NotImplementedError
 
     @abstractmethod
-    def receipt_delivery_time(self, receipt: OrderReceipt) -> int:
-        """回执送达策略的时间。"""
+    def delayin(self, exchange_time: int) -> int:
+        """交易所 -> 本地延迟。"""
         raise NotImplementedError
 
 

@@ -6,8 +6,8 @@
 """
 
 from quant_framework.core.types import NormalizedSnapshot, Order, Side, TICK_PER_MS
-from quant_framework.core.dto import (
-    ReadOnlyOMSView, OrderInfoDTO, PortfolioDTO,
+from quant_framework.core.read_only_view import (
+    ReadOnlyOMSView, OrderSnapshot, PortfolioSnapshot,
 )
 from quant_framework.trading.oms import OMSImpl, Portfolio
 
@@ -60,7 +60,7 @@ def test_readonly_oms_view():
     # 活跃订单
     active = view.get_active_orders()
     assert len(active) == 1
-    assert isinstance(active[0], OrderInfoDTO)
+    assert isinstance(active[0], OrderSnapshot)
 
     # 单个订单
     dto = view.get_order("ro-1")
@@ -71,17 +71,17 @@ def test_readonly_oms_view():
     # 不可变
     try:
         dto.price = 200.0
-        assert False, "OrderInfoDTO 应不可变"
+        assert False, "OrderSnapshot 应不可变"
     except Exception:
         pass
 
     # 投资组合
     p_dto = view.get_portfolio()
-    assert isinstance(p_dto, PortfolioDTO)
+    assert isinstance(p_dto, PortfolioSnapshot)
     assert p_dto.cash == 10000.0
     try:
         p_dto.cash = 20000.0
-        assert False, "PortfolioDTO 应不可变"
+        assert False, "PortfolioSnapshot 应不可变"
     except Exception:
         pass
 

@@ -1,7 +1,4 @@
-"""核心模块。
-
-导出核心类型、接口和DTO。
-"""
+"""核心模块导出。"""
 
 from .types import (
     Price, Qty, OrderId, Timestamp,
@@ -18,8 +15,8 @@ from .interfaces import (
     IStrategy,
 )
 
-from .dto import (
-    OrderInfoDTO, PortfolioDTO,
+from .read_only_view import (
+    OrderSnapshot, PortfolioSnapshot,
     ReadOnlyOMSView,
 )
 
@@ -32,7 +29,7 @@ from .runtime import (
     EventSpecRegistry,
     RuntimeContext,
 )
-from .actions import Action, PlaceOrderAction, CancelOrderAction
+from .actions import Action, ActionType
 from .scheduler import HeapScheduler
 from .dispatcher import Dispatcher, IEventHandler
 from .handlers import SnapshotArrivalHandler, ActionArrivalHandler, ReceiptDeliveryHandler
