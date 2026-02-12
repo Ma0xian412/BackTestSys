@@ -26,6 +26,10 @@ class ReceiptLoggerSink(IObservabilitySinks):
     def __init__(self, receipt_logger: ReceiptLogger):
         self._logger = receipt_logger
 
+    @property
+    def receipt_logger(self) -> ReceiptLogger:
+        return self._logger
+
     def register_order(self, order_id: str, qty: int) -> None:
         self._logger.register_order(order_id, qty)
 
