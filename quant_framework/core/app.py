@@ -172,7 +172,7 @@ class BacktestApp:
 
     def run(self) -> Dict[str, Any]:
         ctx = self._composition_root.build(self._config)
-        self._last_context = self._ctx
+        self._last_context = ctx
         return self._kernel.run(self._ctx)
 
     @property
