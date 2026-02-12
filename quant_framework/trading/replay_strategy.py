@@ -1,16 +1,4 @@
-"""重放策略模块。
-
-本模块实现从CSV文件读取历史订单和撤单记录，并在回测中重放。
-
-用于验证框架有效性：将实盘下单/撤单记录作为策略输入，
-比较回测结果与实盘结果。
-
-CSV文件格式：
-- 下单文件: PubOrderLog_{machineName}_Day{yyyymmdd}_Id{contractId}.csv
-  字段: OrderId, LimitPrice, Volume, OrderDirection, SentTime
-- 撤单文件: PubOrderCancelRequestLog_{machineName}_Day{yyyymmdd}_Id{contractId}.csv
-  字段: OrderId, CancelSentTime
-"""
+"""重放策略：读取 CSV 后以 on_event 统一回放动作。"""
 
 import csv
 import logging
@@ -18,33 +6,15 @@ import os
 from typing import List, Tuple, Optional
 
 from ..core.interfaces import IStrategy
-from ..core.types import Order, CancelRequest, Side, OrderReceipt
-from ..core.dto import SnapshotDTO, ReadOnlyOMSView
+from ..core.types import CancelRequest, Order, Side
+from ..core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL, StrategyContext
 
 
 logger = logging.getLogger(__name__)
 
 
 class ReplayStrategy(IStrategy):
-    """重放策略 - 从CSV文件读取历史订单和撤单记录并重放。
-    
-    策略在收到第一张快照时，将所有订单和撤单按时间顺序排入事件队列。
-    
-    使用方法：
-    1. 实例化时提供订单文件和撤单文件路径
-    2. 策略会自动读取CSV文件
-    3. 在第一张快照到达时，返回所有应发出的订单
-    4. 后续通过on_receipt处理回执
-    
-    Attributes:
-        name: 策略名称
-        order_file: 下单文件路径
-        cancel_file: 撤单文件路径
-        is_first_snapshot: 是否是第一张快照
-        pending_orders: 待发送的订单（按sent_time排序）
-        pending_cancels: 待发送的撤单（按cancel_sent_time排序）
-        current_time: 当前策略时间
-    """
+    """重放策略 - 首张快照时一次性发出订单与撤单动作。"""
     
     def __init__(
         self,
@@ -148,54 +118,22 @@ class ReplayStrategy(IStrategy):
                     # 跳过无效行
                     logger.warning(f"Skipping invalid cancel row: {row}, error: {e}")
     
-    def on_snapshot(self, snapshot: SnapshotDTO, oms_view: ReadOnlyOMSView) -> List[Order]:
-        """快照到达时回调。
-        
-        在第一张快照到达时，返回所有应发送的订单。
-        后续快照不再发送新订单。
-        
-        Args:
-            snapshot: 行情快照DTO（不可变）
-            oms_view: OMS只读视图
-            
-        Returns:
-            要提交的新订单列表
-        """
-        if self.is_first_snapshot:
+    def on_event(self, e, ctx: StrategyContext) -> List:
+        if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and self.is_first_snapshot:
             self.is_first_snapshot = False
-            # 返回所有待发送的订单，订单的create_time会在submit时设置
-            orders_to_send = []
+            actions = []
             for sent_time, order in self.pending_orders:
-                # 设置订单的预期发送时间到order对象上，以便后续处理
                 order.create_time = sent_time
-                orders_to_send.append(order)
-            return orders_to_send
-        
+                actions.append(order)
+            for sent_time, cancel in self.pending_cancels:
+                cancel.create_time = sent_time
+                actions.append(cancel)
+            return actions
+
+        if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
+            return []
+
         return []
-    
-    def on_receipt(self, receipt: OrderReceipt, snapshot: SnapshotDTO, oms_view: ReadOnlyOMSView) -> List[Order]:
-        """订单回执到达时回调。
-        
-        重放策略不根据回执生成新订单，只记录状态。
-        
-        Args:
-            receipt: 订单回执
-            snapshot: 当前行情快照DTO
-            oms_view: OMS只读视图
-            
-        Returns:
-            空列表（不生成新订单）
-        """
-        # 重放策略不生成新订单
-        return []
-    
-    def get_pending_cancels(self) -> List[Tuple[int, CancelRequest]]:
-        """获取所有待发送的撤单请求。
-        
-        Returns:
-            (发送时间, 撤单请求) 元组列表
-        """
-        return self.pending_cancels.copy()
     
     def get_statistics(self) -> dict:
         """获取策略统计信息。

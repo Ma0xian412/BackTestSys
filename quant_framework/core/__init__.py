@@ -16,7 +16,7 @@ from .interfaces import (
     ITradeTapeReconstructor,
     ITapeBuilder, IExchangeSimulator,
     IExecutionVenue, IOMS, ITimeModel, IObservabilitySinks, StepOutcome,
-    IStrategy, IOrderManager,
+    IStrategy,
 )
 
 from .dto import (

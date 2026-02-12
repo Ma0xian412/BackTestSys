@@ -1,10 +1,10 @@
-"""Main entry point for the unified EventLoop-based backtest framework.
+"""Main entry point for the kernel/ports backtest architecture.
 
-This demonstrates the new architecture with:
-- EventLoopRunner for coordinating all components
-- UnifiedTapeBuilder for constructing event tapes
-- FIFOExchangeSimulator for exchange matching
-- SimpleStrategy for strategy logic
+This demonstrates:
+- BacktestApp + CompositionRoot for runtime wiring
+- EventLoopKernel for event-driven execution
+- FIFOExecutionVenue adapter over FIFOExchangeSimulator
+- Single-entry strategy interface (on_event)
 
 Observability features:
 - Progress bar for tracking backtest progress (requires tqdm)
@@ -27,7 +27,8 @@ from datetime import datetime
 from quant_framework.core.data_loader import PickleMarketDataFeed, CsvMarketDataFeed, SnapshotDuplicatingFeed
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig as FrameworkTapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
-from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig as FrameworkRunnerConfig
+from quant_framework.adapters import DelayTimeModel, FIFOExecutionVenue, ReceiptLoggerSink
+from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.trading.strategy import SimpleStrategy
 from quant_framework.trading.oms import OrderManager, Portfolio
 from quant_framework.trading.receipt_logger import ReceiptLogger
@@ -139,11 +140,13 @@ def setup_logging(config: BacktestConfig) -> str:
     # Set specific module log levels
     if debug:
         logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.DEBUG)
-        logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.core.kernel').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.core.handlers').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.DEBUG)
     else:
         logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.WARNING)
-        logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.core.kernel').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.core.handlers').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.WARNING)
     
     return log_file or ""
@@ -197,9 +200,10 @@ def create_tape_builder(config: BacktestConfig):
     return UnifiedTapeBuilder(config=tape_config, tick_size=config.tape.tick_size)
 
 
-def create_exchange(config: BacktestConfig):
-    """Create exchange simulator from config."""
-    return FIFOExchangeSimulator(cancel_front_ratio=config.exchange.cancel_front_ratio)
+def create_venue(config: BacktestConfig, tape_builder: UnifiedTapeBuilder):
+    """Create execution venue from config."""
+    simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_front_ratio)
+    return FIFOExecutionVenue(simulator=simulator, tape_builder=tape_builder)
 
 
 def create_strategy(config: BacktestConfig):
@@ -207,23 +211,22 @@ def create_strategy(config: BacktestConfig):
     return SimpleStrategy(name=config.strategy.name)
 
 
-def create_oms(config: BacktestConfig):
-    """Create order manager from config."""
+def create_oms(config: BacktestConfig) -> OrderManager:
+    """Create OMS from config."""
     portfolio = Portfolio(cash=config.portfolio.initial_cash)
     return OrderManager(portfolio=portfolio)
 
 
-def create_runner_config(config: BacktestConfig):
-    """Create runner configuration from config."""
-    return FrameworkRunnerConfig(
+def create_time_model(config: BacktestConfig) -> DelayTimeModel:
+    """Create delay-based time model from config."""
+    return DelayTimeModel(
         delay_out=config.runner.delay_out,
         delay_in=config.runner.delay_in,
-        show_progress=config.runner.show_progress,
     )
 
 
 def run_backtest(config: BacktestConfig, show_config: bool = False):
-    """Run the backtest using the new EventLoop architecture.
+    """Run the backtest using kernel + ports architecture.
     
     Args:
         config: Backtest configuration object
@@ -262,15 +265,10 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     # Create components using config
     feed = create_feed(config)
     tape_builder = create_tape_builder(config)
-    exchange = create_exchange(config)
+    venue = create_venue(config, tape_builder)
     strategy = create_strategy(config)
     oms = create_oms(config)
-    runner_config = create_runner_config(config)
-    
-    # 获取交易时段配置（如果有的话）
-    trading_hours = None
-    if config.contract.contract_info and config.contract.contract_info.trading_hours:
-        trading_hours = config.contract.contract_info.trading_hours
+    time_model = create_time_model(config)
     
     # Create receipt logger for observability
     receipt_logger = ReceiptLogger(
@@ -278,22 +276,21 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         verbose=config.receipt_logger.verbose,
     )
     
-    # Create runner with receipt logger and trading hours
-    runner = EventLoopRunner(
+    obs = ReceiptLoggerSink(receipt_logger)
+    app = BacktestApp()
+    runtime_cfg = RuntimeBuildConfig(
         feed=feed,
-        tape_builder=tape_builder,
-        exchange=exchange,
+        venue=venue,
         strategy=strategy,
         oms=oms,
-        config=runner_config,
-        receipt_logger=receipt_logger,
-        trading_hours=trading_hours,
+        timeModel=time_model,
+        obs=obs,
     )
     
     # Run backtest
     print("Starting backtest...")
     try:
-        results = runner.run()
+        results = app.run(runtime_cfg)
         print("\nBacktest completed successfully!")
         print("=" * 60)
         print("回测运行结果 (Backtest Execution Results)")

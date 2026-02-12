@@ -19,7 +19,7 @@ def test_order_lifecycle():
 
     # 提交
     order = Order(order_id="test-1", side=Side.BUY, price=100.0, qty=10)
-    oms.submit(order, 1000 * TICK_PER_MS)
+    oms.submit_action(order, 1000 * TICK_PER_MS)
 
     active = oms.get_active_orders()
     assert len(active) == 1, f"应有 1 个活跃订单，实际 {len(active)}"
@@ -32,7 +32,7 @@ def test_order_lifecycle():
         order_id="test-1", receipt_type="FILL",
         timestamp=1500 * TICK_PER_MS, fill_qty=10, fill_price=100.0,
     )
-    oms.on_receipt(receipt)
+    oms.apply_receipt(receipt)
 
     assert oms.get_order("test-1").status == OrderStatus.FILLED, "订单应为 FILLED"
     assert portfolio.position == 10, f"仓位应为 10，实际 {portfolio.position}"

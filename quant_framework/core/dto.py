@@ -154,11 +154,11 @@ class ReadOnlyOMSView:
     - 策略不能直接操作OMS内部状态
     """
 
-    def __init__(self, oms: 'IOrderManager'):
+    def __init__(self, oms: object):
         """初始化只读视图。
 
         Args:
-            oms: 订单管理器实例
+            oms: 支持查询接口的 OMS 实例
         """
         self._oms = oms
 

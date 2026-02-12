@@ -1,14 +1,12 @@
-"""接口定义模块。
+"""接口定义模块（新架构）。
 
-本模块定义回测系统中的核心抽象接口：
-- IQueueModel: 队列模型接口
-- IMarketDataFeed: 行情数据源接口
-- ISimulationModel: 仿真模型接口
-- ITradeTapeReconstructor: 成交带重建接口
-- ITapeBuilder: Tape构建器接口
-- IExchangeSimulator: 交易所模拟器接口
-- IStrategy: 策略接口（使用DTO，支持回执处理）
-- IOrderManager: 订单管理器接口
+核心端口：
+- IMarketDataFeed
+- IExecutionVenue
+- IStrategy (single-entry: on_event)
+- IOMS
+- ITimeModel
+- IObservabilitySinks
 """
 
 from abc import ABC, abstractmethod
@@ -18,7 +16,7 @@ from .types import Order, NormalizedSnapshot, Price, Qty, Side, TapeSegment, Ord
 from .events import SimulationEvent
 
 if TYPE_CHECKING:
-    from .dto import SnapshotDTO, ReadOnlyOMSView
+    from .dto import ReadOnlyOMSView
 
 
 class IQueueModel(ABC):
@@ -251,118 +249,9 @@ class IObservabilitySinks(ABC):
 
 
 class IStrategy(ABC):
-    """策略接口（兼容新旧两种回调模式）。
+    """策略接口：单入口 on_event。"""
 
-    新模式：
-    - on_event(event, strategy_context) -> actions
-
-    旧模式（向后兼容）：
-    - on_snapshot(snapshot_dto, oms_view) -> orders
-    - on_receipt(receipt, snapshot_dto, oms_view) -> orders
-    """
-
+    @abstractmethod
     def on_event(self, e: Any, ctx: Any) -> List[Any]:
-        """统一事件入口（默认桥接到旧接口）。"""
-        if getattr(e, "kind", None) == "SnapshotArrival" and hasattr(e, "snapshot"):
-            return self.on_snapshot(e.snapshot, ctx.omsView)
-        if getattr(e, "kind", None) == "ReceiptDelivery" and hasattr(e, "receipt"):
-            return self.on_receipt(e.receipt, ctx.snapshot, ctx.omsView)
-        raise NotImplementedError("Strategy must implement on_event or legacy callbacks.")
-
-    def on_snapshot(self, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
-        """旧接口：快照到达回调（默认桥接到 on_event）。"""
-        from .runtime import SnapshotStrategyEvent, StrategyContext
-
-        strategy_ctx = StrategyContext(
-            t=int(getattr(snapshot, "ts_recv", 0)),
-            snapshot=snapshot,
-            omsView=oms_view,
-        )
-        return self.on_event(SnapshotStrategyEvent(time=strategy_ctx.t, snapshot=snapshot), strategy_ctx)
-
-    def on_receipt(self, receipt: OrderReceipt, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
-        """旧接口：回执到达回调（默认桥接到 on_event）。"""
-        from .runtime import ReceiptStrategyEvent, StrategyContext
-
-        recv_time = int(receipt.recv_time) if receipt.recv_time is not None else int(receipt.timestamp)
-        strategy_ctx = StrategyContext(
-            t=recv_time,
-            snapshot=snapshot,
-            omsView=oms_view,
-        )
-        return self.on_event(ReceiptStrategyEvent(time=recv_time, receipt=receipt), strategy_ctx)
-
-
-class IOrderManager(ABC):
-    """订单管理器接口。
-
-    提供订单管理功能，EventLoop使用此接口来管理订单。
-    """
-
-    @abstractmethod
-    def get_active_orders(self) -> List[Order]:
-        """获取所有活跃订单。
-
-        Returns:
-            活跃订单列表
-        """
-        pass
-
-    @abstractmethod
-    def get_order(self, order_id: str) -> Optional[Order]:
-        """根据ID获取订单。
-
-        Args:
-            order_id: 订单ID
-
-        Returns:
-            订单（如果存在），否则返回None
-        """
-        pass
-
-    @abstractmethod
-    def submit(self, order: Order, submit_time: int) -> None:
-        """提交新订单。
-
-        Args:
-            order: 要提交的订单
-            submit_time: 提交时间
-        """
-        pass
-
-    @abstractmethod
-    def on_receipt(self, receipt: OrderReceipt) -> None:
-        """处理订单回执。
-
-        Args:
-            receipt: 要处理的订单回执
-        """
-        pass
-
-    @abstractmethod
-    def get_pending_orders(self) -> List[Order]:
-        """获取所有待到达的订单（arrival_time is None）。
-
-        Returns:
-            待到达订单列表
-        """
-        pass
-
-    @abstractmethod
-    def get_arrived_orders(self) -> List[Order]:
-        """获取所有已到达的订单（arrival_time is not None）。
-
-        Returns:
-            已到达订单列表
-        """
-        pass
-
-    @abstractmethod
-    def mark_order_arrived(self, order_id: str, arrival_time: int) -> None:
-        """标记订单已到达交易所。
-
-        Args:
-            order_id: 订单ID
-            arrival_time: 到达时间
-        """
-        pass
+        """统一事件入口，返回动作列表。"""
+        raise NotImplementedError

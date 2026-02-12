@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from ..adapters.strategy_adapter import LegacyStrategyAdapter
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, ReceiptDeliveryHandler, SnapshotArrivalHandler
 from .kernel import EventLoopKernel
@@ -33,7 +32,6 @@ class RuntimeBuildConfig:
     dispatcher: Optional[Dispatcher] = None
     state: Optional[EngineState] = None
     diagnostics: Dict[str, Any] = field(default_factory=dict)
-    wrap_legacy_strategy: bool = True
 
 
 class CompositionRoot:
@@ -48,14 +46,10 @@ class CompositionRoot:
         dispatcher.register(EVENT_KIND_ACTION_ARRIVAL, ActionArrivalHandler())
         dispatcher.register(EVENT_KIND_RECEIPT_DELIVERY, ReceiptDeliveryHandler())
 
-        strategy = config.strategy
-        if config.wrap_legacy_strategy:
-            strategy = LegacyStrategyAdapter(strategy)
-
         return RuntimeContext(
             feed=config.feed,
             venue=config.venue,
-            strategy=strategy,
+            strategy=config.strategy,
             oms=config.oms,
             timeModel=config.timeModel,
             obs=config.obs,

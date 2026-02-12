@@ -12,17 +12,7 @@ import sys
 
 import pytest
 
-from quant_framework.core.types import (
-    NormalizedSnapshot, Level, Order, Side, TimeInForce, OrderStatus,
-    OrderReceipt, TapeSegment, CancelRequest, RequestType, ReceiptType,
-    TICK_PER_MS,
-)
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
-from quant_framework.trading.oms import OrderManager, Portfolio
-from quant_framework.trading.strategy import SimpleStrategy
-from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
-from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView, SnapshotDTO, LevelDTO
+from quant_framework.core.types import Level, NormalizedSnapshot
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +32,8 @@ def _setup_debug_logging():
     logging.basicConfig(level=log_level, handlers=[handler], force=True)
     for name in (
         'quant_framework.exchange.simulator',
-        'quant_framework.runner.event_loop',
+        'quant_framework.core.kernel',
+        'quant_framework.core.handlers',
         'quant_framework.trading.receipt_logger',
         'quant_framework.tape.builder',
     ):

@@ -1,37 +1,32 @@
-"""事件循环单元测试。
-
-验证内容：
-- 事件优先级排序（确定性）
-- SEGMENT_END / INTERVAL_END 不重复
-- 请求类型与回执类型枚举
-"""
+"""新架构事件调度单元测试。"""
 
 import heapq
 
 from quant_framework.core.types import (
-    RequestType, ReceiptType, CancelRequest, OrderReceipt, TapeSegment,
-    Side, TICK_PER_MS,
+    RequestType, ReceiptType, CancelRequest, OrderReceipt, TICK_PER_MS,
 )
-from quant_framework.runner.event_loop import (
-    Event, EventType, EVENT_TYPE_PRIORITY, reset_event_seq_counter,
+from quant_framework.core.runtime import (
+    EVENT_KIND_ACTION_ARRIVAL,
+    EVENT_KIND_RECEIPT_DELIVERY,
+    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EventEnvelope,
+    EventSpecRegistry,
+    reset_event_envelope_seq,
 )
+from quant_framework.core.scheduler import HeapScheduler
 
 
 def test_event_priority_ordering():
-    """事件优先级：同一时刻的事件按 (priority, seq) 确定性排序。
-
-    优先级：SEGMENT_END > ORDER_ARRIVAL > CANCEL_ARRIVAL > RECEIPT_TO_STRATEGY > INTERVAL_END
-    """
-    reset_event_seq_counter()
+    """同一时刻按 (priority, seq) 进行确定性排序。"""
+    reset_event_envelope_seq()
+    event_spec = EventSpecRegistry.default()
 
     t = 1000 * TICK_PER_MS
     events = [
-        Event(time=t, event_type=EventType.INTERVAL_END, data="interval"),
-        Event(time=t, event_type=EventType.RECEIPT_TO_STRATEGY, data="receipt1"),
-        Event(time=t, event_type=EventType.SEGMENT_END, data="segment"),
-        Event(time=t, event_type=EventType.ORDER_ARRIVAL, data="order"),
-        Event(time=t, event_type=EventType.RECEIPT_TO_STRATEGY, data="receipt2"),
-        Event(time=t, event_type=EventType.CANCEL_ARRIVAL, data="cancel"),
+        EventEnvelope(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt1"),
+        EventEnvelope(time=t, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload="snapshot"),
+        EventEnvelope(time=t, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload="order"),
+        EventEnvelope(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt2"),
     ]
 
     heap = []
@@ -43,74 +38,47 @@ def test_event_priority_ordering():
         popped.append(heapq.heappop(heap))
 
     expected = [
-        EventType.SEGMENT_END,
-        EventType.ORDER_ARRIVAL,
-        EventType.CANCEL_ARRIVAL,
-        EventType.RECEIPT_TO_STRATEGY,
-        EventType.RECEIPT_TO_STRATEGY,
-        EventType.INTERVAL_END,
+        EVENT_KIND_SNAPSHOT_ARRIVAL,
+        EVENT_KIND_ACTION_ARRIVAL,
+        EVENT_KIND_RECEIPT_DELIVERY,
+        EVENT_KIND_RECEIPT_DELIVERY,
     ]
-    actual = [e.event_type for e in popped]
-    assert actual == expected, f"事件顺序不正确\n期望: {[e.name for e in expected]}\n实际: {[e.name for e in actual]}"
+    actual = [e.kind for e in popped]
+    assert actual == expected, f"事件顺序不正确\n期望: {expected}\n实际: {actual}"
 
     # 同类型按 seq 排序
-    receipts = [e for e in popped if e.event_type == EventType.RECEIPT_TO_STRATEGY]
-    assert receipts[0].data == "receipt1" and receipts[1].data == "receipt2"
+    receipts = [e for e in popped if e.kind == EVENT_KIND_RECEIPT_DELIVERY]
+    assert receipts[0].payload == "receipt1" and receipts[1].payload == "receipt2"
 
     # 多次运行确定性一致
     for _ in range(3):
-        reset_event_seq_counter()
+        reset_event_envelope_seq()
         h = []
         for e in events:
-            heapq.heappush(h, Event(time=e.time, event_type=e.event_type, data=e.data))
+            heapq.heappush(
+                h,
+                EventEnvelope(time=e.time, kind=e.kind, priority=e.priority, payload=e.payload),
+            )
         result = []
         while h:
-            result.append(heapq.heappop(h).event_type)
+            result.append(heapq.heappop(h).kind)
         assert result == expected
 
 
-def test_no_duplicate_segment_and_interval_end():
-    """SEGMENT_END / INTERVAL_END：最后一段的结束由 INTERVAL_END 代表，不重复。"""
-    reset_event_seq_counter()
+def test_scheduler_pop_all_at_time():
+    """HeapScheduler 可批量弹出同一时间事件。"""
+    reset_event_envelope_seq()
+    event_spec = EventSpecRegistry.default()
+    scheduler = HeapScheduler()
 
-    tape = [
-        TapeSegment(index=1, t_start=0, t_end=100, bid_price=100.0, ask_price=101.0,
-                    trades={}, cancels={}, net_flow={},
-                    activation_bid={100.0}, activation_ask={101.0}),
-        TapeSegment(index=2, t_start=100, t_end=200, bid_price=100.0, ask_price=101.0,
-                    trades={}, cancels={}, net_flow={},
-                    activation_bid={100.0}, activation_ask={101.0}),
-        TapeSegment(index=3, t_start=200, t_end=300, bid_price=100.0, ask_price=101.0,
-                    trades={}, cancels={}, net_flow={},
-                    activation_bid={100.0}, activation_ask={101.0}),
-    ]
-    t_b = 300
+    scheduler.push(EventEnvelope(time=100, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload=1))
+    scheduler.push(EventEnvelope(time=100, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload=2))
+    scheduler.push(EventEnvelope(time=200, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload=3))
 
-    queue = []
-    for seg in tape:
-        if seg.t_end == t_b:
-            continue
-        heapq.heappush(queue, Event(time=seg.t_end, event_type=EventType.SEGMENT_END, data=seg))
-    heapq.heappush(queue, Event(time=t_b, event_type=EventType.INTERVAL_END, data=None))
-
-    seg_end_count = sum(1 for e in queue if e.event_type == EventType.SEGMENT_END)
-    assert seg_end_count == len(tape) - 1, f"SEGMENT_END 应为 {len(tape) - 1}，实际 {seg_end_count}"
-    assert not any(e.time == t_b and e.event_type == EventType.SEGMENT_END for e in queue), (
-        "t_b 时刻不应有 SEGMENT_END"
-    )
-
-    # 单段场景
-    reset_event_seq_counter()
-    single_tape = [tape[0]]
-    q2 = []
-    for seg in single_tape:
-        if seg.t_end == single_tape[-1].t_end:
-            continue
-        heapq.heappush(q2, Event(time=seg.t_end, event_type=EventType.SEGMENT_END, data=seg))
-    heapq.heappush(q2, Event(time=single_tape[-1].t_end, event_type=EventType.INTERVAL_END, data=None))
-
-    assert sum(1 for e in q2 if e.event_type == EventType.SEGMENT_END) == 0
-    assert sum(1 for e in q2 if e.event_type == EventType.INTERVAL_END) == 1
+    at_100 = scheduler.popAllAtTime(100)
+    assert len(at_100) == 2
+    assert all(e.time == 100 for e in at_100)
+    assert scheduler.nextDueTimeOrDefault(999) == 200
 
 
 def test_request_receipt_types():

@@ -7,9 +7,9 @@ from quant_framework.adapters import (
     DelayTimeModel,
     FIFOExecutionVenue,
     NullObservabilitySinks,
-    OrderStateMachineOMS,
 )
 from quant_framework.core.app import BacktestApp, RuntimeBuildConfig
+from quant_framework.core.runtime import EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Level, NormalizedSnapshot, Order, Side
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.tape.builder import TapeConfig, UnifiedTapeBuilder
@@ -19,46 +19,35 @@ from tests.conftest import MockFeed, create_test_snapshot
 
 
 class _FrequentOrderStrategy:
-    """用于验证新架构对 legacy 策略回调的兼容。"""
+    """用于验证新架构的 on_event 策略回调。"""
 
     def __init__(self) -> None:
         self._seq = 0
 
-    def on_snapshot(self, snapshot, oms_view):
-        self._seq += 1
-        if not snapshot.bids:
+    def on_event(self, e, ctx):
+        if e.kind != EVENT_KIND_SNAPSHOT_ARRIVAL or ctx.snapshot is None or not ctx.snapshot.bids:
             return []
-        return [
-            Order(
-                order_id=f"snap-{self._seq}",
-                side=Side.BUY,
-                price=snapshot.bids[0].price,
-                qty=1,
-            )
-        ]
-
-    def on_receipt(self, receipt, snapshot, oms_view):
-        return []
-
+        self._seq += 1
+        return [Order(order_id=f"snap-{self._seq}", side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)]
 
 def _build_basic_app(strategy, snapshots):
     builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
     venue = FIFOExecutionVenue(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
-    oms_adapter = OrderStateMachineOMS(OrderManager())
+    oms = OrderManager()
 
     app = BacktestApp()
     config = RuntimeBuildConfig(
         feed=MockFeed(snapshots),
         venue=venue,
         strategy=strategy,
-        oms=oms_adapter,
+        oms=oms,
         timeModel=DelayTimeModel(delay_out=0, delay_in=0),
         obs=NullObservabilitySinks(),
     )
     return app, config
 
 
-def test_backtest_app_legacy_strategy_compat():
+def test_backtest_app_on_event_strategy():
     snapshots = [
         create_test_snapshot(1000, 100.0, 101.0),
         create_test_snapshot(2000, 100.0, 101.0),
@@ -109,14 +98,14 @@ def test_backtest_app_replay_strategy_cancel_compat():
             simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
             tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
         )
-        oms_adapter = OrderStateMachineOMS(OrderManager(portfolio=Portfolio(cash=100000.0)))
+        oms = OrderManager(portfolio=Portfolio(cash=100000.0))
 
         app = BacktestApp()
         cfg = RuntimeBuildConfig(
             feed=MockFeed(snapshots),
             venue=venue,
             strategy=replay,
-            oms=oms_adapter,
+            oms=oms,
             timeModel=DelayTimeModel(delay_out=0, delay_in=0),
             obs=NullObservabilitySinks(),
         )

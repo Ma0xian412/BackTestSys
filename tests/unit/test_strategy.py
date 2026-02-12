@@ -8,7 +8,12 @@
 import os
 import tempfile
 
-from quant_framework.core.types import Order, Side, CancelRequest, TICK_PER_MS
+from quant_framework.core.runtime import (
+    ReceiptStrategyEvent,
+    SnapshotStrategyEvent,
+    StrategyContext,
+)
+from quant_framework.core.types import Order, OrderReceipt, Side, TICK_PER_MS
 from quant_framework.core.dto import (
     to_snapshot_dto, ReadOnlyOMSView, SnapshotDTO, LevelDTO,
 )
@@ -20,7 +25,7 @@ from tests.conftest import create_test_snapshot
 
 
 def test_simple_strategy():
-    """SimpleStrategy：每 10 个快照生成 1 个订单，价格为最优买价。"""
+    """SimpleStrategy：on_event 下每 10 个快照生成 1 个订单。"""
     strategy = SimpleStrategy(name="TestStrategy")
     oms = OrderManager()
     view = ReadOnlyOMSView(oms)
@@ -30,7 +35,9 @@ def test_simple_strategy():
 
     all_orders = []
     for _ in range(15):
-        all_orders.extend(strategy.on_snapshot(dto, view))
+        ev = SnapshotStrategyEvent(time=dto.ts_recv, snapshot=dto)
+        ctx = StrategyContext(t=dto.ts_recv, snapshot=dto, omsView=view)
+        all_orders.extend(strategy.on_event(ev, ctx))
 
     assert len(all_orders) == 1, f"15 个快照应生成 1 个订单，实际 {len(all_orders)}"
     assert all_orders[0].side == Side.BUY
@@ -38,7 +45,7 @@ def test_simple_strategy():
 
 
 def test_replay_strategy():
-    """ReplayStrategy：正确加载 CSV、按时间排序、on_snapshot 返回所有订单。"""
+    """ReplayStrategy：首次 SnapshotArrival 返回全部订单和撤单动作。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         # 订单文件
         order_file = os.path.join(tmpdir, "PubOrderLog_T_D_Id12345.csv")
@@ -71,27 +78,33 @@ def test_replay_strategy():
         cancel_times = [t for t, _ in strategy.pending_cancels]
         assert cancel_times == sorted(cancel_times), "撤单应按时间排序"
 
-        # 首次 on_snapshot 返回所有订单
         class _MockOMSView:
-            def get_active_orders(self): return []
-            def get_portfolio(self): return None
+            def get_active_orders(self):
+                return []
+
+            def get_portfolio(self):
+                return None
 
         snap = SnapshotDTO(
             ts_recv=1000,
             bids=(LevelDTO(100.0, 100),),
             asks=(LevelDTO(101.0, 100),),
         )
-        orders = strategy.on_snapshot(snap, _MockOMSView())
-        assert len(orders) == 3, "第一次快照应返回 3 个订单"
-        assert all(isinstance(o, Order) for o in orders)
+        sev = SnapshotStrategyEvent(time=snap.ts_recv, snapshot=snap)
+        sctx = StrategyContext(t=snap.ts_recv, snapshot=snap, omsView=_MockOMSView())
+        actions = strategy.on_event(sev, sctx)
+        assert len(actions) == 5, "第一次快照应返回 3 个订单 + 2 个撤单动作"
+        assert sum(1 for a in actions if isinstance(a, Order)) == 3
 
         # 后续不再返回
-        assert len(strategy.on_snapshot(snap, _MockOMSView())) == 0
+        assert len(strategy.on_event(sev, sctx)) == 0
 
-        # 撤单
-        cancels = strategy.get_pending_cancels()
-        assert len(cancels) == 2
-        assert all(isinstance(c[1], CancelRequest) for c in cancels)
+        # 回执事件不触发新动作
+        rev = ReceiptStrategyEvent(
+            time=snap.ts_recv,
+            receipt=OrderReceipt(order_id="x", receipt_type="FILL", timestamp=snap.ts_recv, recv_time=snap.ts_recv),
+        )
+        assert strategy.on_event(rev, sctx) == []
 
         # 统计
         stats = strategy.get_statistics()
