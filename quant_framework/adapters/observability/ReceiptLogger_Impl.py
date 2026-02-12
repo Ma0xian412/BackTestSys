@@ -174,7 +174,7 @@ class ReceiptLogger_Impl(IObservabilitySinks):
         """
         self.order_total_qty[order_id] = qty
         self.order_filled_qty[order_id] = 0
-        logger.debug(f"[ReceiptLogger_Impl] Order registered: order_id={order_id}, qty={qty}")
+        logger.debug(f"[ReceiptLogger] Order registered: order_id={order_id}, qty={qty}")
     
     def log_receipt(self, receipt: OrderReceipt) -> None:
         """记录一条回执。
@@ -252,7 +252,7 @@ class ReceiptLogger_Impl(IObservabilitySinks):
                 expected_filled = self.order_filled_qty[order_id]
                 if receipt.fill_qty != expected_filled:
                     logger.warning(
-                        f"[ReceiptLogger_Impl] Cancel fill_qty mismatch for {order_id}: "
+                        f"[ReceiptLogger] Cancel fill_qty mismatch for {order_id}: "
                         f"receipt.fill_qty={receipt.fill_qty}, accumulated={expected_filled}"
                     )
                 

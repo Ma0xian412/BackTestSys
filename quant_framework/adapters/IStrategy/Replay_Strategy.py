@@ -24,7 +24,7 @@ class ReplayStrategy_Impl(IStrategy):
     
     def __init__(
         self,
-        name: str = "ReplayStrategy_Impl",
+        name: str = "ReplayStrategy",
         order_file: Optional[str] = None,
         cancel_file: Optional[str] = None,
     ):
