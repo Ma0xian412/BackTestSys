@@ -8,11 +8,11 @@
 - post-crossing 订单使用 x_coord 作为 pos
 """
 
-from quant_framework.core.types import (
+from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
+from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 from tests.conftest import create_test_snapshot, print_tape_path
 

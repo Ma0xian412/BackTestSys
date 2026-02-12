@@ -4,9 +4,9 @@ import ast
 import math
 import logging
 from typing import List, Any, Optional, Tuple
-from .interfaces import IMarketDataFeed
-from .types import NormalizedSnapshot, Level
-from .trading_hours import TradingHoursHelper
+from ...core.port import IMarketDataFeed
+from ...core.data_structure import NormalizedSnapshot, Level
+from ...utils.trading_hours import TradingHoursHelper
 
 # 设置模块级logger
 logger = logging.getLogger(__name__)
@@ -377,7 +377,7 @@ class SnapshotDuplicatingFeed(IMarketDataFeed):
             trading_hours: 交易时段列表，每个元素是一个包含start_time和end_time的对象。
                           时间格式为 "HH:MM:SS"。如果为None，不进行交易时段检查。
         """
-        from .types import SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
+        from ...core.data_structure import SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
         
         self.inner_feed = inner_feed
         self.min_interval = SNAPSHOT_MIN_INTERVAL_TICK

@@ -1,10 +1,10 @@
-"""Main entry point for the unified EventLoop-based backtest framework.
+"""Main entry point for the kernel/ports backtest architecture.
 
-This demonstrates the new architecture with:
-- EventLoopRunner for coordinating all components
-- UnifiedTapeBuilder for constructing event tapes
-- FIFOExchangeSimulator for exchange matching
-- SimpleStrategy for strategy logic
+This demonstrates:
+- BacktestApp + CompositionRoot for runtime wiring
+- EventLoopKernel for event-driven execution
+- ExecutionVenueImpl over FIFOExchangeSimulator
+- Single-entry strategy interface (on_event)
 
 Observability features:
 - Progress bar for tracking backtest progress (requires tqdm)
@@ -24,13 +24,7 @@ import os
 import sys
 from datetime import datetime
 
-from quant_framework.core.data_loader import PickleMarketDataFeed, CsvMarketDataFeed, SnapshotDuplicatingFeed
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig as FrameworkTapeConfig
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
-from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig as FrameworkRunnerConfig
-from quant_framework.trading.strategy import SimpleStrategy
-from quant_framework.trading.oms import OrderManager, Portfolio
-from quant_framework.trading.receipt_logger import ReceiptLogger
+from quant_framework.core import BacktestApp
 from quant_framework.config import load_config, print_config, BacktestConfig
 
 
@@ -138,92 +132,21 @@ def setup_logging(config: BacktestConfig) -> str:
     
     # Set specific module log levels
     if debug:
-        logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.DEBUG)
-        logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.DEBUG)
-        logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.core.kernel').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.core.handlers').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.adapters.trading.receipt_logger').setLevel(logging.DEBUG)
     else:
-        logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.WARNING)
-        logging.getLogger('quant_framework.runner.event_loop').setLevel(logging.WARNING)
-        logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.core.kernel').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.core.handlers').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.adapters.trading.receipt_logger').setLevel(logging.WARNING)
     
     return log_file or ""
 
 
-def create_feed(config: BacktestConfig):
-    """Create market data feed from config.
-    
-    根据配置创建市场数据源：
-    1. 根据 data.format 选择 CsvMarketDataFeed 或 PickleMarketDataFeed 作为 inner feed
-    2. 使用 SnapshotDuplicatingFeed 包装 inner feed，实现快照复制逻辑
-    3. 如果配置了合约信息，传入交易时段以避免在交易时段之间复制快照
-    
-    Args:
-        config: BacktestConfig 配置对象
-        
-    Returns:
-        IMarketDataFeed: 包装后的数据源
-    """
-    # 根据格式选择内部 feed
-    if config.data.format == "csv":
-        inner_feed = CsvMarketDataFeed(config.data.path)
-    else:
-        inner_feed = PickleMarketDataFeed(config.data.path)
-    
-    # 获取交易时段配置（如果有的话）
-    trading_hours = None
-    if config.contract.contract_info and config.contract.contract_info.trading_hours:
-        trading_hours = config.contract.contract_info.trading_hours
-    
-    # 使用 SnapshotDuplicatingFeed 包装，传入配置的 tolerance_tick 和交易时段
-    return SnapshotDuplicatingFeed(
-        inner_feed=inner_feed,
-        tolerance_tick=config.snapshot.tolerance_tick,
-        trading_hours=trading_hours
-    )
-
-
-def create_tape_builder(config: BacktestConfig):
-    """Create tape builder from config."""
-    tape_config = FrameworkTapeConfig(
-        ghost_rule=config.tape.ghost_rule,
-        ghost_alpha=config.tape.ghost_alpha,
-        epsilon=config.tape.epsilon,
-        segment_iterations=config.tape.segment_iterations,
-        time_scale_lambda=config.tape.time_scale_lambda,
-        cancel_front_ratio=config.tape.cancel_front_ratio,
-        crossing_order_policy=config.tape.crossing_order_policy,
-        top_k=config.tape.top_k,
-    )
-    return UnifiedTapeBuilder(config=tape_config, tick_size=config.tape.tick_size)
-
-
-def create_exchange(config: BacktestConfig):
-    """Create exchange simulator from config."""
-    return FIFOExchangeSimulator(cancel_front_ratio=config.exchange.cancel_front_ratio)
-
-
-def create_strategy(config: BacktestConfig):
-    """Create strategy from config."""
-    return SimpleStrategy(name=config.strategy.name)
-
-
-def create_oms(config: BacktestConfig):
-    """Create order manager from config."""
-    portfolio = Portfolio(cash=config.portfolio.initial_cash)
-    return OrderManager(portfolio=portfolio)
-
-
-def create_runner_config(config: BacktestConfig):
-    """Create runner configuration from config."""
-    return FrameworkRunnerConfig(
-        delay_out=config.runner.delay_out,
-        delay_in=config.runner.delay_in,
-        show_progress=config.runner.show_progress,
-    )
-
-
 def run_backtest(config: BacktestConfig, show_config: bool = False):
-    """Run the backtest using the new EventLoop architecture.
+    """Run the backtest using kernel + ports architecture.
     
     Args:
         config: Backtest configuration object
@@ -259,41 +182,19 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         print(f"Receipts will be saved to: {receipt_output_file}")
     print()
     
-    # Create components using config
-    feed = create_feed(config)
-    tape_builder = create_tape_builder(config)
-    exchange = create_exchange(config)
-    strategy = create_strategy(config)
-    oms = create_oms(config)
-    runner_config = create_runner_config(config)
-    
-    # 获取交易时段配置（如果有的话）
-    trading_hours = None
-    if config.contract.contract_info and config.contract.contract_info.trading_hours:
-        trading_hours = config.contract.contract_info.trading_hours
-    
-    # Create receipt logger for observability
-    receipt_logger = ReceiptLogger(
-        output_file=receipt_output_file,
-        verbose=config.receipt_logger.verbose,
-    )
-    
-    # Create runner with receipt logger and trading hours
-    runner = EventLoopRunner(
-        feed=feed,
-        tape_builder=tape_builder,
-        exchange=exchange,
-        strategy=strategy,
-        oms=oms,
-        config=runner_config,
-        receipt_logger=receipt_logger,
-        trading_hours=trading_hours,
-    )
+    # main 只处理输入/config；组件构造交给 BacktestApp + CompositionRoot
+    if receipt_output_file:
+        config.receipt_logger.output_file = receipt_output_file
+
+    app = BacktestApp(config)
     
     # Run backtest
     print("Starting backtest...")
     try:
-        results = runner.run()
+        results = app.run()
+        ctx = app.last_context
+        oms = ctx.oms if ctx is not None else None
+        receipt_logger = getattr(getattr(ctx, "obs", None), "receipt_logger", None)
         print("\nBacktest completed successfully!")
         print("=" * 60)
         print("回测运行结果 (Backtest Execution Results)")
@@ -311,28 +212,30 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         
         # Print portfolio summary
         print(f"\n投资组合摘要 (Portfolio Summary):")
-        print(f"  Cash (现金余额): {oms.portfolio.cash:.2f}")
-        print(f"  Position (持仓数量): {oms.portfolio.position}")
-        print(f"  Realized PnL (已实现盈亏): {oms.portfolio.realized_pnl:.2f}")
+        if oms is not None:
+            print(f"  Cash (现金余额): {oms.portfolio.cash:.2f}")
+            print(f"  Position (持仓数量): {oms.portfolio.position}")
+            print(f"  Realized PnL (已实现盈亏): {oms.portfolio.realized_pnl:.2f}")
         
         # Print order summary
-        active_orders = oms.get_active_orders()
-        all_orders = list(oms.orders.values())
+        active_orders = oms.get_active_orders() if oms is not None else []
+        all_orders = list(oms.orders.values()) if oms is not None else []
         print(f"\n订单摘要 (Order Summary):")
         print(f"  Total orders (总订单数): {len(all_orders)}")
         print(f"  Active orders (活跃订单数): {len(active_orders)}")
         print(f"  Filled orders (已成交订单数): {sum(1 for o in all_orders if o.status.value == 'FILLED')}")
         
         # Print receipt summary
-        receipt_logger.print_summary()
+        if receipt_logger is not None:
+            receipt_logger.print_summary()
         
         # Save receipts to file if specified
-        if receipt_output_file:
+        if receipt_output_file and receipt_logger is not None:
             receipt_logger.save_to_file()
             print(f"\nReceipts saved to: {receipt_output_file}")
         
         # Print all receipts if verbose mode is not already enabled
-        if not config.receipt_logger.verbose and receipt_logger.records:
+        if receipt_logger is not None and (not config.receipt_logger.verbose) and receipt_logger.records:
             print("\nTo see all receipts, set receipt_logger.verbose: true in config")
             print("Or use receipt_logger.print_all_receipts() programmatically")
         

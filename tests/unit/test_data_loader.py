@@ -6,8 +6,8 @@
 - 交易时段感知的复制逻辑
 """
 
-from quant_framework.core.data_loader import SnapshotDuplicatingFeed
-from quant_framework.core.types import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
+from quant_framework.adapters.market_data_feed import SnapshotDuplicatingFeed
+from quant_framework.core.data_structure import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
 from quant_framework.config import TradingHour
 
 from tests.conftest import create_test_snapshot, MockFeed
@@ -30,7 +30,7 @@ def test_snapshot_duplication():
     assert result[0].ts_recv == t1
     assert result[1].ts_recv == t1 + SNAPSHOT_MIN_INTERVAL_TICK
     assert result[2].ts_recv == t2
-    assert result[1].last_vol_split == [], "复制快照的 last_vol_split 应为空"
+    assert result[1].last_vol_split == (), "复制快照的 last_vol_split 应为空"
 
     # 2000ms 间隔 → 3 个复制
     t3, t4 = 1000 * TICK_PER_MS, 3000 * TICK_PER_MS
@@ -43,7 +43,7 @@ def test_snapshot_duplication():
         result2.append(s)
     assert len(result2) == 5, f"应 5 个快照，实际 {len(result2)}"
     for i in range(1, 4):
-        assert result2[i].last_vol_split == []
+        assert result2[i].last_vol_split == ()
 
     # 500ms 间隔 → 无复制
     t5, t6 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS

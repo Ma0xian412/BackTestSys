@@ -1,25 +1,22 @@
-"""EventLoopRunner 集成测试。
-
-验证多组件协同工作：
-- 基本管线（Tape → Exchange → OMS → Strategy）
-- 带延迟的管线
-- ReplayStrategy 集成
-"""
+"""BacktestApp 集成测试（新架构）。"""
 
 import os
 import tempfile
 
-from quant_framework.core.types import (
-    Order, Side, TimeInForce, NormalizedSnapshot, Level, TICK_PER_MS,
+from quant_framework.adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
+from quant_framework.core.data_structure import (
+    EVENT_KIND_RECEIPT_DELIVERY,
+    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    Action,
+    ActionType,
 )
-from quant_framework.core.dto import to_snapshot_dto, ReadOnlyOMSView
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
-from quant_framework.trading.oms import OrderManager, Portfolio
-from quant_framework.trading.strategy import SimpleStrategy
-from quant_framework.trading.replay_strategy import ReplayStrategy
-from quant_framework.trading.receipt_logger import ReceiptLogger
-from quant_framework.runner.event_loop import EventLoopRunner, RunnerConfig, TimelineConfig
+from quant_framework.core import BacktestApp, RuntimeBuildConfig
+from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
+from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
+from quant_framework.adapters.trading.replay_strategy import ReplayStrategyImpl
+from quant_framework.adapters.trading.receipt_logger import ReceiptLogger
 
 from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 
@@ -29,36 +26,43 @@ from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 # ---------------------------------------------------------------------------
 
 def test_basic_pipeline():
-    """基本管线：Tape 构建 → 交易所设置 → 策略下单 → 交易所推进。"""
+    """基本管线：BacktestApp 驱动组件协同。"""
     builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
-    exchange = FIFOExchangeSimulator()
-    oms = OrderManager()
-    oms_view = ReadOnlyOMSView(oms)
-    strategy = SimpleStrategy(name="TestStrategy")
+    exchange = ExecutionVenueImpl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
+    oms = OMSImpl()
+    receipt_logger = ReceiptLogger()
+
+    class _OneShot:
+        def __init__(self):
+            self.sent = False
+
+        def on_event(self, e, ctx):
+            if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and not self.sent:
+                self.sent = True
+                order = Order(order_id="one-shot", side=Side.BUY, price=100.0, qty=1)
+                return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
+            return []
+
+    strategy = _OneShot()
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
     curr = create_test_snapshot(1500 * TICK_PER_MS, 100.5, 101.5)
-    prev_dto = to_snapshot_dto(prev)
-
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
-    exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
-
-    orders = strategy.on_snapshot(prev_dto, oms_view)
-    for o in orders:
-        oms.submit(o, 1000 * TICK_PER_MS)
-
-    for o in oms.get_active_orders():
-        receipt = exchange.on_order_arrival(o, 1100 * TICK_PER_MS, market_qty=50)
-        if receipt:
-            oms.on_receipt(receipt)
-
-    if tape:
-        seg = tape[0]
-        receipts, _ = exchange.advance(seg.t_start, seg.t_end, seg)
-        for r in receipts:
-            oms.on_receipt(r)
+    app = BacktestApp(
+        RuntimeBuildConfig(
+            feed=MockFeed([prev, curr]),
+            venue=exchange,
+            strategy=strategy,
+            oms=oms,
+            timeModel=TimeModelImpl(delay_out=0, delay_in=0),
+            obs=ObservabilityImpl(receipt_logger),
+        ),
+    )
+    result = app.run()
+    assert result["intervals"] == 1
+    assert result["diagnostics"]["orders_submitted"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -82,41 +86,45 @@ def test_pipeline_with_delays():
             self.snapshots_received = []
             self.receipts_received = []
 
-        def on_snapshot(self, snapshot, oms_view):
-            self.count += 1
-            self.snapshots_received.append(
-                snapshot.ts_exch if hasattr(snapshot, 'ts_exch') else snapshot
-            )
-            if snapshot.bids:
-                return [Order(
-                    order_id=f"order-{self.count}",
-                    side=Side.BUY,
-                    price=snapshot.bids[0].price,
-                    qty=5,
-                )]
-            return []
-
-        def on_receipt(self, receipt, snapshot, oms_view):
-            self.receipts_received.append((receipt.timestamp, receipt.recv_time))
+        def on_event(self, e, ctx):
+            if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
+                self.count += 1
+                self.snapshots_received.append(e.time)
+                if ctx.snapshot and ctx.snapshot.bids:
+                    order = Order(
+                        order_id=f"order-{self.count}",
+                        side=Side.BUY,
+                        price=ctx.snapshot.bids[0].price,
+                        qty=5,
+                    )
+                    return [
+                        Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)
+                    ]
+                return []
+            if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
+                receipt = e.payload
+                self.receipts_received.append((receipt.timestamp, receipt.recv_time))
             return []
 
     strategy = _FrequentStrategy()
-
-    runner = EventLoopRunner(
-        feed=MockFeed(snapshots),
-        tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
-        exchange=FIFOExchangeSimulator(cancel_bias_k=0.0),
-        strategy=strategy,
-        oms=OrderManager(),
-        config=RunnerConfig(
-            delay_out=10 * TICK_PER_MS,
-            delay_in=5 * TICK_PER_MS,
-            timeline=TimelineConfig(a=1.0, b=0),
+    app = BacktestApp(
+        RuntimeBuildConfig(
+            feed=MockFeed(snapshots),
+            venue=ExecutionVenueImpl(
+                simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+            ),
+            strategy=strategy,
+            oms=OMSImpl(),
+            timeModel=TimeModelImpl(
+                delay_out=10 * TICK_PER_MS,
+                delay_in=5 * TICK_PER_MS,
+            ),
+            obs=ObservabilityImpl(ReceiptLogger()),
         ),
     )
-    results = runner.run()
-
-    assert results['intervals'] == 2, f"应处理 2 个区间，实际 {results['intervals']}"
+    result = app.run()
+    assert result['intervals'] == 2, f"应处理 2 个区间，实际 {result['intervals']}"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +132,7 @@ def test_pipeline_with_delays():
 # ---------------------------------------------------------------------------
 
 def test_replay_pipeline():
-    """ReplayStrategy 集成：订单和撤单通过 EventLoopRunner 正确处理。"""
+    """ReplayStrategy 集成：订单和撤单通过 BacktestApp 正确处理。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         order_file = os.path.join(tmpdir, "orders.csv")
         with open(order_file, 'w') as f:
@@ -149,21 +157,24 @@ def test_replay_pipeline():
         ]
 
         receipt_logger = ReceiptLogger()
-        runner = EventLoopRunner(
-            feed=MockFeed(snapshots),
-            tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
-            exchange=FIFOExchangeSimulator(cancel_bias_k=0.0),
-            strategy=ReplayStrategy(
-                name="TestReplay",
-                order_file=order_file,
-                cancel_file=cancel_file,
+        app = BacktestApp(
+            RuntimeBuildConfig(
+                feed=MockFeed(snapshots),
+                venue=ExecutionVenueImpl(
+                    simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                    tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+                ),
+                strategy=ReplayStrategyImpl(
+                    name="TestReplay",
+                    order_file=order_file,
+                    cancel_file=cancel_file,
+                ),
+                oms=OMSImpl(portfolio=Portfolio(cash=100000.0)),
+                timeModel=TimeModelImpl(delay_out=0, delay_in=0),
+                obs=ObservabilityImpl(receipt_logger),
             ),
-            oms=OrderManager(portfolio=Portfolio(cash=100000.0)),
-            config=RunnerConfig(delay_out=0, delay_in=0),
-            receipt_logger=receipt_logger,
         )
-        results = runner.run()
-
+        results = app.run()
         assert results['diagnostics']['orders_submitted'] == 2, (
             f"应提交 2 个订单，实际 {results['diagnostics']['orders_submitted']}"
         )

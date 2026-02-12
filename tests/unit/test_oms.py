@@ -1,4 +1,4 @@
-"""订单管理器（OrderManager）单元测试。
+"""订单管理器（OMSImpl）单元测试。
 
 验证内容：
 - 订单提交与查询
@@ -6,20 +6,20 @@
 - 投资组合仓位更新
 """
 
-from quant_framework.core.types import (
+from quant_framework.core.data_structure import (
     Order, Side, OrderStatus, OrderReceipt, TICK_PER_MS,
 )
-from quant_framework.trading.oms import OrderManager, Portfolio
+from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
 
 
 def test_order_lifecycle():
     """订单生命周期：提交 → 查询 → 成交 → 状态更新 → 仓位变化。"""
     portfolio = Portfolio(cash=10000.0)
-    oms = OrderManager(portfolio=portfolio)
+    oms = OMSImpl(portfolio=portfolio)
 
     # 提交
     order = Order(order_id="test-1", side=Side.BUY, price=100.0, qty=10)
-    oms.submit(order, 1000 * TICK_PER_MS)
+    oms.submit_order(order, 1000 * TICK_PER_MS)
 
     active = oms.get_active_orders()
     assert len(active) == 1, f"应有 1 个活跃订单，实际 {len(active)}"
@@ -32,7 +32,7 @@ def test_order_lifecycle():
         order_id="test-1", receipt_type="FILL",
         timestamp=1500 * TICK_PER_MS, fill_qty=10, fill_price=100.0,
     )
-    oms.on_receipt(receipt)
+    oms.apply_receipt(receipt)
 
     assert oms.get_order("test-1").status == OrderStatus.FILLED, "订单应为 FILLED"
     assert portfolio.position == 10, f"仓位应为 10，实际 {portfolio.position}"

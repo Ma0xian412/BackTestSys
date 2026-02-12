@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Callable, Set
 from datetime import datetime
 
-from ..core.types import OrderReceipt, ReceiptType
+from ...core.data_structure import OrderReceipt, ReceiptType
 
 
 # 设置模块级logger

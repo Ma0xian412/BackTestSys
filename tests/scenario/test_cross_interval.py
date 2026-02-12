@@ -5,10 +5,10 @@
 - 跨区间成交（pos 在 align_at_boundary 后正确调整）
 """
 
-from quant_framework.core.types import (
+from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, NormalizedSnapshot, Level,
 )
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 
 # ---------------------------------------------------------------------------

@@ -8,8 +8,8 @@
 - 多段累积场景：跨段累计后成交量仍不超过累计 trade 量
 """
 
-from quant_framework.core.types import Order, Side, TapeSegment, TICK_PER_MS
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
+from quant_framework.core.data_structure import Order, Side, TapeSegment, TICK_PER_MS
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 
 def _advance_all(exchange, tape, t_start):
