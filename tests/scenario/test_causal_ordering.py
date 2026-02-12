@@ -1,30 +1,31 @@
 """因果一致性场景测试（新架构）。"""
 
-from quant_framework.adapters import DelayTimeModel, FIFOExecutionVenue, NullObservabilitySinks
+from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
+from quant_framework.core.actions import PlaceOrderAction
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Order, Side, TICK_PER_MS
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.tape.builder import TapeConfig, UnifiedTapeBuilder
-from quant_framework.trading.oms import OrderManager
+from quant_framework.trading.oms import OMSImpl
 from tests.conftest import MockFeed, create_test_snapshot
 
 
 def _run_app(snapshots, strategy, delay_out: int, delay_in: int):
-    app = BacktestApp()
-    return app.run(
+    app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed(snapshots),
-            venue=FIFOExecutionVenue(
+            venue=ExecutionVenueImpl(
                 simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
                 tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
             ),
             strategy=strategy,
-            oms=OrderManager(),
-            timeModel=DelayTimeModel(delay_out=delay_out, delay_in=delay_in),
-            obs=NullObservabilitySinks(),
-        )
+            oms=OMSImpl(),
+            timeModel=TimeModelImpl(delay_out=delay_out, delay_in=delay_in),
+            obs=NullObservabilityImpl(),
+        ),
     )
+    return app.run()
 
 
 def test_event_causal_ordering():
@@ -42,10 +43,11 @@ def test_event_causal_ordering():
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
                 self.log.append(("SNAPSHOT", e.time))
                 if len(self.log) == 1:
-                    return [Order(order_id="test-order", side=Side.BUY, price=100.0, qty=5)]
+                    return [PlaceOrderAction(Order(order_id="test-order", side=Side.BUY, price=100.0, qty=5))]
                 return []
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
-                self.log.append(("RECEIPT", e.receipt.timestamp, e.receipt.recv_time))
+                receipt = e.payload
+                self.log.append(("RECEIPT", receipt.timestamp, receipt.recv_time))
             return []
 
     strategy = _Tracker()
@@ -77,9 +79,10 @@ def test_receipt_delay_consistency():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and not self.placed:
                 self.placed = True
-                return [Order(order_id="recv-test", side=Side.BUY, price=100.0, qty=3)]
+                return [PlaceOrderAction(Order(order_id="recv-test", side=Side.BUY, price=100.0, qty=3))]
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
-                recorded.append({"timestamp": e.receipt.timestamp, "recv_time": e.receipt.recv_time})
+                receipt = e.payload
+                recorded.append({"timestamp": receipt.timestamp, "recv_time": receipt.recv_time})
             return []
 
     _run_app(snapshots=snapshots, strategy=_Recorder(), delay_out=50 * TICK_PER_MS, delay_in=delay_in)
@@ -102,7 +105,7 @@ def test_time_clamping():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
                 self.count += 1
-                return [Order(order_id=f"t-{self.count}", side=Side.BUY, price=100.0, qty=5)]
+                return [PlaceOrderAction(Order(order_id=f"t-{self.count}", side=Side.BUY, price=100.0, qty=5))]
             return []
 
     for label, delay_out, delay_in in [

@@ -9,24 +9,24 @@ from quant_framework.core.runtime import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
-    EventEnvelope,
+    Event,
     EventSpecRegistry,
-    reset_event_envelope_seq,
+    reset_event_seq,
 )
 from quant_framework.core.scheduler import HeapScheduler
 
 
 def test_event_priority_ordering():
     """同一时刻按 (priority, seq) 进行确定性排序。"""
-    reset_event_envelope_seq()
+    reset_event_seq()
     event_spec = EventSpecRegistry.default()
 
     t = 1000 * TICK_PER_MS
     events = [
-        EventEnvelope(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt1"),
-        EventEnvelope(time=t, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload="snapshot"),
-        EventEnvelope(time=t, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload="order"),
-        EventEnvelope(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt2"),
+        Event(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt1"),
+        Event(time=t, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload="snapshot"),
+        Event(time=t, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload="order"),
+        Event(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt2"),
     ]
 
     heap = []
@@ -52,12 +52,12 @@ def test_event_priority_ordering():
 
     # 多次运行确定性一致
     for _ in range(3):
-        reset_event_envelope_seq()
+        reset_event_seq()
         h = []
         for e in events:
             heapq.heappush(
                 h,
-                EventEnvelope(time=e.time, kind=e.kind, priority=e.priority, payload=e.payload),
+                Event(time=e.time, kind=e.kind, priority=e.priority, payload=e.payload),
             )
         result = []
         while h:
@@ -67,13 +67,13 @@ def test_event_priority_ordering():
 
 def test_scheduler_pop_all_at_time():
     """HeapScheduler 可批量弹出同一时间事件。"""
-    reset_event_envelope_seq()
+    reset_event_seq()
     event_spec = EventSpecRegistry.default()
     scheduler = HeapScheduler()
 
-    scheduler.push(EventEnvelope(time=100, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload=1))
-    scheduler.push(EventEnvelope(time=100, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload=2))
-    scheduler.push(EventEnvelope(time=200, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload=3))
+    scheduler.push(Event(time=100, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload=1))
+    scheduler.push(Event(time=100, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload=2))
+    scheduler.push(Event(time=200, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload=3))
 
     at_100 = scheduler.popAllAtTime(100)
     assert len(at_100) == 2

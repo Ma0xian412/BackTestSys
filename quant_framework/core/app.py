@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Union
 
-from ..adapters import DelayTimeModel, FIFOExecutionVenue, ReceiptLoggerSink
+from ..adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
 from ..config import BacktestConfig
 from .data_loader import CsvMarketDataFeed, PickleMarketDataFeed, SnapshotDuplicatingFeed
 from ..exchange.simulator import FIFOExchangeSimulator
 from ..tape.builder import TapeConfig as BuilderTapeConfig, UnifiedTapeBuilder
-from ..trading.oms import OrderManager, Portfolio
+from ..trading.oms import OMSImpl, Portfolio
 from ..trading.receipt_logger import ReceiptLogger
-from ..trading.strategy import SimpleStrategy
+from ..trading.strategy import SimpleStrategyImpl
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, ReceiptDeliveryHandler, SnapshotArrivalHandler
 from .kernel import EventLoopKernel
@@ -20,7 +20,6 @@ from .runtime import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
-    EngineState,
     EventSpecRegistry,
     RuntimeContext,
 )
@@ -38,8 +37,7 @@ class RuntimeBuildConfig:
     obs: Any
     eventSpec: Optional[EventSpecRegistry] = None
     dispatcher: Optional[Dispatcher] = None
-    state: Optional[EngineState] = None
-    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class CompositionRoot:
@@ -55,7 +53,6 @@ class CompositionRoot:
 
         event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()
         dispatcher = runtime_cfg.dispatcher or Dispatcher(event_spec)
-        state = runtime_cfg.state or EngineState()
 
         dispatcher.register(EVENT_KIND_SNAPSHOT_ARRIVAL, SnapshotArrivalHandler())
         dispatcher.register(EVENT_KIND_ACTION_ARRIVAL, ActionArrivalHandler())
@@ -70,8 +67,7 @@ class CompositionRoot:
             obs=runtime_cfg.obs,
             dispatcher=dispatcher,
             eventSpec=event_spec,
-            state=state,
-            diagnostics=dict(runtime_cfg.diagnostics or {}),
+            metadata=dict(runtime_cfg.metadata or {}),
         )
 
     def _to_runtime_build_config(self, config: Union[RuntimeBuildConfig, BacktestConfig]) -> RuntimeBuildConfig:
@@ -130,34 +126,34 @@ class CompositionRoot:
         return UnifiedTapeBuilder(config=tape_cfg, tick_size=config.tape.tick_size)
 
     @staticmethod
-    def _create_venue(config: BacktestConfig, tape_builder: UnifiedTapeBuilder) -> FIFOExecutionVenue:
+    def _create_venue(config: BacktestConfig, tape_builder: UnifiedTapeBuilder) -> ExecutionVenueImpl:
         simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_front_ratio)
-        return FIFOExecutionVenue(simulator=simulator, tape_builder=tape_builder)
+        return ExecutionVenueImpl(simulator=simulator, tape_builder=tape_builder)
 
     @staticmethod
     def _create_strategy(config: BacktestConfig):
         # 当前默认策略实现；后续可扩展 registry/factory
-        return SimpleStrategy(name=config.strategy.name)
+        return SimpleStrategyImpl(name=config.strategy.name)
 
     @staticmethod
-    def _create_oms(config: BacktestConfig) -> OrderManager:
+    def _create_oms(config: BacktestConfig) -> OMSImpl:
         portfolio = Portfolio(cash=config.portfolio.initial_cash)
-        return OrderManager(portfolio=portfolio)
+        return OMSImpl(portfolio=portfolio)
 
     @staticmethod
-    def _create_time_model(config: BacktestConfig) -> DelayTimeModel:
-        return DelayTimeModel(
+    def _create_time_model(config: BacktestConfig) -> TimeModelImpl:
+        return TimeModelImpl(
             delay_out=config.runner.delay_out,
             delay_in=config.runner.delay_in,
         )
 
     @staticmethod
-    def _create_observability(config: BacktestConfig) -> ReceiptLoggerSink:
+    def _create_observability(config: BacktestConfig) -> ObservabilityImpl:
         receipt_logger = ReceiptLogger(
             output_file=config.receipt_logger.output_file or None,
             verbose=config.receipt_logger.verbose,
         )
-        return ReceiptLoggerSink(receipt_logger)
+        return ObservabilityImpl(receipt_logger)
 
 
 class BacktestApp:
@@ -165,15 +161,17 @@ class BacktestApp:
 
     def __init__(
         self,
+        config: Union[RuntimeBuildConfig, BacktestConfig],
         composition_root: Optional[CompositionRoot] = None,
         kernel: Optional[EventLoopKernel] = None,
     ) -> None:
+        self._config = config
         self._composition_root = composition_root or CompositionRoot()
         self._kernel = kernel or EventLoopKernel()
         self._last_context: Optional[RuntimeContext] = None
 
-    def run(self, config: Union[RuntimeBuildConfig, BacktestConfig]) -> Dict[str, Any]:
-        ctx = self._composition_root.build(config)
+    def run(self) -> Dict[str, Any]:
+        ctx = self._composition_root.build(self._config)
         self._last_context = ctx
         return self._kernel.run(ctx)
 

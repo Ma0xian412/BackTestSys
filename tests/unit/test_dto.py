@@ -9,7 +9,7 @@ from quant_framework.core.types import Order, Side, TICK_PER_MS
 from quant_framework.core.dto import (
     to_snapshot_dto, ReadOnlyOMSView, OrderInfoDTO, PortfolioDTO,
 )
-from quant_framework.trading.oms import OrderManager, Portfolio
+from quant_framework.trading.oms import OMSImpl, Portfolio
 
 from tests.conftest import create_test_snapshot
 
@@ -48,10 +48,10 @@ def test_snapshot_dto():
 def test_readonly_oms_view():
     """ReadOnlyOMSView：返回 DTO、不可变、无修改方法。"""
     portfolio = Portfolio(cash=10000.0)
-    oms = OrderManager(portfolio=portfolio)
+    oms = OMSImpl(portfolio=portfolio)
 
     order = Order(order_id="ro-1", side=Side.BUY, price=100.0, qty=10)
-    oms.submit_action(order, 1000 * TICK_PER_MS)
+    oms.submit_order(order, 1000 * TICK_PER_MS)
 
     view = ReadOnlyOMSView(oms)
 

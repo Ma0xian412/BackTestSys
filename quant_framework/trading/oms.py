@@ -59,7 +59,7 @@ class Portfolio:
                 self.position -= receipt.fill_qty
 
 
-class OrderManager(IOMS):
+class OMSImpl(IOMS):
     """订单状态机 OMS。"""
 
     def __init__(self, portfolio: Portfolio = None):
@@ -86,18 +86,17 @@ class OrderManager(IOMS):
         """订阅回执事件。"""
         self.receipt_cb.append(cb)
 
-    def submit_action(self, action: object, send_time: int) -> None:
-        """登记动作（仅 Order 会落库；CancelRequest 由回执驱动状态更新）。"""
-        if isinstance(action, CancelRequest):
-            return
-        if not isinstance(action, Order):
-            return
-
-        action.create_time = int(send_time)
-        if action.order_id not in self.orders:
-            self.orders[action.order_id] = action
+    def submit_order(self, order: Order, send_time: int) -> None:
+        """登记订单动作。"""
+        order.create_time = int(send_time)
+        if order.order_id not in self.orders:
+            self.orders[order.order_id] = order
             for cb in self.new_cb:
-                cb(action)
+                cb(order)
+
+    def submit_cancel(self, request: CancelRequest, send_time: int) -> None:
+        """登记撤单动作（状态由回执驱动，因此这里不直接修改订单）。"""
+        request.create_time = int(send_time)
 
     def apply_receipt(self, receipt: OrderReceipt) -> None:
         """应用回执并推进订单状态。"""

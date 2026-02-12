@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from .dto import to_snapshot_dto
 from .runtime import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
-    EventEnvelope,
+    Event,
     RuntimeContext,
-    reset_event_envelope_seq,
+    reset_event_seq,
 )
 from .scheduler import HeapScheduler
 
@@ -28,8 +29,7 @@ class EventLoopKernel:
         self._t_cur = 0
 
     def run(self, ctx: RuntimeContext) -> Dict[str, Any]:
-        reset_event_envelope_seq()
-        ctx.ensure_default_diagnostics()
+        reset_event_seq()
 
         ctx.feed.reset()
         ctx.venue.startSession()
@@ -40,13 +40,14 @@ class EventLoopKernel:
             return {"error": "No data"}
 
         first_t = int(prev_snapshot.ts_recv)
+        first_dto = to_snapshot_dto(prev_snapshot)
         self._t_cur = first_t
         self._scheduler.push(
-            EventEnvelope(
+            Event(
                 time=first_t,
                 kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
                 priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
-                payload=prev_snapshot,
+                payload=first_dto,
             )
         )
 
@@ -60,11 +61,10 @@ class EventLoopKernel:
             prev_snapshot = curr_snapshot
             intervals += 1
 
-        ctx.diagnostics["intervals_processed"] = intervals
         return {
             "intervals": intervals,
             "final_time": self._t_cur,
-            "diagnostics": ctx.diagnostics,
+            "diagnostics": ctx.obs.get_diagnostics(),
         }
 
     def _runInterval(self, ctx: RuntimeContext, prev: Any, curr: Any) -> None:
@@ -74,12 +74,13 @@ class EventLoopKernel:
             return
 
         ctx.venue.beginInterval(prev, curr)
+        curr_dto = to_snapshot_dto(curr)
         self._scheduler.push(
-            EventEnvelope(
+            Event(
                 time=t_b,
                 kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
                 priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
-                payload=curr,
+                payload=curr_dto,
             )
         )
 
@@ -107,10 +108,9 @@ class EventLoopKernel:
 
             for receipt in outcome.receipts_generated:
                 ctx.obs.on_receipt_generated(receipt)
-                ctx.diagnostics["receipts_generated"] = ctx.diagnostics.get("receipts_generated", 0) + 1
                 t_deliver = ctx.timeModel.receipt_delivery_time(receipt)
                 self._scheduler.push(
-                    EventEnvelope(
+                    Event(
                         time=self._clampTime(int(t_deliver), next_time, t_b),
                         kind=EVENT_KIND_RECEIPT_DELIVERY,
                         priority=ctx.eventSpec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY),

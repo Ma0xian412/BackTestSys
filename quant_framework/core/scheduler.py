@@ -5,22 +5,22 @@ from __future__ import annotations
 import heapq
 from typing import List
 
-from .runtime import EventEnvelope
+from .runtime import Event
 
 
 class HeapScheduler:
     """最小堆调度器，按 (time, priority, seq) 稳定排序。"""
 
     def __init__(self) -> None:
-        self._heap: List[EventEnvelope] = []
+        self._heap: List[Event] = []
 
     def clear(self) -> None:
         self._heap.clear()
 
-    def push(self, e: EventEnvelope) -> None:
+    def push(self, e: Event) -> None:
         heapq.heappush(self._heap, e)
 
-    def pushAll(self, es: List[EventEnvelope]) -> None:
+    def pushAll(self, es: List[Event]) -> None:
         for event in es:
             heapq.heappush(self._heap, event)
 
@@ -29,8 +29,8 @@ class HeapScheduler:
             return defaultTime
         return self._heap[0].time
 
-    def popAllAtTime(self, t: int) -> List[EventEnvelope]:
-        out: List[EventEnvelope] = []
+    def popAllAtTime(self, t: int) -> List[Event]:
+        out: List[Event] = []
         while self._heap and self._heap[0].time == t:
             out.append(heapq.heappop(self._heap))
         return out

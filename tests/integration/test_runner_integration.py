@@ -3,14 +3,15 @@
 import os
 import tempfile
 
-from quant_framework.adapters import DelayTimeModel, FIFOExecutionVenue, ReceiptLoggerSink
+from quant_framework.adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
+from quant_framework.core.actions import PlaceOrderAction
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
-from quant_framework.trading.oms import OrderManager, Portfolio
-from quant_framework.trading.replay_strategy import ReplayStrategy
+from quant_framework.trading.oms import OMSImpl, Portfolio
+from quant_framework.trading.replay_strategy import ReplayStrategyImpl
 from quant_framework.trading.receipt_logger import ReceiptLogger
 
 from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
@@ -23,8 +24,8 @@ from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 def test_basic_pipeline():
     """基本管线：BacktestApp 驱动组件协同。"""
     builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
-    exchange = FIFOExecutionVenue(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
-    oms = OrderManager()
+    exchange = ExecutionVenueImpl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
+    oms = OMSImpl()
     receipt_logger = ReceiptLogger()
 
     class _OneShot:
@@ -34,7 +35,7 @@ def test_basic_pipeline():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and not self.sent:
                 self.sent = True
-                return [Order(order_id="one-shot", side=Side.BUY, price=100.0, qty=1)]
+                return [PlaceOrderAction(Order(order_id="one-shot", side=Side.BUY, price=100.0, qty=1))]
             return []
 
     strategy = _OneShot()
@@ -44,17 +45,17 @@ def test_basic_pipeline():
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
-    app = BacktestApp()
-    result = app.run(
+    app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed([prev, curr]),
             venue=exchange,
             strategy=strategy,
             oms=oms,
-            timeModel=DelayTimeModel(delay_out=0, delay_in=0),
-            obs=ReceiptLoggerSink(receipt_logger),
-        )
+            timeModel=TimeModelImpl(delay_out=0, delay_in=0),
+            obs=ObservabilityImpl(receipt_logger),
+        ),
     )
+    result = app.run()
     assert result["intervals"] == 1
     assert result["diagnostics"]["orders_submitted"] == 1
 
@@ -85,35 +86,40 @@ def test_pipeline_with_delays():
                 self.count += 1
                 self.snapshots_received.append(e.time)
                 if ctx.snapshot and ctx.snapshot.bids:
-                    return [Order(
-                        order_id=f"order-{self.count}",
-                        side=Side.BUY,
-                        price=ctx.snapshot.bids[0].price,
-                        qty=5,
-                    )]
+                    return [
+                        PlaceOrderAction(
+                            Order(
+                                order_id=f"order-{self.count}",
+                                side=Side.BUY,
+                                price=ctx.snapshot.bids[0].price,
+                                qty=5,
+                            )
+                        )
+                    ]
                 return []
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
-                self.receipts_received.append((e.receipt.timestamp, e.receipt.recv_time))
+                receipt = e.payload
+                self.receipts_received.append((receipt.timestamp, receipt.recv_time))
             return []
 
     strategy = _FrequentStrategy()
-    app = BacktestApp()
-    result = app.run(
+    app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed(snapshots),
-            venue=FIFOExecutionVenue(
+            venue=ExecutionVenueImpl(
                 simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
                 tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
             ),
             strategy=strategy,
-            oms=OrderManager(),
-            timeModel=DelayTimeModel(
+            oms=OMSImpl(),
+            timeModel=TimeModelImpl(
                 delay_out=10 * TICK_PER_MS,
                 delay_in=5 * TICK_PER_MS,
             ),
-            obs=ReceiptLoggerSink(ReceiptLogger()),
-        )
+            obs=ObservabilityImpl(ReceiptLogger()),
+        ),
     )
+    result = app.run()
     assert result['intervals'] == 2, f"应处理 2 个区间，实际 {result['intervals']}"
 
 
@@ -147,24 +153,24 @@ def test_replay_pipeline():
         ]
 
         receipt_logger = ReceiptLogger()
-        app = BacktestApp()
-        results = app.run(
+        app = BacktestApp(
             RuntimeBuildConfig(
                 feed=MockFeed(snapshots),
-                venue=FIFOExecutionVenue(
+                venue=ExecutionVenueImpl(
                     simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
                     tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
                 ),
-                strategy=ReplayStrategy(
+                strategy=ReplayStrategyImpl(
                     name="TestReplay",
                     order_file=order_file,
                     cancel_file=cancel_file,
                 ),
-                oms=OrderManager(portfolio=Portfolio(cash=100000.0)),
-                timeModel=DelayTimeModel(delay_out=0, delay_in=0),
-                obs=ReceiptLoggerSink(receipt_logger),
-            )
+                oms=OMSImpl(portfolio=Portfolio(cash=100000.0)),
+                timeModel=TimeModelImpl(delay_out=0, delay_in=0),
+                obs=ObservabilityImpl(receipt_logger),
+            ),
         )
+        results = app.run()
         assert results['diagnostics']['orders_submitted'] == 2, (
             f"应提交 2 个订单，实际 {results['diagnostics']['orders_submitted']}"
         )

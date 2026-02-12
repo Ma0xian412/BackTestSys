@@ -1,12 +1,13 @@
-"""核心运行时模型：事件封装、上下文与策略事件。"""
+"""核心运行时模型：事件、上下文、注册中心。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from .actions import Action
 from .dto import ReadOnlyOMSView, SnapshotDTO
-from .types import NormalizedSnapshot, OrderReceipt
+from .types import OrderReceipt
 
 
 EVENT_KIND_SNAPSHOT_ARRIVAL = "SnapshotArrival"
@@ -24,15 +25,15 @@ def _next_seq() -> int:
     return _event_seq_counter
 
 
-def reset_event_envelope_seq() -> None:
+def reset_event_seq() -> None:
     """重置事件序号（主要用于测试）。"""
     global _event_seq_counter
     _event_seq_counter = 0
 
 
 @dataclass
-class EventEnvelope:
-    """调度器中的统一事件封装。"""
+class Event:
+    """调度器中的统一事件。"""
 
     time: int
     kind: str
@@ -40,7 +41,7 @@ class EventEnvelope:
     priority: int = 0
     seq: int = field(default_factory=_next_seq)
 
-    def __lt__(self, other: "EventEnvelope") -> bool:
+    def __lt__(self, other: "Event") -> bool:
         if self.time != other.time:
             return self.time < other.time
         if self.priority != other.priority:
@@ -55,48 +56,6 @@ class StrategyContext:
     t: int
     snapshot: Optional[SnapshotDTO]
     omsView: ReadOnlyOMSView
-
-
-@dataclass(frozen=True)
-class StrategyEvent:
-    """策略事件基类。"""
-
-    time: int
-    kind: str
-
-
-@dataclass(frozen=True)
-class SnapshotStrategyEvent(StrategyEvent):
-    """快照驱动策略事件。"""
-
-    snapshot: SnapshotDTO
-
-    def __init__(self, time: int, snapshot: SnapshotDTO):
-        object.__setattr__(self, "time", time)
-        object.__setattr__(self, "kind", EVENT_KIND_SNAPSHOT_ARRIVAL)
-        object.__setattr__(self, "snapshot", snapshot)
-
-
-@dataclass(frozen=True)
-class ReceiptStrategyEvent(StrategyEvent):
-    """回执驱动策略事件。"""
-
-    receipt: OrderReceipt
-
-    def __init__(self, time: int, receipt: OrderReceipt):
-        object.__setattr__(self, "time", time)
-        object.__setattr__(self, "kind", EVENT_KIND_RECEIPT_DELIVERY)
-        object.__setattr__(self, "receipt", receipt)
-
-
-@dataclass
-class EngineState:
-    """运行时共享状态。"""
-
-    lastSnapshotDTO: Optional[SnapshotDTO] = None
-
-    def update_snapshot(self, snapshotDTO: SnapshotDTO) -> None:
-        self.lastSnapshotDTO = snapshotDTO
 
 
 @dataclass
@@ -115,8 +74,8 @@ class EventSpecRegistry:
                 EVENT_KIND_RECEIPT_DELIVERY: 30,
             },
             _validators={
-                EVENT_KIND_SNAPSHOT_ARRIVAL: lambda payload: isinstance(payload, NormalizedSnapshot),
-                EVENT_KIND_ACTION_ARRIVAL: lambda payload: payload is not None,
+                EVENT_KIND_SNAPSHOT_ARRIVAL: lambda payload: isinstance(payload, SnapshotDTO),
+                EVENT_KIND_ACTION_ARRIVAL: lambda payload: isinstance(payload, Action),
                 EVENT_KIND_RECEIPT_DELIVERY: lambda payload: isinstance(payload, OrderReceipt),
             },
         )
@@ -148,12 +107,5 @@ class RuntimeContext:
     obs: Any
     dispatcher: Any
     eventSpec: EventSpecRegistry
-    state: EngineState
-    diagnostics: Dict[str, Any] = field(default_factory=dict)
-
-    def ensure_default_diagnostics(self) -> None:
-        self.diagnostics.setdefault("intervals_processed", 0)
-        self.diagnostics.setdefault("orders_submitted", 0)
-        self.diagnostics.setdefault("orders_filled", 0)
-        self.diagnostics.setdefault("receipts_generated", 0)
-        self.diagnostics.setdefault("cancels_submitted", 0)
+    last_snapshot_dto: Optional[SnapshotDTO] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)

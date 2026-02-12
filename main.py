@@ -3,7 +3,7 @@
 This demonstrates:
 - BacktestApp + CompositionRoot for runtime wiring
 - EventLoopKernel for event-driven execution
-- FIFOExecutionVenue adapter over FIFOExchangeSimulator
+- ExecutionVenueImpl over FIFOExchangeSimulator
 - Single-entry strategy interface (on_event)
 
 Observability features:
@@ -186,12 +186,12 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     if receipt_output_file:
         config.receipt_logger.output_file = receipt_output_file
 
-    app = BacktestApp()
+    app = BacktestApp(config)
     
     # Run backtest
     print("Starting backtest...")
     try:
-        results = app.run(config)
+        results = app.run()
         ctx = app.last_context
         oms = ctx.oms if ctx is not None else None
         receipt_logger = getattr(getattr(ctx, "obs", None), "receipt_logger", None)

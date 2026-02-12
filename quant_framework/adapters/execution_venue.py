@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ..core.interfaces import IExecutionVenue, IExchangeSimulator, ITapeBuilder, StepOutcome
+from ..core.actions import Action
+from ..core.interfaces import IExecutionVenue, ITapeBuilder, StepOutcome
 from ..core.types import CancelRequest, NormalizedSnapshot, Order, OrderReceipt
+from ..exchange.simulator import FIFOExchangeSimulator
 
 
-class FIFOExecutionVenue(IExecutionVenue):
+class ExecutionVenueImpl(IExecutionVenue):
     """将现有 FIFOExchangeSimulator 适配到 IExecutionVenue。"""
 
-    def __init__(self, simulator: IExchangeSimulator, tape_builder: ITapeBuilder) -> None:
+    def __init__(self, simulator: FIFOExchangeSimulator, tape_builder: ITapeBuilder) -> None:
         self._simulator = simulator
         self._tape_builder = tape_builder
         self._tape = []
@@ -21,10 +23,7 @@ class FIFOExecutionVenue(IExecutionVenue):
         self._interval_end = 0
 
     def startSession(self) -> None:
-        if hasattr(self._simulator, "full_reset"):
-            self._simulator.full_reset()
-        else:
-            self._simulator.reset()
+        self._simulator.full_reset()
         self._tape = []
         self._seg_idx = 0
         self._prev_snapshot = None
@@ -39,27 +38,10 @@ class FIFOExecutionVenue(IExecutionVenue):
         self._tape = self._tape_builder.build(prev, curr)
         self._seg_idx = 0
         self._simulator.reset()
-        if hasattr(self._simulator, "set_tape"):
-            self._simulator.set_tape(self._tape, self._interval_start, self._interval_end)
+        self._simulator.set_tape(self._tape, self._interval_start, self._interval_end)
 
-    def onActionArrival(self, action: object, t_arrive: int) -> List[OrderReceipt]:
-        if isinstance(action, Order):
-            market_qty = self._market_qty_at_price(action)
-            receipt = self._simulator.on_order_arrival(action, t_arrive, market_qty)
-            return [receipt] if receipt else []
-
-        if isinstance(action, CancelRequest):
-            try:
-                receipt = self._simulator.on_cancel_arrival(action.order_id, t_arrive)
-            except ValueError:
-                receipt = OrderReceipt(
-                    order_id=action.order_id,
-                    receipt_type="REJECTED",
-                    timestamp=t_arrive,
-                )
-            return [receipt]
-
-        return []
+    def onActionArrival(self, action: Action, t_arrive: int) -> List[OrderReceipt]:
+        return action.execute_at_venue(self, t_arrive)
 
     def step(self, t_cur: int, t_limit: int) -> StepOutcome:
         if t_limit <= t_cur:
@@ -89,6 +71,22 @@ class FIFOExecutionVenue(IExecutionVenue):
             "interval_end": self._interval_end,
             "segment_count": len(self._tape),
         }
+
+    def execute_place_order(self, order: Order, t_arrive: int) -> List[OrderReceipt]:
+        market_qty = self._market_qty_at_price(order)
+        receipt = self._simulator.on_order_arrival(order, t_arrive, market_qty)
+        return [receipt] if receipt else []
+
+    def execute_cancel_order(self, request: CancelRequest, t_arrive: int) -> List[OrderReceipt]:
+        try:
+            receipt = self._simulator.on_cancel_arrival(request.order_id, t_arrive)
+        except ValueError:
+            receipt = OrderReceipt(
+                order_id=request.order_id,
+                receipt_type="REJECTED",
+                timestamp=t_arrive,
+            )
+        return [receipt]
 
     def _find_segment_idx(self, t: int) -> int:
         while self._seg_idx < len(self._tape) and int(t) >= int(self._tape[self._seg_idx].t_end):

@@ -191,7 +191,7 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `name` | string | `"SimpleStrategy"` | 策略名称 |
+| `name` | string | `"SimpleStrategyImpl"` | 策略名称 |
 | `params.order_interval` | int | `10` | 下单间隔（每隔多少个快照下单） |
 | `params.max_active_orders` | int | `5` | 最大活跃订单数 |
 

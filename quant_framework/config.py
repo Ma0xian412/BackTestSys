@@ -154,7 +154,7 @@ class StrategyParams:
 @dataclass
 class StrategyConfig:
     """策略配置。"""
-    name: str = "SimpleStrategy"
+    name: str = "SimpleStrategyImpl"
     params: StrategyParams = field(default_factory=StrategyParams)
 
 
@@ -597,7 +597,7 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
         strategy_raw.get("params") if strategy_raw else None
     )
     strategy_config = StrategyConfig(
-        name=strategy_raw.get("name", "SimpleStrategy") if strategy_raw else "SimpleStrategy",
+        name=strategy_raw.get("name", "SimpleStrategyImpl") if strategy_raw else "SimpleStrategyImpl",
         params=strategy_params
     )
     

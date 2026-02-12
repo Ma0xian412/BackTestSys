@@ -80,7 +80,7 @@ BackTestSys 回测系统配置文件
          ============================================================================ -->
     <strategy>
         <!-- 策略名称 -->
-        <name>SimpleStrategy</name>
+        <name>SimpleStrategyImpl</name>
         
         <!-- 策略特定参数 (可根据策略自定义) -->
         <params>

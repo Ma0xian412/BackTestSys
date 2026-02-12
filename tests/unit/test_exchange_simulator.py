@@ -13,7 +13,8 @@
 from quant_framework.core.types import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
-from quant_framework.adapters import DelayTimeModel, FIFOExecutionVenue, NullObservabilitySinks
+from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
+from quant_framework.core.actions import PlaceOrderAction
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
@@ -21,7 +22,7 @@ from quant_framework.exchange.simulator import FIFOExchangeSimulator
 
 from tests.conftest import create_test_snapshot, create_multi_level_snapshot, print_tape_path, MockFeed
 
-from quant_framework.trading.oms import OrderManager
+from quant_framework.trading.oms import OMSImpl
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +228,7 @@ def test_multiple_orders_same_price():
     print_tape_path(tape)
 
     exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    oms = OrderManager()
+    oms = OMSImpl()
 
     class MultiOrderStrategy:
         def __init__(self):
@@ -244,23 +245,23 @@ def test_multiple_orders_same_price():
                 o = Order(order_id=f"buy-3318-{i+1}", side=Side.BUY,
                           price=3318.0, qty=100, tif=TimeInForce.GTC)
                 o.create_time = (1000 + i * 167) * TICK_PER_MS
-                orders.append(o)
+                orders.append(PlaceOrderAction(order=o))
             return orders
 
-    app = BacktestApp()
-    results = app.run(
+    app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed([prev, curr]),
-            venue=FIFOExecutionVenue(simulator=exchange, tape_builder=builder),
+            venue=ExecutionVenueImpl(simulator=exchange, tape_builder=builder),
             strategy=MultiOrderStrategy(),
             oms=oms,
-            timeModel=DelayTimeModel(
+            timeModel=TimeModelImpl(
                 delay_out=10 * TICK_PER_MS,
                 delay_in=10 * TICK_PER_MS,
             ),
-            obs=NullObservabilitySinks(),
-        )
+            obs=NullObservabilityImpl(),
+        ),
     )
+    results = app.run()
 
     assert results['diagnostics']['orders_submitted'] == 3, "应提交 3 个订单"
 

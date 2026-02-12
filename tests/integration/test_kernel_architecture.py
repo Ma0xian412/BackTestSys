@@ -4,17 +4,18 @@ import os
 import tempfile
 
 from quant_framework.adapters import (
-    DelayTimeModel,
-    FIFOExecutionVenue,
-    NullObservabilitySinks,
+    ExecutionVenueImpl,
+    NullObservabilityImpl,
+    TimeModelImpl,
 )
+from quant_framework.core.actions import PlaceOrderAction
 from quant_framework.core.app import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.runtime import EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Level, NormalizedSnapshot, Order, Side
 from quant_framework.exchange.simulator import FIFOExchangeSimulator
 from quant_framework.tape.builder import TapeConfig, UnifiedTapeBuilder
-from quant_framework.trading.oms import OrderManager, Portfolio
-from quant_framework.trading.replay_strategy import ReplayStrategy
+from quant_framework.trading.oms import OMSImpl, Portfolio
+from quant_framework.trading.replay_strategy import ReplayStrategyImpl
 from tests.conftest import MockFeed, create_test_snapshot
 
 
@@ -28,23 +29,24 @@ class _FrequentOrderStrategy:
         if e.kind != EVENT_KIND_SNAPSHOT_ARRIVAL or ctx.snapshot is None or not ctx.snapshot.bids:
             return []
         self._seq += 1
-        return [Order(order_id=f"snap-{self._seq}", side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)]
+        return [PlaceOrderAction(Order(order_id=f"snap-{self._seq}", side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1))]
 
 def _build_basic_app(strategy, snapshots):
     builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
-    venue = FIFOExecutionVenue(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
-    oms = OrderManager()
+    venue = ExecutionVenueImpl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
+    oms = OMSImpl()
 
-    app = BacktestApp()
-    config = RuntimeBuildConfig(
-        feed=MockFeed(snapshots),
-        venue=venue,
-        strategy=strategy,
-        oms=oms,
-        timeModel=DelayTimeModel(delay_out=0, delay_in=0),
-        obs=NullObservabilitySinks(),
+    app = BacktestApp(
+        RuntimeBuildConfig(
+            feed=MockFeed(snapshots),
+            venue=venue,
+            strategy=strategy,
+            oms=oms,
+            timeModel=TimeModelImpl(delay_out=0, delay_in=0),
+            obs=NullObservabilityImpl(),
+        )
     )
-    return app, config
+    return app
 
 
 def test_backtest_app_on_event_strategy():
@@ -53,9 +55,8 @@ def test_backtest_app_on_event_strategy():
         create_test_snapshot(2000, 100.0, 101.0),
         create_test_snapshot(3000, 100.0, 101.0),
     ]
-    app, cfg = _build_basic_app(_FrequentOrderStrategy(), snapshots)
-
-    result = app.run(cfg)
+    app = _build_basic_app(_FrequentOrderStrategy(), snapshots)
+    result = app.run()
 
     assert result["intervals"] == 2
     assert result["diagnostics"]["orders_submitted"] >= 2
@@ -89,28 +90,29 @@ def test_backtest_app_replay_strategy_cancel_compat():
             ),
         ]
 
-        replay = ReplayStrategy(
+        replay = ReplayStrategyImpl(
             name="ReplayCompat",
             order_file=order_file,
             cancel_file=cancel_file,
         )
-        venue = FIFOExecutionVenue(
+        venue = ExecutionVenueImpl(
             simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
             tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
         )
-        oms = OrderManager(portfolio=Portfolio(cash=100000.0))
+        oms = OMSImpl(portfolio=Portfolio(cash=100000.0))
 
-        app = BacktestApp()
-        cfg = RuntimeBuildConfig(
-            feed=MockFeed(snapshots),
-            venue=venue,
-            strategy=replay,
-            oms=oms,
-            timeModel=DelayTimeModel(delay_out=0, delay_in=0),
-            obs=NullObservabilitySinks(),
+        app = BacktestApp(
+            RuntimeBuildConfig(
+                feed=MockFeed(snapshots),
+                venue=venue,
+                strategy=replay,
+                oms=oms,
+                timeModel=TimeModelImpl(delay_out=0, delay_in=0),
+                obs=NullObservabilityImpl(),
+            )
         )
 
-        result = app.run(cfg)
+        result = app.run()
 
         assert result["diagnostics"]["orders_submitted"] == 2
         assert result["diagnostics"]["cancels_submitted"] == 1

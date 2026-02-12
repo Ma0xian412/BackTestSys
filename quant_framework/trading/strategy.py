@@ -1,18 +1,18 @@
 """策略模块（新架构 single-entry）。"""
 
 from typing import List
+
+from ..core.actions import PlaceOrderAction
 from ..core.interfaces import IStrategy
-from ..core.types import Order, Side, OrderReceipt
+from ..core.types import Order, Side
 from ..core.runtime import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
-    ReceiptStrategyEvent,
-    SnapshotStrategyEvent,
     StrategyContext,
 )
 
 
-class SimpleStrategy(IStrategy):
+class SimpleStrategyImpl(IStrategy):
     """简单示例策略：每 10 个快照下买单，成交后尝试卖出。"""
 
     def __init__(self, name: str = "Simple"):
@@ -20,14 +20,14 @@ class SimpleStrategy(IStrategy):
         self.order_count = 0
         self.last_fill_time = 0
 
-    def on_event(self, e, ctx: StrategyContext) -> List[Order]:
+    def on_event(self, e, ctx: StrategyContext) -> List[PlaceOrderAction]:
         if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
             return self._on_snapshot(e, ctx)
         if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
             return self._on_receipt(e, ctx)
         return []
 
-    def _on_snapshot(self, e: SnapshotStrategyEvent, ctx: StrategyContext) -> List[Order]:
+    def _on_snapshot(self, e, ctx: StrategyContext) -> List[PlaceOrderAction]:
         # 简单逻辑：每10个快照下一单
         self.order_count += 1
 
@@ -35,7 +35,8 @@ class SimpleStrategy(IStrategy):
             return []
 
         # 使用DTO的便捷属性获取最优买价
-        best_bid = e.snapshot.best_bid
+        snapshot = e.payload
+        best_bid = snapshot.best_bid
         if best_bid is None:
             return []
 
@@ -52,11 +53,10 @@ class SimpleStrategy(IStrategy):
             price=best_bid,
             qty=1,
         )
+        return [PlaceOrderAction(order=order)]
 
-        return [order]
-
-    def _on_receipt(self, e: ReceiptStrategyEvent, ctx: StrategyContext) -> List[Order]:
-        receipt: OrderReceipt = e.receipt
+    def _on_receipt(self, e, ctx: StrategyContext) -> List[PlaceOrderAction]:
+        receipt = e.payload
         # 响应成交
         if receipt.receipt_type in ["FILL", "PARTIAL"]:
             self.last_fill_time = receipt.timestamp
@@ -80,7 +80,6 @@ class SimpleStrategy(IStrategy):
                 price=best_ask,
                 qty=receipt.fill_qty,
             )
-
-            return [order]
+            return [PlaceOrderAction(order=order)]
 
         return []

@@ -5,6 +5,7 @@ import logging
 import os
 from typing import List, Tuple, Optional
 
+from ..core.actions import CancelOrderAction, PlaceOrderAction
 from ..core.interfaces import IStrategy
 from ..core.types import CancelRequest, Order, Side
 from ..core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL, StrategyContext
@@ -13,12 +14,12 @@ from ..core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRI
 logger = logging.getLogger(__name__)
 
 
-class ReplayStrategy(IStrategy):
+class ReplayStrategyImpl(IStrategy):
     """重放策略 - 首张快照时一次性发出订单与撤单动作。"""
     
     def __init__(
         self,
-        name: str = "ReplayStrategy",
+        name: str = "ReplayStrategyImpl",
         order_file: Optional[str] = None,
         cancel_file: Optional[str] = None,
     ):
@@ -124,10 +125,10 @@ class ReplayStrategy(IStrategy):
             actions = []
             for sent_time, order in self.pending_orders:
                 order.create_time = sent_time
-                actions.append(order)
+                actions.append(PlaceOrderAction(order=order))
             for sent_time, cancel in self.pending_cancels:
                 cancel.create_time = sent_time
-                actions.append(cancel)
+                actions.append(CancelOrderAction(request=cancel))
             return actions
 
         if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
