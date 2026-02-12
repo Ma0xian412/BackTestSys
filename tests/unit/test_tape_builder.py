@@ -14,8 +14,8 @@
 - 浮点精度处理
 """
 
-from quant_framework.core.types import Side, TICK_PER_MS
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+from quant_framework.core.data_structure import Side, TICK_PER_MS
+from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
 
 from tests.conftest import (
     create_test_snapshot,

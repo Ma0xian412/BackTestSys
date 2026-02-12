@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from quant_framework.core.types import Level, NormalizedSnapshot
+from quant_framework.core.data_structure import Level, NormalizedSnapshot
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +34,8 @@ def _setup_debug_logging():
         'quant_framework.adapters.execution_venue.simulator',
         'quant_framework.core.kernel',
         'quant_framework.core.handlers',
-        'quant_framework.trading.receipt_logger',
-        'quant_framework.tape.builder',
+        'quant_framework.adapters.trading.receipt_logger',
+        'quant_framework.adapters.interval_model.builder',
     ):
         logging.getLogger(name).setLevel(logging.DEBUG)
 

@@ -2,15 +2,15 @@
 
 from typing import List
 
-from ..core.model import (
+from ...core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     Action,
     ActionType,
     StrategyContext,
 )
-from ..core.port import IStrategy
-from ..core.types import Order, Side
+from ...core.port import IStrategy
+from ...core.data_structure import Order, Side
 
 
 class SimpleStrategyImpl(IStrategy):

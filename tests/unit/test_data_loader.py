@@ -6,8 +6,8 @@
 - 交易时段感知的复制逻辑
 """
 
-from quant_framework.core.data_loader import SnapshotDuplicatingFeed
-from quant_framework.core.types import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
+from quant_framework.adapters.market_data_feed import SnapshotDuplicatingFeed
+from quant_framework.core.data_structure import TICK_PER_MS, SNAPSHOT_MIN_INTERVAL_TICK, DEFAULT_SNAPSHOT_TOLERANCE_TICK
 from quant_framework.config import TradingHour
 
 from tests.conftest import create_test_snapshot, MockFeed

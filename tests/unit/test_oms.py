@@ -6,10 +6,10 @@
 - 投资组合仓位更新
 """
 
-from quant_framework.core.types import (
+from quant_framework.core.data_structure import (
     Order, Side, OrderStatus, OrderReceipt, TICK_PER_MS,
 )
-from quant_framework.trading.oms import OMSImpl, Portfolio
+from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
 
 
 def test_order_lifecycle():

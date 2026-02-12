@@ -4,17 +4,19 @@ from __future__ import annotations
 
 from typing import List
 
-from .model import (
+from .data_structure import (
+    CancelRequest,
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
     Action,
     ActionType,
     Event,
+    Order,
+    OrderReceipt,
     RuntimeContext,
     StrategyContext,
 )
 from .dispatcher import IEventHandler
-from .types import CancelRequest, Order, OrderReceipt
 
 
 def _clamp_time(t: int, floor: int) -> int:

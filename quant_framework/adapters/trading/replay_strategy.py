@@ -5,15 +5,15 @@ import logging
 import os
 from typing import List, Tuple, Optional
 
-from ..core.model import (
+from ...core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     Action,
     ActionType,
     StrategyContext,
 )
-from ..core.port import IStrategy
-from ..core.types import CancelRequest, Order, Side
+from ...core.port import IStrategy
+from ...core.data_structure import CancelRequest, Order, Side
 
 
 logger = logging.getLogger(__name__)

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .model import (
+from .data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     Event,
+    NormalizedSnapshot,
     RuntimeContext,
     reset_event_seq,
 )
 from .scheduler import HeapScheduler
-from .types import NormalizedSnapshot
 
 
 class EventLoopKernel:

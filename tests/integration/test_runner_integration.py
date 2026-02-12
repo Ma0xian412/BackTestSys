@@ -4,19 +4,19 @@ import os
 import tempfile
 
 from quant_framework.adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
-from quant_framework.core.model import (
+from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     Action,
     ActionType,
 )
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
-from quant_framework.core.types import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
+from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
-from quant_framework.trading.oms import OMSImpl, Portfolio
-from quant_framework.trading.replay_strategy import ReplayStrategyImpl
-from quant_framework.trading.receipt_logger import ReceiptLogger
+from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
+from quant_framework.adapters.trading.replay_strategy import ReplayStrategyImpl
+from quant_framework.adapters.trading.receipt_logger import ReceiptLogger
 
 from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 

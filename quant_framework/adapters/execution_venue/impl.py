@@ -4,16 +4,15 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ...core.model import Action, ActionType
-from ...core.port import IExecutionVenue, ITapeBuilder, StepOutcome
-from ...core.types import CancelRequest, NormalizedSnapshot, Order, OrderReceipt
+from ...core.data_structure import Action, ActionType, CancelRequest, NormalizedSnapshot, Order, OrderReceipt, StepOutcome
+from ...core.port import IExecutionVenue, IIntervalModel
 from .simulator import FIFOExchangeSimulator
 
 
 class ExecutionVenueImpl(IExecutionVenue):
     """将 FIFOExchangeSimulator 适配为 IExecutionVenue。"""
 
-    def __init__(self, simulator: FIFOExchangeSimulator, tape_builder: ITapeBuilder) -> None:
+    def __init__(self, simulator: FIFOExchangeSimulator, tape_builder: IIntervalModel) -> None:
         self._simulator = simulator
         self._tape_builder = tape_builder
         self._tape = []

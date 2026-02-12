@@ -15,8 +15,8 @@ from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple, Set, Optional
 import math
 
-from ..core.port import ITapeBuilder
-from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS
+from ...core.port import IIntervalModel
+from ...core.data_structure import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS
 
 
 # Constants
@@ -83,7 +83,7 @@ class TapeConfig:
     top_k: int = 5  # Number of price levels to track
 
 
-class UnifiedTapeBuilder(ITapeBuilder):
+class UnifiedTapeBuilder(IIntervalModel):
     """Build event tape from A/B snapshots and lastvolsplit.
     
     This is a pure function implementation - no internal state is maintained

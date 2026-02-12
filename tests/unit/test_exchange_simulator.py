@@ -10,18 +10,18 @@
 - 改善价模式
 """
 
-from quant_framework.core.types import (
+from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
 from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
-from quant_framework.core.model import Action, ActionType, EVENT_KIND_SNAPSHOT_ARRIVAL
+from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
-from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 from tests.conftest import create_test_snapshot, create_multi_level_snapshot, print_tape_path, MockFeed
 
-from quant_framework.trading.oms import OMSImpl
+from quant_framework.adapters.trading.oms import OMSImpl
 
 
 # ---------------------------------------------------------------------------

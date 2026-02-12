@@ -1,14 +1,12 @@
 """核心端口定义。"""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any, List, Optional, TYPE_CHECKING
 
-from .model import Action
-from .types import CancelRequest, NormalizedSnapshot, Order, OrderReceipt, TapeSegment
+from .data_structure import Action, CancelRequest, NormalizedSnapshot, Order, OrderReceipt, StepOutcome, TapeSegment
 
 if TYPE_CHECKING:
-    from .read_only_view import ReadOnlyOMSView
+    from .data_structure import ReadOnlyOMSView
 
 
 class IMarketDataFeed(ABC):
@@ -23,20 +21,12 @@ class IMarketDataFeed(ABC):
         raise NotImplementedError
 
 
-class ITapeBuilder(ABC):
-    """Tape 构建器端口。"""
+class IIntervalModel(ABC):
+    """区间模型端口。"""
 
     @abstractmethod
     def build(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> List[TapeSegment]:
         raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class StepOutcome:
-    """执行场所 step 结果。"""
-
-    next_time: int
-    receipts_generated: List[OrderReceipt]
 
 
 class IExecutionVenue(ABC):

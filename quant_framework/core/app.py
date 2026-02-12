@@ -6,17 +6,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Union
 
 from ..adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
-from ..config import BacktestConfig
-from .data_loader import CsvMarketDataFeed, PickleMarketDataFeed, SnapshotDuplicatingFeed
+from ..adapters.interval_model import TapeConfig as BuilderTapeConfig, UnifiedTapeBuilder
+from ..adapters.market_data_feed import CsvMarketDataFeed, PickleMarketDataFeed, SnapshotDuplicatingFeed
+from ..adapters.trading import OMSImpl, Portfolio, ReceiptLogger, SimpleStrategyImpl
 from ..adapters.execution_venue import FIFOExchangeSimulator
-from ..tape.builder import TapeConfig as BuilderTapeConfig, UnifiedTapeBuilder
-from ..trading.oms import OMSImpl, Portfolio
-from ..trading.receipt_logger import ReceiptLogger
-from ..trading.strategy import SimpleStrategyImpl
+from ..config import BacktestConfig
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, ReceiptDeliveryHandler, SnapshotArrivalHandler
 from .kernel import EventLoopKernel
-from .model import (
+from .data_structure import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,

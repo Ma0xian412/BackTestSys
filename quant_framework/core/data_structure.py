@@ -1,7 +1,7 @@
 """核心类型定义模块。"""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from enum import Enum
 
 # 基本类型别名
@@ -334,3 +334,217 @@ class OrderDiagnostics:
     x_threshold: float = 0.0
     x_final: float = 0.0
     q_truncation_count: int = 0
+
+
+@dataclass(frozen=True)
+class OrderSnapshot:
+    """订单只读快照。"""
+
+    order_id: str
+    side: Side
+    price: Price
+    qty: Qty
+    type: str
+    tif: TimeInForce
+    filled_qty: Qty
+    status: OrderStatus
+    create_time: Timestamp
+    arrival_time: Optional[Timestamp] = None
+
+    @property
+    def remaining_qty(self) -> int:
+        return max(0, self.qty - self.filled_qty)
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED, OrderStatus.LIVE]
+
+
+@dataclass(frozen=True)
+class PortfolioSnapshot:
+    """投资组合只读快照。"""
+
+    cash: float
+    position: int
+    realized_pnl: float
+
+
+class ReadOnlyOMSView:
+    """OMS 只读访问视图。"""
+
+    def __init__(self, oms: object):
+        self._oms = oms
+
+    def get_active_orders(self) -> List[OrderSnapshot]:
+        orders = self._oms.get_active_orders()
+        return [self._to_order_snapshot(o) for o in orders]
+
+    def get_order(self, order_id: str) -> Optional[OrderSnapshot]:
+        order = self._oms.get_order(order_id)
+        if order is None:
+            return None
+        return self._to_order_snapshot(order)
+
+    def get_portfolio(self) -> PortfolioSnapshot:
+        portfolio = self._oms.portfolio
+        return PortfolioSnapshot(
+            cash=portfolio.cash,
+            position=portfolio.position,
+            realized_pnl=portfolio.realized_pnl,
+        )
+
+    @staticmethod
+    def _to_order_snapshot(order) -> OrderSnapshot:
+        return OrderSnapshot(
+            order_id=order.order_id,
+            side=order.side,
+            price=order.price,
+            qty=order.qty,
+            type=order.type,
+            tif=order.tif,
+            filled_qty=order.filled_qty,
+            status=order.status,
+            create_time=order.create_time,
+            arrival_time=order.arrival_time,
+        )
+
+
+EVENT_KIND_SNAPSHOT_ARRIVAL = "SnapshotArrival"
+EVENT_KIND_ACTION_ARRIVAL = "ActionArrival"
+EVENT_KIND_RECEIPT_DELIVERY = "ReceiptDelivery"
+
+
+class ActionType(Enum):
+    """策略动作类型。"""
+
+    PLACE_ORDER = "PLACE_ORDER"
+    CANCEL_ORDER = "CANCEL_ORDER"
+
+
+@dataclass
+class Action:
+    """策略动作纯数据结构。"""
+
+    action_type: ActionType
+    create_time: int = 0
+    payload: Any = None
+
+    def get_type(self) -> ActionType:
+        return self.action_type
+
+    def set_type(self, action_type: ActionType) -> None:
+        self.action_type = action_type
+
+    def get_create_time(self) -> int:
+        return int(self.create_time)
+
+    def set_create_time(self, create_time: int) -> None:
+        self.create_time = int(create_time)
+
+    def get_payload(self) -> Any:
+        return self.payload
+
+    def set_payload(self, payload: Any) -> None:
+        self.payload = payload
+
+
+_event_seq_counter = 0
+
+
+def _next_seq() -> int:
+    global _event_seq_counter
+    _event_seq_counter += 1
+    return _event_seq_counter
+
+
+def reset_event_seq() -> None:
+    global _event_seq_counter
+    _event_seq_counter = 0
+
+
+@dataclass
+class Event:
+    """调度器中的统一事件。"""
+
+    time: int
+    kind: str
+    payload: object
+    priority: int = 0
+    seq: int = field(default_factory=_next_seq)
+
+    def __lt__(self, other: "Event") -> bool:
+        if self.time != other.time:
+            return self.time < other.time
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.seq < other.seq
+
+
+@dataclass(frozen=True)
+class StrategyContext:
+    """策略回调上下文（只读）。"""
+
+    t: int
+    snapshot: Optional[NormalizedSnapshot]
+    omsView: ReadOnlyOMSView
+
+
+@dataclass
+class EventSpecRegistry:
+    """事件规范与优先级注册中心。"""
+
+    _priorities: Dict[str, int]
+    _validators: Dict[str, Callable[[object], bool]]
+
+    @classmethod
+    def default(cls) -> "EventSpecRegistry":
+        return cls(
+            _priorities={
+                EVENT_KIND_SNAPSHOT_ARRIVAL: 10,
+                EVENT_KIND_ACTION_ARRIVAL: 20,
+                EVENT_KIND_RECEIPT_DELIVERY: 30,
+            },
+            _validators={
+                EVENT_KIND_SNAPSHOT_ARRIVAL: lambda payload: isinstance(payload, NormalizedSnapshot),
+                EVENT_KIND_ACTION_ARRIVAL: lambda payload: isinstance(payload, Action),
+                EVENT_KIND_RECEIPT_DELIVERY: lambda payload: isinstance(payload, OrderReceipt),
+            },
+        )
+
+    def priorityOf(self, kind: str) -> int:
+        return self._priorities.get(kind, 99)
+
+    def validate(self, kind: str, payload: object) -> bool:
+        validator = self._validators.get(kind)
+        if validator is None:
+            return True
+        return bool(validator(payload))
+
+    def register(self, kind: str, priority: int, validator: Optional[Callable[[object], bool]] = None) -> None:
+        self._priorities[kind] = priority
+        if validator is not None:
+            self._validators[kind] = validator
+
+
+@dataclass(frozen=True)
+class StepOutcome:
+    """执行场所 step 结果。"""
+
+    next_time: int
+    receipts_generated: List[OrderReceipt]
+
+
+@dataclass
+class RuntimeContext:
+    """运行上下文（由 CompositionRoot 组装）。"""
+
+    feed: Any
+    venue: Any
+    strategy: Any
+    oms: Any
+    timeModel: Any
+    obs: Any
+    dispatcher: Any
+    eventSpec: EventSpecRegistry
+    last_snapshot: Optional[NormalizedSnapshot] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)

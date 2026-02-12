@@ -10,8 +10,8 @@
 import os
 import tempfile
 
-from quant_framework.core.types import OrderReceipt
-from quant_framework.trading.receipt_logger import ReceiptLogger
+from quant_framework.core.data_structure import OrderReceipt
+from quant_framework.adapters.trading.receipt_logger import ReceiptLogger
 
 
 def test_receipt_logger():

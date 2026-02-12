@@ -2,9 +2,9 @@
 
 from typing import Dict, List, Callable, Optional
 
-from ..core.read_only_view import ReadOnlyOMSView
-from ..core.port import IOMS
-from ..core.types import CancelRequest, Fill, Order, OrderId, OrderReceipt, OrderStatus
+from ...core.data_structure import ReadOnlyOMSView
+from ...core.port import IOMS
+from ...core.data_structure import CancelRequest, Fill, Order, OrderId, OrderReceipt, OrderStatus
 
 
 class Portfolio:

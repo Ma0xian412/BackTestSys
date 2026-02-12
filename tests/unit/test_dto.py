@@ -5,11 +5,11 @@
 - ReadOnlyOMSView 查询与不可变性
 """
 
-from quant_framework.core.types import NormalizedSnapshot, Order, Side, TICK_PER_MS
-from quant_framework.core.read_only_view import (
+from quant_framework.core.data_structure import (
+    NormalizedSnapshot, Order, Side, TICK_PER_MS,
     ReadOnlyOMSView, OrderSnapshot, PortfolioSnapshot,
 )
-from quant_framework.trading.oms import OMSImpl, Portfolio
+from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
 
 from tests.conftest import create_test_snapshot
 

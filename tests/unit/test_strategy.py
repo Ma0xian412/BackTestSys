@@ -8,18 +8,17 @@
 import os
 import tempfile
 
-from quant_framework.core.model import (
+from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     ActionType,
     Event,
     StrategyContext,
 )
-from quant_framework.core.types import OrderReceipt, Side, TICK_PER_MS
-from quant_framework.core.read_only_view import ReadOnlyOMSView
-from quant_framework.trading.strategy import SimpleStrategyImpl
-from quant_framework.trading.replay_strategy import ReplayStrategyImpl
-from quant_framework.trading.oms import OMSImpl
+from quant_framework.core.data_structure import OrderReceipt, Side, TICK_PER_MS, ReadOnlyOMSView
+from quant_framework.adapters.trading.strategy import SimpleStrategyImpl
+from quant_framework.adapters.trading.replay_strategy import ReplayStrategyImpl
+from quant_framework.adapters.trading.oms import OMSImpl
 
 from tests.conftest import create_test_snapshot
 
