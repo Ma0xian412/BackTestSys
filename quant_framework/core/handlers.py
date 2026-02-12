@@ -24,12 +24,12 @@ class SnapshotArrivalHandler(IEventHandler):
     """处理 SnapshotArrival 事件。"""
 
     def handle(self, e: Event, ctx: RuntimeContext) -> List[Event]:
-        snapshot_dto = e.payload
-        ctx.last_snapshot_dto = snapshot_dto
+        snapshot = e.payload
+        ctx.last_snapshot = snapshot
         oms_view = ctx.oms.view()
         sctx = StrategyContext(
             t=e.time,
-            snapshot=ctx.last_snapshot_dto,
+            snapshot=ctx.last_snapshot,
             omsView=oms_view,
         )
         actions: List[Action] = ctx.strategy.on_event(e, sctx) or []
@@ -85,7 +85,7 @@ class ReceiptDeliveryHandler(IEventHandler):
         oms_view = ctx.oms.view()
         sctx = StrategyContext(
             t=e.time,
-            snapshot=ctx.last_snapshot_dto,
+            snapshot=ctx.last_snapshot,
             omsView=oms_view,
         )
         actions: List[Action] = ctx.strategy.on_event(e, sctx) or []

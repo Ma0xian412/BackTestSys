@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .dto import to_snapshot_dto
 from .runtime import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
@@ -13,6 +12,7 @@ from .runtime import (
     reset_event_seq,
 )
 from .scheduler import HeapScheduler
+from .types import NormalizedSnapshot
 
 
 class EventLoopKernel:
@@ -37,50 +37,59 @@ class EventLoopKernel:
 
         prev_snapshot = ctx.feed.next()
         if prev_snapshot is None:
-            return {"error": "No data"}
+            ctx.obs.on_run_end(final_time=0, error="No data")
+            return ctx.obs.get_run_result()
 
-        first_t = int(prev_snapshot.ts_recv)
-        first_dto = to_snapshot_dto(prev_snapshot)
-        self._t_cur = first_t
-        self._scheduler.push(
-            Event(
-                time=first_t,
-                kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
-                priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
-                payload=first_dto,
-            )
-        )
+        self._t_cur = int(prev_snapshot.ts_recv)
 
-        intervals = 0
+        first_interval = True
         while True:
             curr_snapshot = ctx.feed.next()
             if curr_snapshot is None:
                 break
 
-            self._runInterval(ctx, prev_snapshot, curr_snapshot)
+            self._runInterval(
+                ctx,
+                prev_snapshot,
+                curr_snapshot,
+                include_prev_snapshot=first_interval,
+            )
             prev_snapshot = curr_snapshot
-            intervals += 1
+            first_interval = False
 
-        return {
-            "intervals": intervals,
-            "final_time": self._t_cur,
-            "diagnostics": ctx.obs.get_diagnostics(),
-        }
+        ctx.obs.on_run_end(final_time=self._t_cur, error=None)
+        return ctx.obs.get_run_result()
 
-    def _runInterval(self, ctx: RuntimeContext, prev: Any, curr: Any) -> None:
+    def _runInterval(
+        self,
+        ctx: RuntimeContext,
+        prev: NormalizedSnapshot,
+        curr: NormalizedSnapshot,
+        include_prev_snapshot: bool,
+    ) -> None:
         t_a = int(prev.ts_recv)
         t_b = int(curr.ts_recv)
         if t_b <= t_a:
             return
 
         ctx.venue.beginInterval(prev, curr)
-        curr_dto = to_snapshot_dto(curr)
+
+        if include_prev_snapshot:
+            self._scheduler.push(
+                Event(
+                    time=t_a,
+                    kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
+                    priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
+                    payload=prev,
+                )
+            )
+
         self._scheduler.push(
             Event(
                 time=t_b,
                 kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
                 priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
-                payload=curr_dto,
+                payload=curr,
             )
         )
 

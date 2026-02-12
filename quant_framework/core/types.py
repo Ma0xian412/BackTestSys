@@ -1,13 +1,7 @@
-"""核心类型定义模块。
-
-本模块定义回测系统中使用的基础类型：
-- 基本类型别名：Price, Qty, OrderId, Timestamp
-- 枚举类型：Side, OrderStatus, TimeInForce, ReceiptType, RequestType
-- 数据类：Level, NormalizedSnapshot, Order, CancelRequest, Fill, TapeSegment, OrderReceipt等
-"""
+"""核心类型定义模块。"""
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Set
+from typing import Dict, List, Optional, Set, Tuple
 from enum import Enum
 
 # 基本类型别名
@@ -79,7 +73,7 @@ class ReceiptType(Enum):
     CANCELED = "CANCELED"  # 已撤销（撤单成功）
     REJECTED = "REJECTED"  # 已拒绝（撤单失败或订单被拒）
 
-@dataclass
+@dataclass(frozen=True)
 class Level:
     """价格档位。
 
@@ -91,7 +85,7 @@ class Level:
     qty: Qty
 
 
-@dataclass
+@dataclass(frozen=True)
 class NormalizedSnapshot:
     """标准化快照数据。
     
@@ -110,9 +104,9 @@ class NormalizedSnapshot:
         average_price: 均价（可选）
     """
     ts_recv: Timestamp  # 主时间线（必填）
-    bids: List[Level]
-    asks: List[Level]
-    last_vol_split: List[Tuple[Price, Qty]] = field(default_factory=list)
+    bids: Tuple[Level, ...]
+    asks: Tuple[Level, ...]
+    last_vol_split: Tuple[Tuple[Price, Qty], ...] = field(default_factory=tuple)
 
     # 可选字段
     ts_exch: Optional[Timestamp] = None  # 交易所时间戳（仅记录）
@@ -120,6 +114,40 @@ class NormalizedSnapshot:
     volume: Optional[int] = None
     turnover: Optional[float] = None
     average_price: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        # 允许调用方传 list，内部统一冻结为 tuple。
+        object.__setattr__(self, "bids", tuple(self.bids))
+        object.__setattr__(self, "asks", tuple(self.asks))
+        object.__setattr__(self, "last_vol_split", tuple(self.last_vol_split))
+
+    @property
+    def best_bid(self) -> Optional[Price]:
+        if not self.bids:
+            return None
+        return max(level.price for level in self.bids)
+
+    @property
+    def best_ask(self) -> Optional[Price]:
+        if not self.asks:
+            return None
+        return min(level.price for level in self.asks)
+
+    @property
+    def mid_price(self) -> Optional[Price]:
+        bid = self.best_bid
+        ask = self.best_ask
+        if bid is None or ask is None:
+            return None
+        return (bid + ask) / 2.0
+
+    @property
+    def spread(self) -> Optional[Price]:
+        bid = self.best_bid
+        ask = self.best_ask
+        if bid is None or ask is None:
+            return None
+        return ask - bid
 
 
 @dataclass

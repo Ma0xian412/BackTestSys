@@ -141,7 +141,15 @@ class IObservabilitySinks(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def on_run_end(self, final_time: int, error: str | None = None) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_diagnostics(self) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_run_result(self) -> dict:
         raise NotImplementedError
 
 

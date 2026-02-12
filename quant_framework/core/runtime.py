@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .actions import Action
-from .dto import ReadOnlyOMSView, SnapshotDTO
-from .types import OrderReceipt
+from .dto import ReadOnlyOMSView
+from .types import NormalizedSnapshot, OrderReceipt
 
 
 EVENT_KIND_SNAPSHOT_ARRIVAL = "SnapshotArrival"
@@ -54,7 +54,7 @@ class StrategyContext:
     """策略回调上下文（只读）。"""
 
     t: int
-    snapshot: Optional[SnapshotDTO]
+    snapshot: Optional[NormalizedSnapshot]
     omsView: ReadOnlyOMSView
 
 
@@ -74,7 +74,7 @@ class EventSpecRegistry:
                 EVENT_KIND_RECEIPT_DELIVERY: 30,
             },
             _validators={
-                EVENT_KIND_SNAPSHOT_ARRIVAL: lambda payload: isinstance(payload, SnapshotDTO),
+                EVENT_KIND_SNAPSHOT_ARRIVAL: lambda payload: isinstance(payload, NormalizedSnapshot),
                 EVENT_KIND_ACTION_ARRIVAL: lambda payload: isinstance(payload, Action),
                 EVENT_KIND_RECEIPT_DELIVERY: lambda payload: isinstance(payload, OrderReceipt),
             },
@@ -107,5 +107,5 @@ class RuntimeContext:
     obs: Any
     dispatcher: Any
     eventSpec: EventSpecRegistry
-    last_snapshot_dto: Optional[SnapshotDTO] = None
+    last_snapshot: Optional[NormalizedSnapshot] = None
     metadata: Dict[str, Any] = field(default_factory=dict)

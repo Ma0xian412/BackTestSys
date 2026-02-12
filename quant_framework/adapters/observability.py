@@ -12,6 +12,8 @@ class ObservabilityImpl(IObservabilitySinks):
 
     def __init__(self, receipt_logger: ReceiptLogger | None = None):
         self._logger = receipt_logger
+        self._final_time = 0
+        self._error: str | None = None
         self._diagnostics = {
             "intervals_processed": 0,
             "orders_submitted": 0,
@@ -44,8 +46,22 @@ class ObservabilityImpl(IObservabilitySinks):
     def on_interval_end(self, stats: object) -> None:
         self._diagnostics["intervals_processed"] += 1
 
+    def on_run_end(self, final_time: int, error: str | None = None) -> None:
+        self._final_time = int(final_time)
+        self._error = error
+
     def get_diagnostics(self) -> dict:
         return dict(self._diagnostics)
+
+    def get_run_result(self) -> dict:
+        result = {
+            "intervals": self._diagnostics["intervals_processed"],
+            "final_time": self._final_time,
+            "diagnostics": self.get_diagnostics(),
+        }
+        if self._error is not None:
+            result["error"] = self._error
+        return result
 
 
 class NullObservabilityImpl(ObservabilityImpl):

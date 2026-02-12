@@ -19,8 +19,8 @@ from .interfaces import (
 )
 
 from .dto import (
-    LevelDTO, SnapshotDTO, OrderInfoDTO, PortfolioDTO,
-    ReadOnlyOMSView, to_snapshot_dto,
+    OrderInfoDTO, PortfolioDTO,
+    ReadOnlyOMSView,
 )
 
 from .runtime import (

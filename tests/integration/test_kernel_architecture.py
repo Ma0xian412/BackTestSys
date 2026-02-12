@@ -59,7 +59,8 @@ def test_backtest_app_on_event_strategy():
     result = app.run()
 
     assert result["intervals"] == 2
-    assert result["diagnostics"]["orders_submitted"] >= 2
+    # 每张快照应只触发一次 SnapshotArrival（不重复入队）
+    assert result["diagnostics"]["orders_submitted"] == len(snapshots)
 
 
 def test_backtest_app_replay_strategy_cancel_compat():

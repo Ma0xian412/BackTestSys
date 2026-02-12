@@ -1,46 +1,48 @@
 """DTO 和只读视图单元测试。
 
 验证内容：
-- SnapshotDTO 转换与不可变性
+- NormalizedSnapshot 不可变与便捷属性
 - ReadOnlyOMSView 查询与不可变性
 """
 
-from quant_framework.core.types import Order, Side, TICK_PER_MS
+from quant_framework.core.types import NormalizedSnapshot, Order, Side, TICK_PER_MS
 from quant_framework.core.dto import (
-    to_snapshot_dto, ReadOnlyOMSView, OrderInfoDTO, PortfolioDTO,
+    ReadOnlyOMSView, OrderInfoDTO, PortfolioDTO,
 )
 from quant_framework.trading.oms import OMSImpl, Portfolio
 
 from tests.conftest import create_test_snapshot
 
 
-def test_snapshot_dto():
-    """SnapshotDTO：frozen 属性、数据正确转换、便捷属性、不可变。"""
-    snapshot = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=50, ask_qty=60)
-    dto = to_snapshot_dto(snapshot)
+def test_normalized_snapshot_is_frozen():
+    """NormalizedSnapshot：frozen 属性、便捷属性、不可变。"""
+    snap = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=50, ask_qty=60)
 
     # frozen
     is_frozen = (
-        hasattr(dto, '__dataclass_fields__')
-        and dto.__class__.__dataclass_params__.frozen
+        hasattr(snap, '__dataclass_fields__')
+        and snap.__class__.__dataclass_params__.frozen
     )
-    assert is_frozen, "SnapshotDTO 应为 frozen"
+    assert is_frozen, "NormalizedSnapshot 应为 frozen"
+    assert isinstance(snap, NormalizedSnapshot)
 
     # 数据
-    assert dto.ts_recv == 1000 * TICK_PER_MS
-    assert len(dto.bids) == 1
-    assert len(dto.asks) == 1
+    assert snap.ts_recv == 1000 * TICK_PER_MS
+    assert len(snap.bids) == 1
+    assert len(snap.asks) == 1
+    assert isinstance(snap.bids, tuple)
+    assert isinstance(snap.asks, tuple)
 
     # 便捷属性
-    assert dto.best_bid == 100.0
-    assert dto.best_ask == 101.0
-    assert dto.mid_price == 100.5
-    assert dto.spread == 1.0
+    assert snap.best_bid == 100.0
+    assert snap.best_ask == 101.0
+    assert snap.mid_price == 100.5
+    assert snap.spread == 1.0
 
     # 不可变
     try:
-        dto.ts_recv = 2000
-        assert False, "DTO 应不可变"
+        snap.ts_recv = 2000
+        assert False, "快照应不可变"
     except Exception:
         pass
 

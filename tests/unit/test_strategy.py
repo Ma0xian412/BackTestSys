@@ -11,9 +11,7 @@ import tempfile
 from quant_framework.core.actions import CancelOrderAction, PlaceOrderAction
 from quant_framework.core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL, Event, StrategyContext
 from quant_framework.core.types import OrderReceipt, Side, TICK_PER_MS
-from quant_framework.core.dto import (
-    to_snapshot_dto, ReadOnlyOMSView, SnapshotDTO, LevelDTO,
-)
+from quant_framework.core.dto import ReadOnlyOMSView
 from quant_framework.trading.strategy import SimpleStrategyImpl
 from quant_framework.trading.replay_strategy import ReplayStrategyImpl
 from quant_framework.trading.oms import OMSImpl
@@ -27,13 +25,12 @@ def test_simple_strategy():
     oms = OMSImpl()
     view = ReadOnlyOMSView(oms)
 
-    snapshot = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
-    dto = to_snapshot_dto(snapshot)
+    snap = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
 
     all_orders = []
     for _ in range(15):
-        ev = Event(time=dto.ts_recv, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, payload=dto, priority=10)
-        ctx = StrategyContext(t=dto.ts_recv, snapshot=dto, omsView=view)
+        ev = Event(time=snap.ts_recv, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, payload=snap, priority=10)
+        ctx = StrategyContext(t=snap.ts_recv, snapshot=snap, omsView=view)
         all_orders.extend(strategy.on_event(ev, ctx))
 
     assert len(all_orders) == 1, f"15 个快照应生成 1 个订单，实际 {len(all_orders)}"
@@ -83,11 +80,7 @@ def test_replay_strategy():
             def get_portfolio(self):
                 return None
 
-        snap = SnapshotDTO(
-            ts_recv=1000,
-            bids=(LevelDTO(100.0, 100),),
-            asks=(LevelDTO(101.0, 100),),
-        )
+        snap = create_test_snapshot(1000, 100.0, 101.0, bid_qty=100, ask_qty=100)
         sev = Event(time=snap.ts_recv, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, payload=snap, priority=10)
         sctx = StrategyContext(t=snap.ts_recv, snapshot=snap, omsView=_MockOMSView())
         actions = strategy.on_event(sev, sctx)
