@@ -19,12 +19,12 @@ from ...core.data_structure import CancelRequest, Order, Side
 logger = logging.getLogger(__name__)
 
 
-class ReplayStrategyImpl(IStrategy):
+class ReplayStrategy_Impl(IStrategy):
     """重放策略 - 首张快照时一次性发出订单与撤单动作。"""
     
     def __init__(
         self,
-        name: str = "ReplayStrategyImpl",
+        name: str = "ReplayStrategy_Impl",
         order_file: Optional[str] = None,
         cancel_file: Optional[str] = None,
     ):

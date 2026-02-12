@@ -13,7 +13,7 @@
 from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
-from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
+from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
@@ -21,7 +21,7 @@ from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 from tests.conftest import create_test_snapshot, create_multi_level_snapshot, print_tape_path, MockFeed
 
-from quant_framework.adapters.IOMS.oms import OMSImpl
+from quant_framework.adapters.IOMS.oms import OMS_Impl
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ def test_multiple_orders_same_price():
     print_tape_path(tape)
 
     exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    oms = OMSImpl()
+    oms = OMS_Impl()
 
     class MultiOrderStrategy:
         def __init__(self):
@@ -250,14 +250,14 @@ def test_multiple_orders_same_price():
     app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed([prev, curr]),
-            venue=ExecutionVenueImpl(simulator=exchange, tape_builder=builder),
+            venue=ExecutionVenue_Impl(simulator=exchange, tape_builder=builder),
             strategy=MultiOrderStrategy(),
             oms=oms,
-            timeModel=TimeModelImpl(
+            timeModel=TimeModel_Impl(
                 delay_out=10 * TICK_PER_MS,
                 delay_in=10 * TICK_PER_MS,
             ),
-            obs=NullObservabilityImpl(),
+            obs=NullObservability_Impl(),
         ),
     )
     results = app.run()

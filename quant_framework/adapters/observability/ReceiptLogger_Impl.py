@@ -1,18 +1,21 @@
-"""回执记录模块。
+"""回执记录器 - 直接实现 IObservabilitySinks 接口。
 
-本模块实现订单回执的记录和分析功能：
-- ReceiptLogger: 记录所有回执到文件
+本模块实现订单回执的记录和分析功能，同时作为可观测性端口的实现：
+- ReceiptLogger_Impl: 直接继承 IObservabilitySinks，记录所有回执到文件
 - 计算成交率（fill rate）
+- 诊断计数
 """
+
+from __future__ import annotations
 
 import csv
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Dict, Optional, Callable, Set
-from datetime import datetime
 
-from ...core.data_structure import OrderReceipt, ReceiptType
+from ...core.port import IObservabilitySinks
+from ...core.data_structure import CancelRequest, Order, OrderReceipt, ReceiptType
 
 
 # 设置模块级logger
@@ -45,15 +48,16 @@ class ReceiptRecord:
 ReceiptCallback = Callable[[OrderReceipt], None]
 
 
-class ReceiptLogger:
-    """回执记录器。
+class ReceiptLogger_Impl(IObservabilitySinks):
+    """回执记录器 - 直接实现 IObservabilitySinks。
     
     功能：
-    1. 记录所有回执到内存
-    2. 保存回执到CSV文件
-    3. 计算成交率（fill rate）
-    4. 支持实时打印回执（verbose模式）
-    5. 支持自定义回执回调
+    1. 实现 IObservabilitySinks 接口（诊断计数 + 运行结果）
+    2. 记录所有回执到内存
+    3. 保存回执到CSV文件
+    4. 计算成交率（fill rate）
+    5. 支持实时打印回执（verbose模式）
+    6. 支持自定义回执回调
     
     回执类型说明：
     - PARTIAL: 部分成交
@@ -89,6 +93,17 @@ class ReceiptLogger:
         self.callback = callback
         self.records: List[ReceiptRecord] = []
         
+        # 诊断计数（来自原 ObservabilityImpl）
+        self._final_time = 0
+        self._error: str | None = None
+        self._diagnostics = {
+            "intervals_processed": 0,
+            "orders_submitted": 0,
+            "orders_filled": 0,
+            "receipts_generated": 0,
+            "cancels_submitted": 0,
+        }
+        
         # 统计数据
         self.order_total_qty: Dict[str, int] = {}  # order_id -> 原始订单数量
         self.order_filled_qty: Dict[str, int] = {}  # order_id -> 已成交数量
@@ -97,6 +112,58 @@ class ReceiptLogger:
         self._cancel_counts: Dict[str, int] = {}  # 撤单次数
         self._reject_counts: Dict[str, int] = {}  # 拒绝次数
         self._canceled_orders: Set[str] = set()  # Track canceled order IDs to exclude from full-fill stats
+
+    # -----------------------------------------------------------------------
+    # IObservabilitySinks 接口实现
+    # -----------------------------------------------------------------------
+
+    def on_order_submitted(self, order: Order) -> None:
+        self._diagnostics["orders_submitted"] += 1
+        self.register_order(order.order_id, order.qty)
+
+    def on_cancel_submitted(self, request: CancelRequest) -> None:
+        self._diagnostics["cancels_submitted"] += 1
+
+    def on_receipt_generated(self, receipt: OrderReceipt) -> None:
+        self._diagnostics["receipts_generated"] += 1
+
+    def on_receipt_delivered(self, receipt: OrderReceipt) -> None:
+        self.log_receipt(receipt)
+        if receipt.receipt_type in {"FILL", "PARTIAL"}:
+            self._diagnostics["orders_filled"] += 1
+
+    def on_interval_end(self, stats: object) -> None:
+        self._diagnostics["intervals_processed"] += 1
+
+    def on_run_end(self, final_time: int, error: str | None = None) -> None:
+        self._final_time = int(final_time)
+        self._error = error
+
+    def get_diagnostics(self) -> dict:
+        return dict(self._diagnostics)
+
+    def get_run_result(self) -> dict:
+        result = {
+            "intervals": self._diagnostics["intervals_processed"],
+            "final_time": self._final_time,
+            "diagnostics": self.get_diagnostics(),
+        }
+        if self._error is not None:
+            result["error"] = self._error
+        return result
+
+    # -----------------------------------------------------------------------
+    # 自身属性（兼容 main.py 中 receipt_logger 属性访问）
+    # -----------------------------------------------------------------------
+
+    @property
+    def receipt_logger(self) -> "ReceiptLogger_Impl":
+        """兼容属性：返回自身，因为本类已直接实现全部功能。"""
+        return self
+
+    # -----------------------------------------------------------------------
+    # 回执记录功能
+    # -----------------------------------------------------------------------
     
     def register_order(self, order_id: str, qty: int) -> None:
         """注册新订单，用于计算成交率。
@@ -107,7 +174,7 @@ class ReceiptLogger:
         """
         self.order_total_qty[order_id] = qty
         self.order_filled_qty[order_id] = 0
-        logger.debug(f"[ReceiptLogger] Order registered: order_id={order_id}, qty={qty}")
+        logger.debug(f"[ReceiptLogger_Impl] Order registered: order_id={order_id}, qty={qty}")
     
     def log_receipt(self, receipt: OrderReceipt) -> None:
         """记录一条回执。
@@ -185,7 +252,7 @@ class ReceiptLogger:
                 expected_filled = self.order_filled_qty[order_id]
                 if receipt.fill_qty != expected_filled:
                     logger.warning(
-                        f"[ReceiptLogger] Cancel fill_qty mismatch for {order_id}: "
+                        f"[ReceiptLogger_Impl] Cancel fill_qty mismatch for {order_id}: "
                         f"receipt.fill_qty={receipt.fill_qty}, accumulated={expected_filled}"
                     )
                 
@@ -312,27 +379,7 @@ class ReceiptLogger:
         }
     
     def print_summary(self) -> None:
-        """打印回执统计摘要。
-        
-        输出说明：
-        - Total Receipts: 收到的总回执数
-        - Total Orders: 已注册的总订单数
-        - Total Order Qty: 所有订单的总下单数量
-        - Total Filled Qty: 所有订单的总成交数量
-        - Receipt Type Distribution: 按回执类型分布统计（一个订单可能产生多条回执，统计的是回执条数）
-          - Full Fill回执数 != 完全成交订单数：部分成交后撤单或最终未满量的订单不会产生Full Fill回执
-          - Partial Fill回执数 >= 部分成交订单数：一个订单可能产生多个PARTIAL回执（多次部分成交）
-        - Order Final Status Distribution: 按订单最终状态分布统计
-          - Fully Filled: 最终全部成交的订单数（包括先部分成交后全部成交的订单）
-          - Partially Filled: 最终仅部分成交的订单数（不包括最终全部成交的订单）
-          - Unfilled: 未成交的订单数
-        - Final Fill Rate: 最终成交率统计（按订单最终状态，拆分完全/部分，仅统计数量>0的订单）
-          - Partial Fill Rate = 最终部分成交订单数 / (完全成交 + 部分成交 + 未成交)
-            - 撤单订单若有成交计入部分成交，数量<=0的订单不计入
-          - Final Fill Rate: order-final-status rates (full vs partial), quantity>0 only
-        - Fill Rate: 成交率统计（按数量/按订单数，订单数口径仅统计完全成交）
-          - Fill Rate: quantity-based fill rate + order-count fill rate (full fills only)
-        """
+        """打印回执统计摘要。"""
         stats = self.get_statistics()
         
         print("\n" + "=" * 60)
@@ -413,3 +460,10 @@ class ReceiptLogger:
         self._cancel_counts.clear()
         self._reject_counts.clear()
         self._canceled_orders.clear()
+
+
+class NullObservability_Impl(ReceiptLogger_Impl):
+    """无输出观测实现（但保留诊断计数）。"""
+
+    def __init__(self) -> None:
+        super().__init__(output_file=None, verbose=False, callback=None)

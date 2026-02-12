@@ -11,7 +11,7 @@ import tempfile
 
 from quant_framework.config import _load_contract_dictionary, TradingHour
 from quant_framework.utils.trading_hours import TradingHoursHelper
-from quant_framework.adapters.market_data_feed import SnapshotDuplicatingFeed
+from quant_framework.adapters.market_data_feed import SnapshotDuplicatingFeed_Impl
 
 from tests.conftest import MockFeed
 
@@ -137,7 +137,7 @@ def test_session_detection():
         TradingHour(start_time="09:30:00", end_time="11:30:00"),
         TradingHour(start_time="13:00:00", end_time="15:00:00"),
     ]
-    feed = SnapshotDuplicatingFeed(MockFeed([]), trading_hours=hours)
+    feed = SnapshotDuplicatingFeed_Impl(MockFeed([]), trading_hours=hours)
     helper = feed._trading_hours_helper
 
     assert helper.is_in_any_trading_session(9 * 3600 + 30 * 60)
@@ -150,7 +150,7 @@ def test_session_detection():
         TradingHour(start_time="21:00:00", end_time="02:30:00"),
         TradingHour(start_time="09:00:00", end_time="10:15:00"),
     ]
-    feed2 = SnapshotDuplicatingFeed(MockFeed([]), trading_hours=night_hours)
+    feed2 = SnapshotDuplicatingFeed_Impl(MockFeed([]), trading_hours=night_hours)
     helper2 = feed2._trading_hours_helper
 
     assert helper2.is_in_any_trading_session(21 * 3600)

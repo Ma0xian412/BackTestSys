@@ -16,17 +16,17 @@ from quant_framework.core.data_structure import (
     StrategyContext,
 )
 from quant_framework.core.data_structure import OrderReceipt, Side, TICK_PER_MS, ReadOnlyOMSView
-from quant_framework.adapters.IStrategy.strategy import SimpleStrategyImpl
-from quant_framework.adapters.IStrategy.replay_strategy import ReplayStrategyImpl
-from quant_framework.adapters.IOMS.oms import OMSImpl
+from quant_framework.adapters.IStrategy.Simple_Strategy import SimpleStrategy_Impl
+from quant_framework.adapters.IStrategy.Replay_Strategy import ReplayStrategy_Impl
+from quant_framework.adapters.IOMS.oms import OMS_Impl
 
 from tests.conftest import create_test_snapshot
 
 
 def test_simple_strategy():
     """SimpleStrategy：on_event 下每 10 个快照生成 1 个订单。"""
-    strategy = SimpleStrategyImpl(name="TestStrategy")
-    oms = OMSImpl()
+    strategy = SimpleStrategy_Impl(name="TestStrategy")
+    oms = OMS_Impl()
     view = ReadOnlyOMSView(oms)
 
     snap = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
@@ -61,7 +61,7 @@ def test_replay_strategy():
             f.write("1001,1500\n")
             f.write("1002,1600\n")
 
-        strategy = ReplayStrategyImpl(
+        strategy = ReplayStrategy_Impl(
             name="TestReplay",
             order_file=order_file,
             cancel_file=cancel_file,

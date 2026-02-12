@@ -1,4 +1,4 @@
-"""订单管理器（OMSImpl）单元测试。
+"""订单管理器（OMS_Impl）单元测试。
 
 验证内容：
 - 订单提交与查询
@@ -9,13 +9,13 @@
 from quant_framework.core.data_structure import (
     Order, Side, OrderStatus, OrderReceipt, TICK_PER_MS,
 )
-from quant_framework.adapters.IOMS.oms import OMSImpl, Portfolio
+from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 
 
 def test_order_lifecycle():
     """订单生命周期：提交 → 查询 → 成交 → 状态更新 → 仓位变化。"""
     portfolio = Portfolio(cash=10000.0)
-    oms = OMSImpl(portfolio=portfolio)
+    oms = OMS_Impl(portfolio=portfolio)
 
     # 提交
     order = Order(order_id="test-1", side=Side.BUY, price=100.0, qty=10)

@@ -13,7 +13,7 @@ from ...core.port import IStrategy
 from ...core.data_structure import Order, Side
 
 
-class SimpleStrategyImpl(IStrategy):
+class SimpleStrategy_Impl(IStrategy):
     """简单示例策略：每 10 个快照下买单，成交后尝试卖出。"""
 
     def __init__(self, name: str = "Simple"):

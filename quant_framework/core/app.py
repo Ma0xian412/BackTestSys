@@ -5,12 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Union
 
-from ..adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
+from ..adapters import ExecutionVenue_Impl, ReceiptLogger_Impl, TimeModel_Impl
 from ..adapters.interval_model import TapeConfig as BuilderTapeConfig, UnifiedIntervalModel_impl
-from ..adapters.market_data_feed import CsvMarketDataFeed, PickleMarketDataFeed, SnapshotDuplicatingFeed
-from ..adapters.IOMS import OMSImpl, Portfolio
-from ..adapters.observability import ReceiptLogger
-from ..adapters.IStrategy import SimpleStrategyImpl
+from ..adapters.market_data_feed import CsvMarketDataFeed_Impl, PickleMarketDataFeed_Impl, SnapshotDuplicatingFeed_Impl
+from ..adapters.IOMS import OMS_Impl, Portfolio
+from ..adapters.IStrategy import SimpleStrategy_Impl
 from ..adapters.execution_venue import FIFOExchangeSimulator
 from ..config import BacktestConfig
 from .dispatcher import Dispatcher
@@ -97,15 +96,15 @@ class CompositionRoot:
     @staticmethod
     def _create_feed(config: BacktestConfig):
         if config.data.format == "csv":
-            inner_feed = CsvMarketDataFeed(config.data.path)
+            inner_feed = CsvMarketDataFeed_Impl(config.data.path)
         else:
-            inner_feed = PickleMarketDataFeed(config.data.path)
+            inner_feed = PickleMarketDataFeed_Impl(config.data.path)
 
         trading_hours = None
         if config.contract.contract_info and config.contract.contract_info.trading_hours:
             trading_hours = config.contract.contract_info.trading_hours
 
-        return SnapshotDuplicatingFeed(
+        return SnapshotDuplicatingFeed_Impl(
             inner_feed=inner_feed,
             tolerance_tick=config.snapshot.tolerance_tick,
             trading_hours=trading_hours,
@@ -126,34 +125,33 @@ class CompositionRoot:
         return UnifiedIntervalModel_impl(config=tape_cfg, tick_size=config.tape.tick_size)
 
     @staticmethod
-    def _create_venue(config: BacktestConfig, tape_builder: UnifiedIntervalModel_impl) -> ExecutionVenueImpl:
+    def _create_venue(config: BacktestConfig, tape_builder: UnifiedIntervalModel_impl) -> ExecutionVenue_Impl:
         simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_front_ratio)
-        return ExecutionVenueImpl(simulator=simulator, tape_builder=tape_builder)
+        return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder)
 
     @staticmethod
     def _create_strategy(config: BacktestConfig):
         # 当前默认策略实现；后续可扩展 registry/factory
-        return SimpleStrategyImpl(name=config.strategy.name)
+        return SimpleStrategy_Impl(name=config.strategy.name)
 
     @staticmethod
-    def _create_oms(config: BacktestConfig) -> OMSImpl:
+    def _create_oms(config: BacktestConfig) -> OMS_Impl:
         portfolio = Portfolio(cash=config.portfolio.initial_cash)
-        return OMSImpl(portfolio=portfolio)
+        return OMS_Impl(portfolio=portfolio)
 
     @staticmethod
-    def _create_time_model(config: BacktestConfig) -> TimeModelImpl:
-        return TimeModelImpl(
+    def _create_time_model(config: BacktestConfig) -> TimeModel_Impl:
+        return TimeModel_Impl(
             delay_out=config.runner.delay_out,
             delay_in=config.runner.delay_in,
         )
 
     @staticmethod
-    def _create_observability(config: BacktestConfig) -> ObservabilityImpl:
-        receipt_logger = ReceiptLogger(
+    def _create_observability(config: BacktestConfig) -> ReceiptLogger_Impl:
+        return ReceiptLogger_Impl(
             output_file=config.receipt_logger.output_file or None,
             verbose=config.receipt_logger.verbose,
         )
-        return ObservabilityImpl(receipt_logger)
 
 
 class BacktestApp:

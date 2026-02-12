@@ -1,6 +1,6 @@
 """因果一致性场景测试（新架构）。"""
 
-from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
+from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
@@ -11,7 +11,7 @@ from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Order, Side, TICK_PER_MS
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 from quant_framework.adapters.interval_model import TapeConfig, UnifiedIntervalModel_impl
-from quant_framework.adapters.IOMS.oms import OMSImpl
+from quant_framework.adapters.IOMS.oms import OMS_Impl
 from tests.conftest import MockFeed, create_test_snapshot
 
 
@@ -19,14 +19,14 @@ def _run_app(snapshots, strategy, delay_out: int, delay_in: int):
     app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed(snapshots),
-            venue=ExecutionVenueImpl(
+            venue=ExecutionVenue_Impl(
                 simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
                 tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
             ),
             strategy=strategy,
-            oms=OMSImpl(),
-            timeModel=TimeModelImpl(delay_out=delay_out, delay_in=delay_in),
-            obs=NullObservabilityImpl(),
+            oms=OMS_Impl(),
+            timeModel=TimeModel_Impl(delay_out=delay_out, delay_in=delay_in),
+            obs=NullObservability_Impl(),
         ),
     )
     return app.run()
