@@ -31,7 +31,7 @@ def _setup_debug_logging():
     ))
     logging.basicConfig(level=log_level, handlers=[handler], force=True)
     for name in (
-        'quant_framework.exchange.simulator',
+        'quant_framework.adapters.execution_venue.simulator',
         'quant_framework.core.kernel',
         'quant_framework.core.handlers',
         'quant_framework.trading.receipt_logger',

@@ -8,7 +8,7 @@
 from quant_framework.core.types import (
     Order, Side, TimeInForce, TapeSegment, NormalizedSnapshot, Level,
 )
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 
 # ---------------------------------------------------------------------------

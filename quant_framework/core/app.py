@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, Union
 from ..adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
 from ..config import BacktestConfig
 from .data_loader import CsvMarketDataFeed, PickleMarketDataFeed, SnapshotDuplicatingFeed
-from ..exchange.simulator import FIFOExchangeSimulator
+from ..adapters.execution_venue import FIFOExchangeSimulator
 from ..tape.builder import TapeConfig as BuilderTapeConfig, UnifiedTapeBuilder
 from ..trading.oms import OMSImpl, Portfolio
 from ..trading.receipt_logger import ReceiptLogger
@@ -16,7 +16,7 @@ from ..trading.strategy import SimpleStrategyImpl
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, ReceiptDeliveryHandler, SnapshotArrivalHandler
 from .kernel import EventLoopKernel
-from .runtime import (
+from .model import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,

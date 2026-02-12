@@ -1,11 +1,11 @@
-"""核心运行时模型：事件、上下文、注册中心。"""
+"""核心数据模型：Action/Event/Context。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from enum import Enum
+from typing import Any, Callable, Dict, Optional
 
-from .actions import Action
 from .read_only_view import ReadOnlyOMSView
 from .types import NormalizedSnapshot, OrderReceipt
 
@@ -15,18 +15,50 @@ EVENT_KIND_ACTION_ARRIVAL = "ActionArrival"
 EVENT_KIND_RECEIPT_DELIVERY = "ReceiptDelivery"
 
 
+class ActionType(Enum):
+    """策略动作类型。"""
+
+    PLACE_ORDER = "PLACE_ORDER"
+    CANCEL_ORDER = "CANCEL_ORDER"
+
+
+@dataclass
+class Action:
+    """策略动作纯数据结构。"""
+
+    action_type: ActionType
+    create_time: int = 0
+    payload: Any = None
+
+    def get_type(self) -> ActionType:
+        return self.action_type
+
+    def set_type(self, action_type: ActionType) -> None:
+        self.action_type = action_type
+
+    def get_create_time(self) -> int:
+        return int(self.create_time)
+
+    def set_create_time(self, create_time: int) -> None:
+        self.create_time = int(create_time)
+
+    def get_payload(self) -> Any:
+        return self.payload
+
+    def set_payload(self, payload: Any) -> None:
+        self.payload = payload
+
+
 _event_seq_counter = 0
 
 
 def _next_seq() -> int:
-    """获取单线程事件序号（用于稳定排序）。"""
     global _event_seq_counter
     _event_seq_counter += 1
     return _event_seq_counter
 
 
 def reset_event_seq() -> None:
-    """重置事件序号（主要用于测试）。"""
     global _event_seq_counter
     _event_seq_counter = 0
 

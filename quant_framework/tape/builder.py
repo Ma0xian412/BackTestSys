@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple, Set, Optional
 import math
 
-from ..core.interfaces import ITapeBuilder
+from ..core.port import ITapeBuilder
 from ..core.types import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS
 
 

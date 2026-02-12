@@ -1,10 +1,10 @@
-"""可观测性端口适配器。"""
+"""可观测性端口适配器实现。"""
 
 from __future__ import annotations
 
-from ..core.interfaces import IObservabilitySinks
-from ..core.types import CancelRequest, Order, OrderReceipt
-from ..trading.receipt_logger import ReceiptLogger
+from ...core.port import IObservabilitySinks
+from ...core.types import CancelRequest, Order, OrderReceipt
+from ...trading.receipt_logger import ReceiptLogger
 
 
 class ObservabilityImpl(IObservabilitySinks):

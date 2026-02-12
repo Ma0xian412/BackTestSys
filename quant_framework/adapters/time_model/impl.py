@@ -1,8 +1,6 @@
-"""时间模型适配器。"""
+"""时间模型端口适配器实现。"""
 
-from __future__ import annotations
-
-from ..core.interfaces import ITimeModel
+from ...core.port import ITimeModel
 
 
 class TimeModelImpl(ITimeModel):

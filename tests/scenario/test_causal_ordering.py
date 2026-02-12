@@ -1,11 +1,15 @@
 """因果一致性场景测试（新架构）。"""
 
 from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
-from quant_framework.core.actions import Action, ActionType
+from quant_framework.core.model import (
+    EVENT_KIND_RECEIPT_DELIVERY,
+    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    Action,
+    ActionType,
+)
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
-from quant_framework.core.runtime import EVENT_KIND_RECEIPT_DELIVERY, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core.types import Order, Side, TICK_PER_MS
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 from quant_framework.tape.builder import TapeConfig, UnifiedTapeBuilder
 from quant_framework.trading.oms import OMSImpl
 from tests.conftest import MockFeed, create_test_snapshot

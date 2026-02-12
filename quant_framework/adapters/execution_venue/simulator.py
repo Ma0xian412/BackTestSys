@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
-from ..core.types import (
+from ...core.types import (
     Order, OrderReceipt, NormalizedSnapshot, Price, Qty, Side, 
     TapeSegment, TimeInForce, OrderStatus
 )

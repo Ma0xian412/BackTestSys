@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, List
 
-from .runtime import Event, EventSpecRegistry, RuntimeContext
+from .model import Event, EventSpecRegistry, RuntimeContext
 
 
 class IEventHandler(ABC):

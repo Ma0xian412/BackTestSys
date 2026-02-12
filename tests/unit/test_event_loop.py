@@ -5,7 +5,7 @@ import heapq
 from quant_framework.core.types import (
     RequestType, ReceiptType, CancelRequest, OrderReceipt, TICK_PER_MS,
 )
-from quant_framework.core.runtime import (
+from quant_framework.core.model import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,

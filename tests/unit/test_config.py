@@ -10,7 +10,7 @@ import os
 import tempfile
 
 from quant_framework.config import _load_contract_dictionary, TradingHour
-from quant_framework.core.trading_hours import TradingHoursHelper
+from quant_framework.utils.trading_hours import TradingHoursHelper
 from quant_framework.core.data_loader import SnapshotDuplicatingFeed
 
 from tests.conftest import MockFeed

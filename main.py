@@ -132,12 +132,12 @@ def setup_logging(config: BacktestConfig) -> str:
     
     # Set specific module log levels
     if debug:
-        logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.DEBUG)
     else:
-        logging.getLogger('quant_framework.exchange.simulator').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.trading.receipt_logger').setLevel(logging.WARNING)

@@ -1,17 +1,17 @@
-"""执行场所端口适配器。"""
+"""执行场所端口适配器实现。"""
 
 from __future__ import annotations
 
 from typing import List, Optional
 
-from ..core.actions import Action, ActionType
-from ..core.interfaces import IExecutionVenue, ITapeBuilder, StepOutcome
-from ..core.types import CancelRequest, NormalizedSnapshot, Order, OrderReceipt
-from ..exchange.simulator import FIFOExchangeSimulator
+from ...core.model import Action, ActionType
+from ...core.port import IExecutionVenue, ITapeBuilder, StepOutcome
+from ...core.types import CancelRequest, NormalizedSnapshot, Order, OrderReceipt
+from .simulator import FIFOExchangeSimulator
 
 
 class ExecutionVenueImpl(IExecutionVenue):
-    """将现有 FIFOExchangeSimulator 适配到 IExecutionVenue。"""
+    """将 FIFOExchangeSimulator 适配为 IExecutionVenue。"""
 
     def __init__(self, simulator: FIFOExchangeSimulator, tape_builder: ITapeBuilder) -> None:
         self._simulator = simulator
@@ -34,7 +34,6 @@ class ExecutionVenueImpl(IExecutionVenue):
         self._prev_snapshot = prev
         self._interval_start = int(prev.ts_recv)
         self._interval_end = int(curr.ts_recv)
-
         self._tape = self._tape_builder.build(prev, curr)
         self._seg_idx = 0
         self._simulator.reset()
@@ -52,15 +51,12 @@ class ExecutionVenueImpl(IExecutionVenue):
             return StepOutcome(next_time=t_cur, receipts_generated=[])
         if not self._tape:
             return StepOutcome(next_time=t_limit, receipts_generated=[])
-
         seg_idx = self._find_segment_idx(t_cur)
         if seg_idx >= len(self._tape):
             return StepOutcome(next_time=t_limit, receipts_generated=[])
-
         seg = self._tape[seg_idx]
         seg_limit = min(int(t_limit), int(seg.t_end))
         receipts, t_stop = self._simulator.advance(int(t_cur), seg_limit, seg)
-
         t_stop = int(t_stop)
         if t_stop < t_cur:
             t_stop = int(t_cur)

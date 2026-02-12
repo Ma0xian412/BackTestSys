@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from typing import List
 
-from .actions import Action, ActionType
-from .dispatcher import IEventHandler
-from .runtime import (
+from .model import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
+    Action,
+    ActionType,
     Event,
     RuntimeContext,
     StrategyContext,
 )
+from .dispatcher import IEventHandler
 from .types import CancelRequest, Order, OrderReceipt
 
 

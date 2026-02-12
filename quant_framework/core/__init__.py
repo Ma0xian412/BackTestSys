@@ -8,7 +8,7 @@ from .types import (
     TapeSegment, OrderReceipt, FillDetail, OrderDiagnostics,
 )
 
-from .interfaces import (
+from .port import (
     IMarketDataFeed,
     ITapeBuilder,
     IExecutionVenue, IOMS, ITimeModel, IObservabilitySinks, StepOutcome,
@@ -20,16 +20,18 @@ from .read_only_view import (
     ReadOnlyOMSView,
 )
 
-from .runtime import (
+from .model import (
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
+    ActionType,
+    Action,
     Event,
     StrategyContext,
     EventSpecRegistry,
     RuntimeContext,
+    reset_event_seq,
 )
-from .actions import Action, ActionType
 from .scheduler import HeapScheduler
 from .dispatcher import Dispatcher, IEventHandler
 from .handlers import SnapshotArrivalHandler, ActionArrivalHandler, ReceiptDeliveryHandler

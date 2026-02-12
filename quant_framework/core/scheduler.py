@@ -5,7 +5,7 @@ from __future__ import annotations
 import heapq
 from typing import List
 
-from .runtime import Event
+from .model import Event
 
 
 class HeapScheduler:

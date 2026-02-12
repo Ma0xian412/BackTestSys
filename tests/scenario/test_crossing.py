@@ -12,7 +12,7 @@ from quant_framework.core.types import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
 from quant_framework.tape.builder import UnifiedTapeBuilder, TapeConfig
-from quant_framework.exchange.simulator import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 from tests.conftest import create_test_snapshot, print_tape_path
 
