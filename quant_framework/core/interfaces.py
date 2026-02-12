@@ -12,6 +12,7 @@
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Iterator, List, Optional, Tuple, Any, TYPE_CHECKING
 from .types import Order, NormalizedSnapshot, Price, Qty, Side, TapeSegment, OrderReceipt
 from .events import SimulationEvent
@@ -163,45 +164,133 @@ class IExchangeSimulator(ABC):
         pass
 
 
+@dataclass(frozen=True)
+class StepOutcome:
+    """执行场所 step 结果。"""
+
+    next_time: int
+    receipts_generated: List[OrderReceipt]
+
+
+class IExecutionVenue(ABC):
+    """执行场所端口（由核心事件循环调用）。"""
+
+    @abstractmethod
+    def startSession(self) -> None:
+        """开启回测会话。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def beginInterval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
+        """开始处理区间 [prev.ts_recv, curr.ts_recv]。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def onActionArrival(self, action: Any, t_arrive: int) -> List[OrderReceipt]:
+        """动作到达执行场所，返回即时生成的回执。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def step(self, t_cur: int, t_limit: int) -> StepOutcome:
+        """推进执行场所内部时钟到 t_limit（或更早停止点）。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def endInterval(self, snapshot_end: NormalizedSnapshot) -> object:
+        """结束当前区间，返回统计对象。"""
+        raise NotImplementedError
+
+
+class IOMS(ABC):
+    """OMS 端口（核心只依赖该抽象）。"""
+
+    @abstractmethod
+    def submit_action(self, action: Any, send_time: int) -> None:
+        """登记策略动作（通常是挂单），用于后续回执匹配。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def apply_receipt(self, receipt: OrderReceipt) -> None:
+        """应用回执，推进订单状态机。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def view(self) -> 'ReadOnlyOMSView':
+        """返回只读 OMS 视图供策略查询。"""
+        raise NotImplementedError
+
+
+class ITimeModel(ABC):
+    """时延模型端口。"""
+
+    @abstractmethod
+    def action_arrival_time(self, send_time: int, action: Any) -> int:
+        """策略动作到达执行场所的时间。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def receipt_delivery_time(self, receipt: OrderReceipt) -> int:
+        """回执送达策略的时间。"""
+        raise NotImplementedError
+
+
+class IObservabilitySinks(ABC):
+    """可观测性汇聚端口。"""
+
+    @abstractmethod
+    def on_receipt_generated(self, receipt: OrderReceipt) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_receipt_delivered(self, receipt: OrderReceipt) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_interval_end(self, stats: object) -> None:
+        raise NotImplementedError
+
+
 class IStrategy(ABC):
-    """策略接口（使用DTO，必须处理回执）。
+    """策略接口（兼容新旧两种回调模式）。
 
-    所有模块之间的通信都通过DTO进行：
-    - 使用SnapshotDTO代替NormalizedSnapshot，确保策略无法修改原始数据
-    - 使用ReadOnlyOMSView提供只读的订单查询
+    新模式：
+    - on_event(event, strategy_context) -> actions
 
-    设计理念：
-    - 策略的输入是只读的（SnapshotDTO, ReadOnlyOMSView）
-    - 策略的输出是Order列表，由EventLoop负责提交到OMS
-    - 策略不能直接调用OMS的submit/on_receipt等修改方法
+    旧模式（向后兼容）：
+    - on_snapshot(snapshot_dto, oms_view) -> orders
+    - on_receipt(receipt, snapshot_dto, oms_view) -> orders
     """
 
-    @abstractmethod
+    def on_event(self, e: Any, ctx: Any) -> List[Any]:
+        """统一事件入口（默认桥接到旧接口）。"""
+        if getattr(e, "kind", None) == "SnapshotArrival" and hasattr(e, "snapshot"):
+            return self.on_snapshot(e.snapshot, ctx.omsView)
+        if getattr(e, "kind", None) == "ReceiptDelivery" and hasattr(e, "receipt"):
+            return self.on_receipt(e.receipt, ctx.snapshot, ctx.omsView)
+        raise NotImplementedError("Strategy must implement on_event or legacy callbacks.")
+
     def on_snapshot(self, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
-        """快照到达时回调（使用DTO）。
+        """旧接口：快照到达回调（默认桥接到 on_event）。"""
+        from .runtime import SnapshotStrategyEvent, StrategyContext
 
-        Args:
-            snapshot: 行情快照DTO（不可变）
-            oms_view: OMS只读视图（只能查询，不能操作）
+        strategy_ctx = StrategyContext(
+            t=int(getattr(snapshot, "ts_recv", 0)),
+            snapshot=snapshot,
+            omsView=oms_view,
+        )
+        return self.on_event(SnapshotStrategyEvent(time=strategy_ctx.t, snapshot=snapshot), strategy_ctx)
 
-        Returns:
-            要提交的新订单列表
-        """
-        pass
-
-    @abstractmethod
     def on_receipt(self, receipt: OrderReceipt, snapshot: 'SnapshotDTO', oms_view: 'ReadOnlyOMSView') -> List[Order]:
-        """订单回执到达时回调（使用DTO）。
+        """旧接口：回执到达回调（默认桥接到 on_event）。"""
+        from .runtime import ReceiptStrategyEvent, StrategyContext
 
-        Args:
-            receipt: 订单回执（成交、撤单等）
-            snapshot: 当前行情快照DTO（不可变）
-            oms_view: OMS只读视图（只能查询，不能操作）
-
-        Returns:
-            要提交的新订单列表
-        """
-        pass
+        recv_time = int(receipt.recv_time) if receipt.recv_time is not None else int(receipt.timestamp)
+        strategy_ctx = StrategyContext(
+            t=recv_time,
+            snapshot=snapshot,
+            omsView=oms_view,
+        )
+        return self.on_event(ReceiptStrategyEvent(time=recv_time, receipt=receipt), strategy_ctx)
 
 
 class IOrderManager(ABC):
