@@ -83,7 +83,7 @@ class TapeConfig:
     top_k: int = 5  # Number of price levels to track
 
 
-class UnifiedTapeBuilder(IIntervalModel):
+class UnifiedIntervalModel_impl(IIntervalModel):
     """Build event tape from A/B snapshots and lastvolsplit.
     
     This is a pure function implementation - no internal state is maintained

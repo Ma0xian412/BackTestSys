@@ -11,7 +11,7 @@
 from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
-from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 from tests.conftest import create_test_snapshot, print_tape_path
@@ -23,7 +23,7 @@ from tests.conftest import create_test_snapshot, print_tape_path
 
 def test_immediate_execution():
     """BUY/SELL crossing 立即成交、IOC 剩余取消、被动订单不 crossing。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(epsilon=1.0), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=50, ask_qty=60)
     curr = create_test_snapshot(
@@ -73,7 +73,7 @@ def test_immediate_execution():
 
 def test_partial_fill_position_zero():
     """crossing 部分成交后：剩余订单 pos=0，被动订单 pos ≥ 市场队列深度。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(epsilon=1.0), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=50, ask_qty=100)
     curr = create_test_snapshot(
@@ -178,7 +178,7 @@ def test_blocked_by_queue_depth():
 
 def test_post_crossing_pos_uses_x_coord():
     """post-crossing 入队订单 pos 应等于到达时刻的 x_coord。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(epsilon=1.0), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=100, ask_qty=100)
     curr = create_test_snapshot(

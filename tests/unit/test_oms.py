@@ -9,7 +9,7 @@
 from quant_framework.core.data_structure import (
     Order, Side, OrderStatus, OrderReceipt, TICK_PER_MS,
 )
-from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
+from quant_framework.adapters.IOMS.oms import OMSImpl, Portfolio
 
 
 def test_order_lifecycle():

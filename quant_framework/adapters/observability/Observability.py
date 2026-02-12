@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ...core.port import IObservabilitySinks
 from ...core.data_structure import CancelRequest, Order, OrderReceipt
-from ..trading.receipt_logger import ReceiptLogger
+from .receipt_logger import ReceiptLogger
 
 
 class ObservabilityImpl(IObservabilitySinks):

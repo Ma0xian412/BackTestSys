@@ -12,9 +12,9 @@ from quant_framework.core.data_structure import EVENT_KIND_SNAPSHOT_ARRIVAL, Act
 from quant_framework.core.app import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
-from quant_framework.adapters.interval_model import TapeConfig, UnifiedTapeBuilder
-from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
-from quant_framework.adapters.trading.replay_strategy import ReplayStrategyImpl
+from quant_framework.adapters.interval_model import TapeConfig, UnifiedIntervalModel_impl
+from quant_framework.adapters.IOMS.oms import OMSImpl, Portfolio
+from quant_framework.adapters.IStrategy.replay_strategy import ReplayStrategyImpl
 from tests.conftest import MockFeed, create_test_snapshot
 
 
@@ -32,7 +32,7 @@ class _FrequentOrderStrategy:
         return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
 
 def _build_basic_app(strategy, snapshots):
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
     venue = ExecutionVenueImpl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
     oms = OMSImpl()
 
@@ -98,7 +98,7 @@ def test_backtest_app_replay_strategy_cancel_compat():
         )
         venue = ExecutionVenueImpl(
             simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-            tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+            tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
         )
         oms = OMSImpl(portfolio=Portfolio(cash=100000.0))
 

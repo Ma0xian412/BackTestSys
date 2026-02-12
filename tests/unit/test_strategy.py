@@ -16,9 +16,9 @@ from quant_framework.core.data_structure import (
     StrategyContext,
 )
 from quant_framework.core.data_structure import OrderReceipt, Side, TICK_PER_MS, ReadOnlyOMSView
-from quant_framework.adapters.trading.strategy import SimpleStrategyImpl
-from quant_framework.adapters.trading.replay_strategy import ReplayStrategyImpl
-from quant_framework.adapters.trading.oms import OMSImpl
+from quant_framework.adapters.IStrategy.strategy import SimpleStrategyImpl
+from quant_framework.adapters.IStrategy.replay_strategy import ReplayStrategyImpl
+from quant_framework.adapters.IOMS.oms import OMSImpl
 
 from tests.conftest import create_test_snapshot
 

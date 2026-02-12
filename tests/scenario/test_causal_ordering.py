@@ -10,8 +10,8 @@ from quant_framework.core.data_structure import (
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Order, Side, TICK_PER_MS
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
-from quant_framework.adapters.interval_model import TapeConfig, UnifiedTapeBuilder
-from quant_framework.adapters.trading.oms import OMSImpl
+from quant_framework.adapters.interval_model import TapeConfig, UnifiedIntervalModel_impl
+from quant_framework.adapters.IOMS.oms import OMSImpl
 from tests.conftest import MockFeed, create_test_snapshot
 
 
@@ -21,7 +21,7 @@ def _run_app(snapshots, strategy, delay_out: int, delay_in: int):
             feed=MockFeed(snapshots),
             venue=ExecutionVenueImpl(
                 simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
             ),
             strategy=strategy,
             oms=OMSImpl(),

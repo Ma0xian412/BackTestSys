@@ -9,7 +9,7 @@ from quant_framework.core.data_structure import (
     NormalizedSnapshot, Order, Side, TICK_PER_MS,
     ReadOnlyOMSView, OrderSnapshot, PortfolioSnapshot,
 )
-from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
+from quant_framework.adapters.IOMS.oms import OMSImpl, Portfolio
 
 from tests.conftest import create_test_snapshot
 

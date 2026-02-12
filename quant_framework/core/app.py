@@ -6,9 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Union
 
 from ..adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
-from ..adapters.interval_model import TapeConfig as BuilderTapeConfig, UnifiedTapeBuilder
+from ..adapters.interval_model import TapeConfig as BuilderTapeConfig, UnifiedIntervalModel_impl
 from ..adapters.market_data_feed import CsvMarketDataFeed, PickleMarketDataFeed, SnapshotDuplicatingFeed
-from ..adapters.trading import OMSImpl, Portfolio, ReceiptLogger, SimpleStrategyImpl
+from ..adapters.IOMS import OMSImpl, Portfolio
+from ..adapters.observability import ReceiptLogger
+from ..adapters.IStrategy import SimpleStrategyImpl
 from ..adapters.execution_venue import FIFOExchangeSimulator
 from ..config import BacktestConfig
 from .dispatcher import Dispatcher
@@ -110,7 +112,7 @@ class CompositionRoot:
         )
 
     @staticmethod
-    def _create_tape_builder(config: BacktestConfig) -> UnifiedTapeBuilder:
+    def _create_tape_builder(config: BacktestConfig) -> UnifiedIntervalModel_impl:
         tape_cfg = BuilderTapeConfig(
             ghost_rule=config.tape.ghost_rule,
             ghost_alpha=config.tape.ghost_alpha,
@@ -121,10 +123,10 @@ class CompositionRoot:
             crossing_order_policy=config.tape.crossing_order_policy,
             top_k=config.tape.top_k,
         )
-        return UnifiedTapeBuilder(config=tape_cfg, tick_size=config.tape.tick_size)
+        return UnifiedIntervalModel_impl(config=tape_cfg, tick_size=config.tape.tick_size)
 
     @staticmethod
-    def _create_venue(config: BacktestConfig, tape_builder: UnifiedTapeBuilder) -> ExecutionVenueImpl:
+    def _create_venue(config: BacktestConfig, tape_builder: UnifiedIntervalModel_impl) -> ExecutionVenueImpl:
         simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_front_ratio)
         return ExecutionVenueImpl(simulator=simulator, tape_builder=tape_builder)
 

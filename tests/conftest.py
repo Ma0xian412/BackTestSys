@@ -34,8 +34,8 @@ def _setup_debug_logging():
         'quant_framework.adapters.execution_venue.simulator',
         'quant_framework.core.kernel',
         'quant_framework.core.handlers',
-        'quant_framework.adapters.trading.receipt_logger',
-        'quant_framework.adapters.interval_model.builder',
+        'quant_framework.adapters.observability.receipt_logger',
+        'quant_framework.adapters.interval_model.UnifiedIntervalModel',
     ):
         logging.getLogger(name).setLevel(logging.DEBUG)
 

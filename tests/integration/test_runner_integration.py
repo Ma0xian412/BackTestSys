@@ -12,11 +12,11 @@ from quant_framework.core.data_structure import (
 )
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
-from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
-from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
-from quant_framework.adapters.trading.replay_strategy import ReplayStrategyImpl
-from quant_framework.adapters.trading.receipt_logger import ReceiptLogger
+from quant_framework.adapters.IOMS.oms import OMSImpl, Portfolio
+from quant_framework.adapters.IStrategy.replay_strategy import ReplayStrategyImpl
+from quant_framework.adapters.observability.receipt_logger import ReceiptLogger
 
 from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 
@@ -27,7 +27,7 @@ from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 
 def test_basic_pipeline():
     """基本管线：BacktestApp 驱动组件协同。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
     exchange = ExecutionVenueImpl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
     oms = OMSImpl()
     receipt_logger = ReceiptLogger()
@@ -112,7 +112,7 @@ def test_pipeline_with_delays():
             feed=MockFeed(snapshots),
             venue=ExecutionVenueImpl(
                 simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
             ),
             strategy=strategy,
             oms=OMSImpl(),
@@ -162,7 +162,7 @@ def test_replay_pipeline():
                 feed=MockFeed(snapshots),
                 venue=ExecutionVenueImpl(
                     simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                    tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+                    tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
                 ),
                 strategy=ReplayStrategyImpl(
                     name="TestReplay",

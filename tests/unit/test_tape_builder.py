@@ -1,4 +1,4 @@
-"""Tape 构建器（UnifiedTapeBuilder）单元测试。
+"""Tape 构建器（UnifiedIntervalModel_impl）单元测试。
 
 验证内容：
 - 基本段生成
@@ -15,7 +15,7 @@
 """
 
 from quant_framework.core.data_structure import Side, TICK_PER_MS
-from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
 
 from tests.conftest import (
     create_test_snapshot,
@@ -30,7 +30,7 @@ from tests.conftest import (
 
 def test_basic():
     """基本功能：两个快照之间能正确生成 tape 段，activation 集合大小合理。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
     curr = create_test_snapshot(
@@ -49,7 +49,7 @@ def test_basic():
 
 def test_no_trades():
     """无成交时：tape 段中没有成交记录，但段结构仍正确生成。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, last_vol_split=[])
     curr = create_test_snapshot(1500 * TICK_PER_MS, 100.5, 101.5, last_vol_split=[])
@@ -69,7 +69,7 @@ def test_no_trades():
 
 def test_conservation():
     """守恒方程：各价位总成交量等于 last_vol_split（允许取整误差 ±1）。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(epsilon=1.0), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
 
     prev = create_multi_level_snapshot(
         1000 * TICK_PER_MS,
@@ -96,7 +96,7 @@ def test_conservation():
 
 def test_netflow_distribution():
     """净流入量分配：满足守恒方程 N = Q_B − Q_A + M（允许取整误差 ±1）。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(epsilon=1.0), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
 
     prev = create_multi_level_snapshot(
         1000 * TICK_PER_MS,
@@ -143,7 +143,7 @@ def test_netflow_distribution():
 
 def test_invalid_time_order():
     """时间顺序：当 t_b ≤ t_a 时应抛出 ValueError。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     # t_b == t_a
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
@@ -166,7 +166,7 @@ def test_invalid_time_order():
 
 def test_start_time():
     """起止时间：第一段从 t_a 开始，最后一段到 t_b 结束。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     t_a = 1000 * TICK_PER_MS
     t_b = 2500 * TICK_PER_MS
@@ -195,7 +195,7 @@ def test_start_time():
 
 def test_meeting_sequence_consistency():
     """相遇序列：bid/ask 路径的中间段经过公共相遇价位。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_multi_level_snapshot(
         1000 * TICK_PER_MS,
@@ -234,7 +234,7 @@ def test_queue_zero_constraint():
         last_vol_split=[(3318, 30), (3317, 20), (3316, 10)],
     )
 
-    builder = UnifiedTapeBuilder(config=TapeConfig(epsilon=1.0), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
@@ -278,7 +278,7 @@ def test_dynamic_queue_tracking():
     场景：prev 有 bid@6 队列 127，curr 中 bid@6 不存在，M_total=197。
     N_total = (0 − 127) + 197 = 70。
     """
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_multi_level_snapshot(
         1000 * TICK_PER_MS,
@@ -321,7 +321,7 @@ def test_starting_price_prepending():
 
     场景：bid 从 6→5，ask 保持 7，last_vol_split 含 6 和 7。
     """
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_multi_level_snapshot(
         1000 * TICK_PER_MS,
@@ -358,7 +358,7 @@ def test_starting_price_prepending():
 
 def test_floating_point_precision():
     """浮点精度：last_vol_split 中带浮点误差的价格能正确匹配段。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
     curr = create_test_snapshot(
