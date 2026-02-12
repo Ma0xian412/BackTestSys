@@ -51,7 +51,7 @@ def test_readonly_oms_view():
     oms = OrderManager(portfolio=portfolio)
 
     order = Order(order_id="ro-1", side=Side.BUY, price=100.0, qty=10)
-    oms.submit(order, 1000 * TICK_PER_MS)
+    oms.submit_action(order, 1000 * TICK_PER_MS)
 
     view = ReadOnlyOMSView(oms)
 
