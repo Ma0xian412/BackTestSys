@@ -9,7 +9,7 @@ from quant_framework.core.data_structure import (
     NormalizedSnapshot, Order, Side, TICK_PER_MS,
     ReadOnlyOMSView, OrderSnapshot, PortfolioSnapshot,
 )
-from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
+from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 
 from tests.conftest import create_test_snapshot
 
@@ -50,7 +50,7 @@ def test_normalized_snapshot_is_frozen():
 def test_readonly_oms_view():
     """ReadOnlyOMSView：返回 DTO、不可变、无修改方法。"""
     portfolio = Portfolio(cash=10000.0)
-    oms = OMSImpl(portfolio=portfolio)
+    oms = OMS_Impl(portfolio=portfolio)
 
     order = Order(order_id="ro-1", side=Side.BUY, price=100.0, qty=10)
     oms.submit_order(order, 1000 * TICK_PER_MS)

@@ -1,5 +1,5 @@
 """TimeModel 端口适配器。"""
 
-from .impl import TimeModelImpl
+from .TimeModel import TimeModel_Impl
 
-__all__ = ["TimeModelImpl"]
+__all__ = ["TimeModel_Impl"]

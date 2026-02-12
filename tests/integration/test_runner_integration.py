@@ -3,7 +3,7 @@
 import os
 import tempfile
 
-from quant_framework.adapters import ExecutionVenueImpl, ObservabilityImpl, TimeModelImpl
+from quant_framework.adapters import ExecutionVenue_Impl, ReceiptLogger_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
@@ -12,11 +12,11 @@ from quant_framework.core.data_structure import (
 )
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
-from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
-from quant_framework.adapters.trading.oms import OMSImpl, Portfolio
-from quant_framework.adapters.trading.replay_strategy import ReplayStrategyImpl
-from quant_framework.adapters.trading.receipt_logger import ReceiptLogger
+from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
+from quant_framework.adapters.IStrategy.Replay_Strategy import ReplayStrategy_Impl
+from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
 
 from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 
@@ -27,10 +27,10 @@ from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 
 def test_basic_pipeline():
     """基本管线：BacktestApp 驱动组件协同。"""
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
-    exchange = ExecutionVenueImpl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
-    oms = OMSImpl()
-    receipt_logger = ReceiptLogger()
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
+    exchange = ExecutionVenue_Impl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
+    oms = OMS_Impl()
+    receipt_logger = ReceiptLogger_Impl()
 
     class _OneShot:
         def __init__(self):
@@ -56,8 +56,8 @@ def test_basic_pipeline():
             venue=exchange,
             strategy=strategy,
             oms=oms,
-            timeModel=TimeModelImpl(delay_out=0, delay_in=0),
-            obs=ObservabilityImpl(receipt_logger),
+            timeModel=TimeModel_Impl(delay_out=0, delay_in=0),
+            obs=receipt_logger,
         ),
     )
     result = app.run()
@@ -110,17 +110,17 @@ def test_pipeline_with_delays():
     app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed(snapshots),
-            venue=ExecutionVenueImpl(
+            venue=ExecutionVenue_Impl(
                 simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
             ),
             strategy=strategy,
-            oms=OMSImpl(),
-            timeModel=TimeModelImpl(
+            oms=OMS_Impl(),
+            timeModel=TimeModel_Impl(
                 delay_out=10 * TICK_PER_MS,
                 delay_in=5 * TICK_PER_MS,
             ),
-            obs=ObservabilityImpl(ReceiptLogger()),
+            obs=ReceiptLogger_Impl(),
         ),
     )
     result = app.run()
@@ -156,22 +156,22 @@ def test_replay_pipeline():
             ),
         ]
 
-        receipt_logger = ReceiptLogger()
+        receipt_logger = ReceiptLogger_Impl()
         app = BacktestApp(
             RuntimeBuildConfig(
                 feed=MockFeed(snapshots),
-                venue=ExecutionVenueImpl(
+                venue=ExecutionVenue_Impl(
                     simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                    tape_builder=UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0),
+                    tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
                 ),
-                strategy=ReplayStrategyImpl(
+                strategy=ReplayStrategy_Impl(
                     name="TestReplay",
                     order_file=order_file,
                     cancel_file=cancel_file,
                 ),
-                oms=OMSImpl(portfolio=Portfolio(cash=100000.0)),
-                timeModel=TimeModelImpl(delay_out=0, delay_in=0),
-                obs=ObservabilityImpl(receipt_logger),
+                oms=OMS_Impl(portfolio=Portfolio(cash=100000.0)),
+                timeModel=TimeModel_Impl(delay_out=0, delay_in=0),
+                obs=receipt_logger,
             ),
         )
         results = app.run()

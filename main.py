@@ -3,7 +3,7 @@
 This demonstrates:
 - BacktestApp + CompositionRoot for runtime wiring
 - EventLoopKernel for event-driven execution
-- ExecutionVenueImpl over FIFOExchangeSimulator
+- ExecutionVenue_Impl over FIFOExchangeSimulator
 - Single-entry strategy interface (on_event)
 
 Observability features:
@@ -135,12 +135,12 @@ def setup_logging(config: BacktestConfig) -> str:
         logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.DEBUG)
-        logging.getLogger('quant_framework.adapters.trading.receipt_logger').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.adapters.observability.ReceiptLogger_Impl').setLevel(logging.DEBUG)
     else:
         logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.WARNING)
-        logging.getLogger('quant_framework.adapters.trading.receipt_logger').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.adapters.observability.ReceiptLogger_Impl').setLevel(logging.WARNING)
     
     return log_file or ""
 

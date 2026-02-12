@@ -9,7 +9,7 @@ from ...core.port import IExecutionVenue, IIntervalModel
 from .simulator import FIFOExchangeSimulator
 
 
-class ExecutionVenueImpl(IExecutionVenue):
+class ExecutionVenue_Impl(IExecutionVenue):
     """将 FIFOExchangeSimulator 适配为 IExecutionVenue。"""
 
     def __init__(self, simulator: FIFOExchangeSimulator, tape_builder: IIntervalModel) -> None:

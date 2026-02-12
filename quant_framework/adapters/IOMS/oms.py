@@ -59,7 +59,7 @@ class Portfolio:
                 self.position -= receipt.fill_qty
 
 
-class OMSImpl(IOMS):
+class OMS_Impl(IOMS):
     """订单状态机 OMS。"""
 
     def __init__(self, portfolio: Portfolio = None):

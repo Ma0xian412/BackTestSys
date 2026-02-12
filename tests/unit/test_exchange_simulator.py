@@ -13,15 +13,15 @@
 from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
-from quant_framework.adapters import ExecutionVenueImpl, NullObservabilityImpl, TimeModelImpl
+from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_SNAPSHOT_ARRIVAL
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
-from quant_framework.adapters.interval_model import UnifiedTapeBuilder, TapeConfig
+from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 from tests.conftest import create_test_snapshot, create_multi_level_snapshot, print_tape_path, MockFeed
 
-from quant_framework.adapters.trading.oms import OMSImpl
+from quant_framework.adapters.IOMS.oms import OMS_Impl
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ def test_ioc_order():
 def test_coordinate_axis():
     """坐标轴模型：先到订单的 pos 小于后到订单（FIFO）。"""
     exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30, ask_qty=30)
     curr = create_test_snapshot(
@@ -96,7 +96,7 @@ def test_coordinate_axis():
 def test_fill():
     """成交逻辑：当 trades > market_queue + order_qty 时订单应被成交。"""
     exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30)
     curr = create_test_snapshot(
@@ -161,7 +161,7 @@ def test_multi_partial_to_fill():
 def test_fill_priority_fifo():
     """FIFO 优先级：先到订单应先成交。"""
     exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    builder = UnifiedTapeBuilder(config=TapeConfig(), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30)
     curr = create_test_snapshot(
@@ -222,12 +222,12 @@ def test_multiple_orders_same_price():
         last_vol_split=[(3316.0, 10), (3317.0, 10), (3318.0, 10), (3319.0, 10), (3320.0, 10)],
     )
 
-    builder = UnifiedTapeBuilder(config=TapeConfig(epsilon=1.0), tick_size=1.0)
+    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
     exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    oms = OMSImpl()
+    oms = OMS_Impl()
 
     class MultiOrderStrategy:
         def __init__(self):
@@ -250,14 +250,14 @@ def test_multiple_orders_same_price():
     app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed([prev, curr]),
-            venue=ExecutionVenueImpl(simulator=exchange, tape_builder=builder),
+            venue=ExecutionVenue_Impl(simulator=exchange, tape_builder=builder),
             strategy=MultiOrderStrategy(),
             oms=oms,
-            timeModel=TimeModelImpl(
+            timeModel=TimeModel_Impl(
                 delay_out=10 * TICK_PER_MS,
                 delay_in=10 * TICK_PER_MS,
             ),
-            obs=NullObservabilityImpl(),
+            obs=NullObservability_Impl(),
         ),
     )
     results = app.run()

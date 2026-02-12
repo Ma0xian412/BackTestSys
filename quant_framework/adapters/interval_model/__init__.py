@@ -1,5 +1,5 @@
 """IntervalModel 端口适配器。"""
 
-from .builder import TapeConfig, UnifiedTapeBuilder
+from .UnifiedIntervalModel import TapeConfig, UnifiedIntervalModel_impl
 
-__all__ = ["TapeConfig", "UnifiedTapeBuilder"]
+__all__ = ["TapeConfig", "UnifiedIntervalModel_impl"]

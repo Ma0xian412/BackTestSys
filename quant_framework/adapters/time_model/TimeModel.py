@@ -3,7 +3,7 @@
 from ...core.port import ITimeModel
 
 
-class TimeModelImpl(ITimeModel):
+class TimeModel_Impl(ITimeModel):
     """固定出入向时延模型。"""
 
     def __init__(self, delay_out: int = 0, delay_in: int = 0) -> None:

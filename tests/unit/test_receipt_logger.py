@@ -11,14 +11,14 @@ import os
 import tempfile
 
 from quant_framework.core.data_structure import OrderReceipt
-from quant_framework.adapters.trading.receipt_logger import ReceiptLogger
+from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
 
 
 def test_receipt_logger():
     """完整流程：注册订单、记录回执、统计指标、保存 CSV。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         output_file = os.path.join(tmpdir, "receipts.csv")
-        logger = ReceiptLogger(output_file=output_file)
+        logger = ReceiptLogger_Impl(output_file=output_file)
 
         # 注册 4 个订单
         logger.register_order("order-1", 100)

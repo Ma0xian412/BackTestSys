@@ -1,5 +1,5 @@
 """Observability 端口适配器。"""
 
-from .impl import NullObservabilityImpl, ObservabilityImpl
+from .ReceiptLogger_Impl import ReceiptLogger_Impl, NullObservability_Impl
 
-__all__ = ["NullObservabilityImpl", "ObservabilityImpl"]
+__all__ = ["ReceiptLogger_Impl", "NullObservability_Impl"]
