@@ -10,6 +10,7 @@ from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     Event,
+    EventKind,
     EventSpecRegistry,
     reset_event_seq,
 )
@@ -101,3 +102,8 @@ def test_request_receipt_types():
 
     r3 = OrderReceipt(order_id="o3", receipt_type="REJECTED", timestamp=1300)
     assert r3.receipt_type == "REJECTED"
+
+
+def test_event_kind_is_enum():
+    event = Event(time=1, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, payload=None)
+    assert isinstance(event.kind, EventKind)

@@ -7,7 +7,7 @@ from .data_structure import (
     Level, NormalizedSnapshot, Order, CancelRequest, Fill,
     TapeSegment, OrderReceipt, FillDetail, OrderDiagnostics,
     OrderSnapshot, PortfolioSnapshot, ReadOnlyOMSView,
-    EVENT_KIND_SNAPSHOT_ARRIVAL, EVENT_KIND_ACTION_ARRIVAL, EVENT_KIND_RECEIPT_DELIVERY,
+    EventKind, EVENT_KIND_SNAPSHOT_ARRIVAL, EVENT_KIND_ACTION_ARRIVAL, EVENT_KIND_RECEIPT_DELIVERY,
     ActionType, Action, Event, StrategyContext, EventSpecRegistry, RuntimeContext,
     StepOutcome, reset_event_seq,
 )
