@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, List
 
-from .data_structure import Event, EventSpecRegistry, RuntimeContext
+from .data_structure import Event, EventKind, EventSpecRegistry, RuntimeContext
 
 
 class IEventHandler(ABC):
@@ -21,9 +21,9 @@ class Dispatcher:
 
     def __init__(self, event_spec: EventSpecRegistry) -> None:
         self._event_spec = event_spec
-        self._handlers: Dict[str, IEventHandler] = {}
+        self._handlers: Dict[EventKind, IEventHandler] = {}
 
-    def register(self, kind: str, handler: IEventHandler) -> None:
+    def register(self, kind: EventKind, handler: IEventHandler) -> None:
         self._handlers[kind] = handler
 
     def dispatch(self, e: Event, ctx: RuntimeContext) -> List[Event]:

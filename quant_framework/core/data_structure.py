@@ -409,9 +409,17 @@ class ReadOnlyOMSView:
         )
 
 
-EVENT_KIND_SNAPSHOT_ARRIVAL = "SnapshotArrival"
-EVENT_KIND_ACTION_ARRIVAL = "ActionArrival"
-EVENT_KIND_RECEIPT_DELIVERY = "ReceiptDelivery"
+class EventKind(str, Enum):
+    """事件类型枚举。"""
+
+    SNAPSHOT_ARRIVAL = "SnapshotArrival"
+    ACTION_ARRIVAL = "ActionArrival"
+    RECEIPT_DELIVERY = "ReceiptDelivery"
+
+
+EVENT_KIND_SNAPSHOT_ARRIVAL = EventKind.SNAPSHOT_ARRIVAL
+EVENT_KIND_ACTION_ARRIVAL = EventKind.ACTION_ARRIVAL
+EVENT_KIND_RECEIPT_DELIVERY = EventKind.RECEIPT_DELIVERY
 
 
 class ActionType(Enum):
@@ -467,7 +475,7 @@ class Event:
     """调度器中的统一事件。"""
 
     time: int
-    kind: str
+    kind: EventKind
     payload: object
     priority: int = 0
     seq: int = field(default_factory=_next_seq)
@@ -493,8 +501,8 @@ class StrategyContext:
 class EventSpecRegistry:
     """事件规范与优先级注册中心。"""
 
-    _priorities: Dict[str, int]
-    _validators: Dict[str, Callable[[object], bool]]
+    _priorities: Dict[EventKind, int]
+    _validators: Dict[EventKind, Callable[[object], bool]]
 
     @classmethod
     def default(cls) -> "EventSpecRegistry":
@@ -511,16 +519,16 @@ class EventSpecRegistry:
             },
         )
 
-    def priorityOf(self, kind: str) -> int:
+    def priorityOf(self, kind: EventKind) -> int:
         return self._priorities.get(kind, 99)
 
-    def validate(self, kind: str, payload: object) -> bool:
+    def validate(self, kind: EventKind, payload: object) -> bool:
         validator = self._validators.get(kind)
         if validator is None:
             return True
         return bool(validator(payload))
 
-    def register(self, kind: str, priority: int, validator: Optional[Callable[[object], bool]] = None) -> None:
+    def register(self, kind: EventKind, priority: int, validator: Optional[Callable[[object], bool]] = None) -> None:
         self._priorities[kind] = priority
         if validator is not None:
             self._validators[kind] = validator
