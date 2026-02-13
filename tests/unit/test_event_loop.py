@@ -105,5 +105,11 @@ def test_request_receipt_types():
 
 
 def test_event_kind_is_enum():
-    event = Event(time=1, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, payload=None)
-    assert isinstance(event.kind, EventKind)
+    kinds = [
+        EVENT_KIND_SNAPSHOT_ARRIVAL,
+        EVENT_KIND_ACTION_ARRIVAL,
+        EVENT_KIND_RECEIPT_DELIVERY,
+    ]
+    for kind in kinds:
+        event = Event(time=1, kind=kind, payload=None)
+        assert isinstance(event.kind, EventKind)
