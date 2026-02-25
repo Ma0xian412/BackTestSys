@@ -61,6 +61,34 @@ class IExecutionVenue(ABC):
         raise NotImplementedError
 
 
+class ISimulator(ABC):
+    """模拟交易所框架端口。"""
+
+    @abstractmethod
+    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_session(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_time_window(self, t_start: int, t_end: int) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_action(self, action: Action) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def step(self, until_time: int) -> StepOutcome:
+        raise NotImplementedError
+
+    @abstractmethod
+    def flush_window(self) -> object:
+        raise NotImplementedError
+
+
 class IOMS(ABC):
     """OMS 端口。"""
 

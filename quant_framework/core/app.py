@@ -10,7 +10,7 @@ from ..adapters.interval_model import TapeConfig as BuilderTapeConfig, UnifiedIn
 from ..adapters.market_data_feed import CsvMarketDataFeed_Impl, PickleMarketDataFeed_Impl, SnapshotDuplicatingFeed_Impl
 from ..adapters.IOMS import OMS_Impl, Portfolio
 from ..adapters.IStrategy import SimpleStrategy_Impl
-from ..adapters.execution_venue import FIFOExchangeSimulator
+from ..adapters.execution_venue import FIFOExchangeSimulator, SegmentMatchAlgorithm, Simulator_Impl
 from ..config import BacktestConfig
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
@@ -126,8 +126,14 @@ class CompositionRoot:
         tape_builder: UnifiedIntervalModel_impl,
         feed: Any,
     ) -> ExecutionVenue_Impl:
-        simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_bias_k)
-        return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder, market_data_feed=feed)
+        exchange_simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_bias_k)
+        match_algo = SegmentMatchAlgorithm(
+            exchange_simulator=exchange_simulator,
+            tape_builder=tape_builder,
+            market_data_feed=feed,
+        )
+        simulator = Simulator_Impl(match_algo=match_algo)
+        return ExecutionVenue_Impl(simulator=simulator)
 
     @staticmethod
     def _create_strategy(config: BacktestConfig):

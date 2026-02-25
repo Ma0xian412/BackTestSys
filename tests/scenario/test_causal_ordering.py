@@ -9,7 +9,11 @@ from quant_framework.core.data_structure import (
 )
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Order, Side, TICK_PER_MS
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import (
+    FIFOExchangeSimulator,
+    SegmentMatchAlgorithm,
+    Simulator_Impl,
+)
 from quant_framework.adapters.interval_model import TapeConfig, UnifiedIntervalModel_impl
 from quant_framework.adapters.IOMS.oms import OMS_Impl
 from tests.conftest import MockFeed, create_test_snapshot
@@ -20,8 +24,12 @@ def _run_app(snapshots, strategy, delay_out: int, delay_in: int):
         RuntimeBuildConfig(
             feed=MockFeed(snapshots),
             venue=ExecutionVenue_Impl(
-                simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+                simulator=Simulator_Impl(
+                    match_algo=SegmentMatchAlgorithm(
+                        exchange_simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                        tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+                    )
+                ),
             ),
             strategy=strategy,
             oms=OMS_Impl(),

@@ -17,7 +17,7 @@ from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl
 from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_MDARRIVE
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator, SegmentMatchAlgorithm, Simulator_Impl
 
 from tests.conftest import create_test_snapshot, create_multi_level_snapshot, print_tape_path, MockFeed
 
@@ -250,7 +250,14 @@ def test_multiple_orders_same_price():
     app = BacktestApp(
         RuntimeBuildConfig(
             feed=MockFeed([prev, curr]),
-            venue=ExecutionVenue_Impl(simulator=exchange, tape_builder=builder),
+            venue=ExecutionVenue_Impl(
+                simulator=Simulator_Impl(
+                    match_algo=SegmentMatchAlgorithm(
+                        exchange_simulator=exchange,
+                        tape_builder=builder,
+                    )
+                )
+            ),
             strategy=MultiOrderStrategy(),
             oms=oms,
             timeModel=TimeModel_Impl(
