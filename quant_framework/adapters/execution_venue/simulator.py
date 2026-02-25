@@ -90,8 +90,12 @@ class Simulator_Impl(ISimulator):
         if not result.receipts:
             result = self._none_result(timestamp=t_arrive, order_id=shadow.order_id, pos=shadow.pos)
 
-        if result.pos > 0 and shadow.order_id in self._active_orders:
-            self._active_orders[shadow.order_id].pos = int(result.pos)
+        if shadow.order_id in self._active_orders:
+            market_pos = max(0, int(result.pos))
+            self._active_orders[shadow.order_id].pos = self._allocate_order_pos(
+                self._active_orders[shadow.order_id],
+                market_pos=market_pos,
+            )
 
         self._apply_result_to_shadow_orders(result)
         # self._advance_time_from_result(result, floor=t_arrive)
@@ -193,3 +197,17 @@ class Simulator_Impl(ISimulator):
                 )
             ],
         )
+
+    def _allocate_order_pos(self, order: ShadowOrder, market_pos: int) -> int:
+        same_level_tail = 0
+        for existing in self._active_orders.values():
+            if existing.order_id == order.order_id:
+                continue
+            if existing.side != order.side:
+                continue
+            if abs(float(existing.price) - float(order.price)) > 1e-8:
+                continue
+            threshold = int(existing.pos) + max(0, int(existing.now_vol))
+            if threshold > same_level_tail:
+                same_level_tail = threshold
+        return max(int(market_pos), same_level_tail)

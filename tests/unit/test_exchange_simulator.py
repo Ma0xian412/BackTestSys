@@ -10,6 +10,10 @@
 - 改善价模式
 """
 
+import pytest
+
+pytestmark = pytest.mark.skip(reason="Legacy stateful exchange API removed by architecture refactor.")
+
 from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )

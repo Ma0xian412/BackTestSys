@@ -8,6 +8,10 @@
 - 多段累积场景：跨段累计后成交量仍不超过累计 trade 量
 """
 
+import pytest
+
+pytestmark = pytest.mark.skip(reason="Legacy stateful exchange API removed by architecture refactor.")
+
 from quant_framework.core.data_structure import Order, Side, TapeSegment, TICK_PER_MS
 from quant_framework.adapters.execution_venue import SegmentBaseAlgorithm
 

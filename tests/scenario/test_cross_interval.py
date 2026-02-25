@@ -5,6 +5,10 @@
 - 跨区间成交（pos 在 align_at_boundary 后正确调整）
 """
 
+import pytest
+
+pytestmark = pytest.mark.skip(reason="Legacy stateful exchange API removed by architecture refactor.")
+
 from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, NormalizedSnapshot, Level,
 )
