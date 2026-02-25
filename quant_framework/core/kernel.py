@@ -31,7 +31,6 @@ class EventLoopKernel:
         reset_event_seq()
 
         ctx.feed.reset()
-        ctx.venue.start_session()
         self._scheduler.clear()
 
         prev_data = ctx.feed.next()
@@ -104,10 +103,11 @@ class EventLoopKernel:
                 if t_limit <= t_cur:
                     break
 
-            outcome = ctx.venue.step(t_limit)
-            next_time = self._clampTime(int(outcome.next_time), t_cur, t_limit)
-
-            for receipt in outcome.receipts_generated:
+            receipt = ctx.venue.step(t_limit)
+            if receipt.receipt_type == "NONE":
+                next_time = t_limit
+            else:
+                next_time = self._clampTime(int(receipt.timestamp), t_cur, t_limit)
                 ctx.obs.on_receipt_generated(receipt)
                 t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
                 self._scheduler.push(
@@ -129,7 +129,10 @@ class EventLoopKernel:
             if emitted:
                 self._scheduler.pushAll(emitted)
 
-        interval_stats = ctx.venue.flush_window()
+        interval_stats = {
+            "interval_start": t_a,
+            "interval_end": t_b,
+        }
         ctx.obs.on_interval_end(interval_stats)
         self._t_cur = t_b
 

@@ -535,14 +535,6 @@ class EventSpecRegistry:
             self._validators[kind] = validator
 
 
-@dataclass(frozen=True)
-class StepOutcome:
-    """执行场所 step 结果。"""
-
-    next_time: int
-    receipts_generated: List[OrderReceipt]
-
-
 @dataclass
 class RuntimeContext:
     """运行上下文（由 CompositionRoot 组装）。"""

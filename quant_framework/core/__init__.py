@@ -9,10 +9,10 @@ from .data_structure import (
     OrderSnapshot, PortfolioSnapshot, ReadOnlyOMSView,
     EventKind, EVENT_KIND_MDARRIVE, EVENT_KIND_ACTION_ARRIVAL, EVENT_KIND_RECEIPT_DELIVERY,
     ActionType, Action, Event, StrategyContext, EventSpecRegistry, RuntimeContext,
-    StepOutcome, reset_event_seq,
+    reset_event_seq,
 )
 from .port import (
-    IMarketDataFeed, IIntervalModel,
+    IMarketDataFeed, IIntervalModel, IMatchAlgorithm,
     IExecutionVenue, IOMS, ITimeModel, IObservabilitySinks,
     IStrategy,
 )

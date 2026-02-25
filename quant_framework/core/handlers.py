@@ -68,21 +68,20 @@ class ActionArrivalHandler(IEventHandler):
     def handle(self, e: Event, ctx: RuntimeContext) -> List[Event]:
         action: Action = e.payload
         action.create_time = int(e.time)
-        receipts = ctx.venue.on_action(action) or []
+        receipt = ctx.venue.on_action(action)
+        if receipt is None or receipt.receipt_type == "NONE":
+            return []
 
-        emitted: List[Event] = []
-        for receipt in receipts:
-            ctx.obs.on_receipt_generated(receipt)
-            t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
-            emitted.append(
-                Event(
-                    time=_clamp_time(int(t_deliver), e.time),
-                    kind=EVENT_KIND_RECEIPT_DELIVERY,
-                    priority=ctx.eventSpec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY),
-                    payload=receipt,
-                )
+        ctx.obs.on_receipt_generated(receipt)
+        t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
+        return [
+            Event(
+                time=_clamp_time(int(t_deliver), e.time),
+                kind=EVENT_KIND_RECEIPT_DELIVERY,
+                priority=ctx.eventSpec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY),
+                payload=receipt,
             )
-        return emitted
+        ]
 
 
 class ReceiptDeliveryHandler(IEventHandler):

@@ -9,20 +9,25 @@ from quant_framework.core.data_structure import (
 )
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Order, Side, TICK_PER_MS
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator, SegmentBaseAlgorithm
 from quant_framework.adapters.interval_model import TapeConfig, UnifiedIntervalModel_impl
 from quant_framework.adapters.IOMS.oms import OMS_Impl
 from tests.conftest import MockFeed, create_test_snapshot
 
 
 def _run_app(snapshots, strategy, delay_out: int, delay_in: int):
+    feed = MockFeed(snapshots)
+    venue = ExecutionVenue_Impl(
+        match_algorithm=SegmentBaseAlgorithm(
+            simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+            tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+            market_data_feed=feed,
+        )
+    )
     app = BacktestApp(
         RuntimeBuildConfig(
-            feed=MockFeed(snapshots),
-            venue=ExecutionVenue_Impl(
-                simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
-            ),
+            feed=feed,
+            venue=venue,
             strategy=strategy,
             oms=OMS_Impl(),
             timeModel=TimeModel_Impl(delay_out=delay_out, delay_in=delay_in),

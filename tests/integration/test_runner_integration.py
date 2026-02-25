@@ -13,7 +13,7 @@ from quant_framework.core.data_structure import (
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
 from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator, SegmentBaseAlgorithm
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 from quant_framework.adapters.IStrategy.Replay_Strategy import ReplayStrategy_Impl
 from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
@@ -28,7 +28,6 @@ from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 def test_basic_pipeline():
     """基本管线：BacktestApp 驱动组件协同。"""
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
-    exchange = ExecutionVenue_Impl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
     oms = OMS_Impl()
     receipt_logger = ReceiptLogger_Impl()
 
@@ -50,9 +49,18 @@ def test_basic_pipeline():
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
+    feed = MockFeed([prev, curr])
+    exchange = ExecutionVenue_Impl(
+        match_algorithm=SegmentBaseAlgorithm(
+            simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+            tape_builder=builder,
+            market_data_feed=feed,
+        )
+    )
+
     app = BacktestApp(
         RuntimeBuildConfig(
-            feed=MockFeed([prev, curr]),
+            feed=feed,
             venue=exchange,
             strategy=strategy,
             oms=oms,
@@ -107,13 +115,18 @@ def test_pipeline_with_delays():
             return []
 
     strategy = _FrequentStrategy()
+    feed = MockFeed(snapshots)
+    venue = ExecutionVenue_Impl(
+        match_algorithm=SegmentBaseAlgorithm(
+            simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+            tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+            market_data_feed=feed,
+        )
+    )
     app = BacktestApp(
         RuntimeBuildConfig(
-            feed=MockFeed(snapshots),
-            venue=ExecutionVenue_Impl(
-                simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
-            ),
+            feed=feed,
+            venue=venue,
             strategy=strategy,
             oms=OMS_Impl(),
             timeModel=TimeModel_Impl(
@@ -157,13 +170,18 @@ def test_replay_pipeline():
         ]
 
         receipt_logger = ReceiptLogger_Impl()
+        feed = MockFeed(snapshots)
+        venue = ExecutionVenue_Impl(
+            match_algorithm=SegmentBaseAlgorithm(
+                simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+                market_data_feed=feed,
+            )
+        )
         app = BacktestApp(
             RuntimeBuildConfig(
-                feed=MockFeed(snapshots),
-                venue=ExecutionVenue_Impl(
-                    simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-                    tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
-                ),
+                feed=feed,
+                venue=venue,
                 strategy=ReplayStrategy_Impl(
                     name="TestReplay",
                     order_file=order_file,

@@ -11,7 +11,7 @@ from quant_framework.adapters import (
 from quant_framework.core.data_structure import EVENT_KIND_MDARRIVE, Action, ActionType
 from quant_framework.core.app import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import FIFOExchangeSimulator, SegmentBaseAlgorithm
 from quant_framework.adapters.interval_model import TapeConfig, UnifiedIntervalModel_impl
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 from quant_framework.adapters.IStrategy.Replay_Strategy import ReplayStrategy_Impl
@@ -33,12 +33,19 @@ class _FrequentOrderStrategy:
 
 def _build_basic_app(strategy, snapshots):
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
-    venue = ExecutionVenue_Impl(FIFOExchangeSimulator(cancel_bias_k=0.0), builder)
+    feed = MockFeed(snapshots)
+    venue = ExecutionVenue_Impl(
+        match_algorithm=SegmentBaseAlgorithm(
+            simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+            tape_builder=builder,
+            market_data_feed=feed,
+        )
+    )
     oms = OMS_Impl()
 
     app = BacktestApp(
         RuntimeBuildConfig(
-            feed=MockFeed(snapshots),
+            feed=feed,
             venue=venue,
             strategy=strategy,
             oms=oms,
@@ -96,15 +103,19 @@ def test_backtest_app_replay_strategy_cancel_compat():
             order_file=order_file,
             cancel_file=cancel_file,
         )
+        feed = MockFeed(snapshots)
         venue = ExecutionVenue_Impl(
-            simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
-            tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+            match_algorithm=SegmentBaseAlgorithm(
+                simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+                market_data_feed=feed,
+            )
         )
         oms = OMS_Impl(portfolio=Portfolio(cash=100000.0))
 
         app = BacktestApp(
             RuntimeBuildConfig(
-                feed=MockFeed(snapshots),
+                feed=feed,
                 venue=venue,
                 strategy=replay,
                 oms=oms,

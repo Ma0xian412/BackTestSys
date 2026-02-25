@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, TYPE_CHECKING
 
-from .data_structure import Action, CancelRequest, NormalizedSnapshot, Order, OrderReceipt, StepOutcome, TapeSegment
+from .data_structure import Action, CancelRequest, NormalizedSnapshot, Order, OrderReceipt, TapeSegment
 
 if TYPE_CHECKING:
     from .data_structure import ReadOnlyOMSView
@@ -37,27 +37,35 @@ class IExecutionVenue(ABC):
     """执行场所端口。"""
 
     @abstractmethod
-    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def start_session(self) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
     def set_time_window(self, t_start: int, t_end: int) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def on_action(self, action: Action) -> List[OrderReceipt]:
+    def on_action(self, action: Action) -> OrderReceipt:
         raise NotImplementedError
 
     @abstractmethod
-    def step(self, until_time: int) -> StepOutcome:
+    def step(self, until_time: int) -> OrderReceipt:
+        raise NotImplementedError
+
+
+class IMatchAlgorithm(ABC):
+    """撮合算法端口。"""
+
+    @abstractmethod
+    def prepare_context(self, t_start: int, t_end: int) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def flush_window(self) -> object:
+    def on_order_action_impl(self, action: Action, current_time: int) -> OrderReceipt:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_step(self, until_time: int) -> OrderReceipt:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
         raise NotImplementedError
 
 

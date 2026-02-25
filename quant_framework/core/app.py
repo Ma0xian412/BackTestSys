@@ -10,7 +10,7 @@ from ..adapters.interval_model import TapeConfig as BuilderTapeConfig, UnifiedIn
 from ..adapters.market_data_feed import CsvMarketDataFeed_Impl, PickleMarketDataFeed_Impl, SnapshotDuplicatingFeed_Impl
 from ..adapters.IOMS import OMS_Impl, Portfolio
 from ..adapters.IStrategy import SimpleStrategy_Impl
-from ..adapters.execution_venue import FIFOExchangeSimulator
+from ..adapters.execution_venue import FIFOExchangeSimulator, SegmentBaseAlgorithm
 from ..config import BacktestConfig
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
@@ -49,7 +49,6 @@ class CompositionRoot:
         - RuntimeBuildConfig: 直接注入组件（测试/高级路径）
         """
         runtime_cfg = self._to_runtime_build_config(config)
-        runtime_cfg.venue.set_market_data_feed(runtime_cfg.feed)
 
         event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()
         dispatcher = runtime_cfg.dispatcher or Dispatcher(event_spec)
@@ -127,7 +126,12 @@ class CompositionRoot:
         feed: Any,
     ) -> ExecutionVenue_Impl:
         simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_bias_k)
-        return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder, market_data_feed=feed)
+        algorithm = SegmentBaseAlgorithm(
+            simulator=simulator,
+            tape_builder=tape_builder,
+            market_data_feed=feed,
+        )
+        return ExecutionVenue_Impl(match_algorithm=algorithm)
 
     @staticmethod
     def _create_strategy(config: BacktestConfig):
