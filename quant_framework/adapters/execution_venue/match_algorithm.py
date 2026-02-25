@@ -5,14 +5,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional, Tuple, Set
 
 from ...core.data_structure import (
-    CancelRequest,
     NormalizedSnapshot,
     Order,
     OrderReceipt,
     Price,
     Qty,
+    Result,
+    ShadowOrder as CoreShadowOrder,
     Side,
-    StepOutcome,
     TapeSegment,
     TimeInForce,
 )
@@ -92,21 +92,6 @@ class PriceLevelState:
                   if o.status == "ACTIVE" and o.arrival_time < t)
 
 
-@dataclass
-class SegmentAlgorithmState:
-    """由 Simulator 持有的算法运行态。"""
-
-    levels: Dict[Tuple[Side, Price], PriceLevelState] = field(default_factory=dict)
-    current_time: int = 0
-    filled_order_ids: Set[str] = field(default_factory=set)
-    trade_pause_intervals: Dict[Side, List[Tuple[int, int]]] = field(
-        default_factory=lambda: {
-            Side.BUY: [],
-            Side.SELL: [],
-        }
-    )
-
-
 class SegmentBaseAlgorithm(IMatchAlgorithm):
     """段模型撮合算法（无冲击假设 + 坐标轴 FIFO 队列）。
     
@@ -161,143 +146,139 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._window_start_data: Optional[NormalizedSnapshot] = None
         self._window_end_data: Optional[NormalizedSnapshot] = None
 
-    def create_state(self) -> object:
-        return SegmentAlgorithmState()
-
     def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
         self._market_data_feed = market_data_feed
 
-    def start_session(self, state: object) -> None:
-        runtime_state = self._load_runtime_state(state)
-        try:
-            self.full_reset()
-            self._context_tape = []
-            self._context_seg_idx = 0
-            self._window_start_data = None
-            self._window_end_data = None
-        finally:
-            self._persist_runtime_state(runtime_state)
+    def start_session(self) -> None:
+        self.full_reset()
+        self._context_tape = []
+        self._context_seg_idx = 0
+        self._window_start_data = None
+        self._window_end_data = None
 
-    def prepare_context(self, state: object, t_start: int, t_end: int) -> None:
-        runtime_state = self._load_runtime_state(state)
-        try:
-            self._context_seg_idx = 0
-            self._context_tape = []
-            self._window_start_data = None
-            self._window_end_data = None
+    def prepare_context(self, t_start: int, t_end: int) -> None:
+        self._context_seg_idx = 0
+        self._context_tape = []
+        self._window_start_data = None
+        self._window_end_data = None
 
-            self.reset()
-            self._interval_start = int(t_start)
-            self._interval_end = int(t_end)
-            if self._interval_end <= self._interval_start:
-                return
+        self.reset()
+        self._interval_start = int(t_start)
+        self._interval_end = int(t_end)
+        if self._interval_end <= self._interval_start:
+            return
 
-            if self._market_data_feed is None:
-                raise RuntimeError("SegmentBaseAlgorithm requires market_data_feed for prepare_context().")
-            if self._tape_builder is None:
-                raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for prepare_context().")
+        if self._market_data_feed is None:
+            raise RuntimeError("SegmentBaseAlgorithm requires market_data_feed for prepare_context().")
+        if self._tape_builder is None:
+            raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for prepare_context().")
 
-            window_data = self._market_data_feed.query_data(self._interval_start, self._interval_end)
-            if not window_data:
-                return
+        window_data = self._market_data_feed.query_data(self._interval_start, self._interval_end)
+        if not window_data:
+            return
 
-            self._window_start_data = window_data[0]
-            self._window_end_data = window_data[-1]
-            if self._window_start_data is None or self._window_end_data is None:
-                return
+        self._window_start_data = window_data[0]
+        self._window_end_data = window_data[-1]
+        if self._window_start_data is None or self._window_end_data is None:
+            return
 
-            if int(self._window_end_data.ts_recv) <= int(self._window_start_data.ts_recv):
-                return
+        if int(self._window_end_data.ts_recv) <= int(self._window_start_data.ts_recv):
+            return
 
-            self._context_tape = self._tape_builder.build(self._window_start_data, self._window_end_data)
-            if self._context_tape:
-                self.set_tape(self._context_tape, self._interval_start, self._interval_end)
-        finally:
-            self._persist_runtime_state(runtime_state)
+        self._context_tape = self._tape_builder.build(self._window_start_data, self._window_end_data)
+        if self._context_tape:
+            self.set_tape(self._context_tape, self._interval_start, self._interval_end)
 
-    def on_order_action_impl(
-        self,
-        state: object,
-        order: Order,
-        t_arrive: int,
-        active_orders: Mapping[str, Order],
-    ) -> List[OrderReceipt]:
-        runtime_state = self._load_runtime_state(state)
-        try:
-            del active_orders
-            market_qty = self._market_qty_at_price(order)
-            receipt = self.on_order_arrival(order, t_arrive, market_qty)
-            return [receipt] if receipt else []
-        finally:
-            self._persist_runtime_state(runtime_state)
+    def on_order_action_impl(self, order: CoreShadowOrder, current_time: int) -> Result:
+        order_req = Order(
+            order_id=order.order_id,
+            side=order.side,
+            price=order.price,
+            qty=max(0, int(order.now_vol)),
+            tif=TimeInForce.GTC,
+            create_time=int(order.create_time),
+        )
+        market_qty = self._market_qty_at_price(order_req)
+        receipt = self.on_order_arrival(order_req, int(current_time), market_qty)
 
-    def on_cancel_action_impl(
-        self,
-        state: object,
-        request: CancelRequest,
-        t_arrive: int,
-        active_orders: Mapping[str, Order],
-    ) -> List[OrderReceipt]:
-        runtime_state = self._load_runtime_state(state)
-        try:
-            del active_orders
-            try:
-                receipt = self.on_cancel_arrival(request.order_id, t_arrive)
-            except ValueError:
-                receipt = OrderReceipt(
-                    order_id=request.order_id,
-                    receipt_type="REJECTED",
-                    timestamp=t_arrive,
+        internal_shadow = self._find_order_by_id(order.order_id)
+        pos = int(internal_shadow.pos) if internal_shadow is not None else int(order.pos)
+
+        if receipt is None:
+            receipts = [
+                OrderReceipt(
+                    order_id=order.order_id,
+                    receipt_type="NONE",
+                    timestamp=int(current_time),
+                    fill_qty=0,
+                    fill_price=float(order.price),
+                    remaining_qty=max(0, int(order.now_vol)),
                 )
-            return [receipt]
-        finally:
-            self._persist_runtime_state(runtime_state)
+            ]
+            return Result(consumed_vol=0, pos=pos, receipts=receipts)
+
+        consumed = max(0, int(receipt.fill_qty)) if receipt.receipt_type in ("PARTIAL", "FILL") else 0
+        return Result(consumed_vol=consumed, pos=pos, receipts=[receipt])
 
     def on_step(
         self,
-        state: object,
-        active_orders: Mapping[str, Order],
+        active_orders: Mapping[str, CoreShadowOrder],
         start_time: int,
         until_time: int,
-    ) -> StepOutcome:
-        runtime_state = self._load_runtime_state(state)
-        try:
-            del active_orders
-            t_cur = int(start_time)
-            t_limit = int(until_time)
-            if t_limit <= t_cur:
-                return StepOutcome(next_time=t_cur, receipts_generated=[])
-            if not self._current_tape:
-                return StepOutcome(next_time=t_limit, receipts_generated=[])
+    ) -> Result:
+        self._sync_shadow_orders_from_active(active_orders)
 
-            seg_idx = self._find_step_segment_idx(t_cur)
-            if seg_idx >= len(self._current_tape):
-                return StepOutcome(next_time=t_limit, receipts_generated=[])
+        t_cur = int(start_time)
+        t_limit = int(until_time)
+        if t_limit <= t_cur:
+            return Result(
+                consumed_vol=0,
+                pos=0,
+                receipts=[OrderReceipt(order_id="", receipt_type="NONE", timestamp=t_cur)],
+            )
+        if not self._current_tape:
+            return Result(
+                consumed_vol=0,
+                pos=0,
+                receipts=[OrderReceipt(order_id="", receipt_type="NONE", timestamp=t_limit)],
+            )
 
-            seg = self._current_tape[seg_idx]
-            seg_limit = min(int(t_limit), int(seg.t_end))
-            receipts, t_stop = self.advance(int(t_cur), seg_limit, seg)
-            t_stop = int(t_stop)
-            if t_stop < t_cur:
-                t_stop = int(t_cur)
-            if t_stop > t_limit:
-                t_stop = int(t_limit)
-            return StepOutcome(next_time=t_stop, receipts_generated=receipts or [])
-        finally:
-            self._persist_runtime_state(runtime_state)
+        seg_idx = self._find_step_segment_idx(t_cur)
+        if seg_idx >= len(self._current_tape):
+            return Result(
+                consumed_vol=0,
+                pos=0,
+                receipts=[OrderReceipt(order_id="", receipt_type="NONE", timestamp=t_limit)],
+            )
 
-    def flush_window(self, state: object) -> object:
-        runtime_state = self._load_runtime_state(state)
-        try:
-            if self._window_end_data is not None:
-                self.align_at_boundary(self._window_end_data)
-            return {
-                "interval_start": self._interval_start,
-                "interval_end": self._interval_end,
-                "segment_count": len(self._current_tape),
-            }
-        finally:
-            self._persist_runtime_state(runtime_state)
+        seg = self._current_tape[seg_idx]
+        seg_limit = min(int(t_limit), int(seg.t_end))
+        receipts, t_stop = self.advance(int(t_cur), seg_limit, seg)
+        t_stop = int(t_stop)
+        if t_stop < t_cur:
+            t_stop = int(t_cur)
+        if t_stop > t_limit:
+            t_stop = int(t_limit)
+
+        if not receipts:
+            receipts = [OrderReceipt(order_id="", receipt_type="NONE", timestamp=t_stop)]
+            return Result(consumed_vol=0, pos=0, receipts=receipts)
+
+        consumed = sum(
+            max(0, int(r.fill_qty))
+            for r in receipts
+            if r.receipt_type in ("PARTIAL", "FILL")
+        )
+        return Result(consumed_vol=consumed, pos=0, receipts=receipts)
+
+    def flush_window(self) -> object:
+        if self._window_end_data is not None:
+            self.align_at_boundary(self._window_end_data)
+        return {
+            "interval_start": self._interval_start,
+            "interval_end": self._interval_end,
+            "segment_count": len(self._current_tape),
+        }
 
     def _find_step_segment_idx(self, t: int) -> int:
         while self._context_seg_idx < len(self._current_tape) and int(t) >= int(self._current_tape[self._context_seg_idx].t_end):
@@ -315,21 +296,33 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
                 return int(level.qty)
         return 0
 
-    def _load_runtime_state(self, state: object) -> SegmentAlgorithmState:
-        if not isinstance(state, SegmentAlgorithmState):
-            raise TypeError(f"Invalid state type for SegmentBaseAlgorithm: {type(state)!r}")
-        runtime_state = state
-        self._levels = runtime_state.levels
-        self.current_time = int(runtime_state.current_time)
-        self._filled_order_ids = runtime_state.filled_order_ids
-        self._trade_pause_intervals = runtime_state.trade_pause_intervals
-        return runtime_state
+    def _sync_shadow_orders_from_active(self, active_orders: Mapping[str, CoreShadowOrder]) -> None:
+        for level in self._levels.values():
+            level.queue.clear()
+            level._active_shadow_qty = 0
 
-    def _persist_runtime_state(self, runtime_state: SegmentAlgorithmState) -> None:
-        runtime_state.levels = self._levels
-        runtime_state.current_time = int(self.current_time)
-        runtime_state.filled_order_ids = self._filled_order_ids
-        runtime_state.trade_pause_intervals = self._trade_pause_intervals
+        for shadow in active_orders.values():
+            if int(shadow.now_vol) <= 0:
+                continue
+            level = self._get_level(shadow.side, shadow.price)
+            level.queue.append(
+                ShadowOrder(
+                    order_id=shadow.order_id,
+                    side=shadow.side,
+                    price=float(shadow.price),
+                    original_qty=int(max(0, shadow.init_vol)),
+                    remaining_qty=int(max(0, shadow.now_vol)),
+                    arrival_time=int(shadow.create_time),
+                    pos=int(shadow.pos),
+                    status="ACTIVE",
+                    filled_qty=int(max(0, shadow.init_vol - shadow.now_vol)),
+                    tif=TimeInForce.GTC,
+                )
+            )
+            level._active_shadow_qty += int(max(0, shadow.now_vol))
+
+        for level in self._levels.values():
+            level.queue.sort(key=lambda s: (s.pos, s.arrival_time, s.order_id))
 
     def _compute_cancel_front_prob(self, x: float) -> float:
         """Compute position-dependent cancel probability p_k(x).

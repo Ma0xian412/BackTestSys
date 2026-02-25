@@ -104,10 +104,16 @@ class EventLoopKernel:
                 if t_limit <= t_cur:
                     break
 
-            outcome = ctx.venue.step(t_limit)
-            next_time = self._clampTime(int(outcome.next_time), t_cur, t_limit)
+            result = ctx.venue.step(t_limit)
+            receipts = list((result.receipts if result is not None else []) or [])
+            receipt_time = result.first_receipt_time() if result is not None else None
+            if receipt_time is None:
+                receipt_time = t_limit
+            next_time = self._clampTime(int(receipt_time), t_cur, t_limit)
 
-            for receipt in outcome.receipts_generated:
+            for receipt in receipts:
+                if receipt.receipt_type == "NONE":
+                    continue
                 ctx.obs.on_receipt_generated(receipt)
                 t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
                 self._scheduler.push(

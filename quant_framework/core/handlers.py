@@ -68,10 +68,13 @@ class ActionArrivalHandler(IEventHandler):
     def handle(self, e: Event, ctx: RuntimeContext) -> List[Event]:
         action: Action = e.payload
         action.create_time = int(e.time)
-        receipts = ctx.venue.on_action(action) or []
+        result = ctx.venue.on_action(action)
+        receipts = list((result.receipts if result is not None else []) or [])
 
         emitted: List[Event] = []
         for receipt in receipts:
+            if receipt.receipt_type == "NONE":
+                continue
             ctx.obs.on_receipt_generated(receipt)
             t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
             emitted.append(

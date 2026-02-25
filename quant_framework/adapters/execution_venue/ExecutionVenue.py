@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
-
-from ...core.data_structure import Action, OrderReceipt, StepOutcome
+from ...core.data_structure import Action, Result
 from ...core.port import IExecutionVenue, IMarketDataFeed, ISimulator
 
 
@@ -23,10 +21,10 @@ class ExecutionVenue_Impl(IExecutionVenue):
     def set_time_window(self, t_start: int, t_end: int) -> None:
         self._simulator.set_time_window(t_start, t_end)
 
-    def on_action(self, action: Action) -> List[OrderReceipt]:
+    def on_action(self, action: Action) -> Result:
         return self._simulator.on_action(action)
 
-    def step(self, until_time: int) -> StepOutcome:
+    def step(self, until_time: int) -> Result:
         return self._simulator.step(until_time)
 
     def flush_window(self) -> object:

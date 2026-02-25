@@ -3,7 +3,16 @@
 from abc import ABC, abstractmethod
 from typing import Any, List, Mapping, Optional, TYPE_CHECKING
 
-from .data_structure import Action, CancelRequest, NormalizedSnapshot, Order, OrderReceipt, StepOutcome, TapeSegment
+from .data_structure import (
+    Action,
+    CancelRequest,
+    NormalizedSnapshot,
+    Order,
+    OrderReceipt,
+    Result,
+    ShadowOrder,
+    TapeSegment,
+)
 
 if TYPE_CHECKING:
     from .data_structure import ReadOnlyOMSView
@@ -49,11 +58,11 @@ class IExecutionVenue(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def on_action(self, action: Action) -> List[OrderReceipt]:
+    def on_action(self, action: Action) -> Result:
         raise NotImplementedError
 
     @abstractmethod
-    def step(self, until_time: int) -> StepOutcome:
+    def step(self, until_time: int) -> Result:
         raise NotImplementedError
 
     @abstractmethod
@@ -77,11 +86,11 @@ class ISimulator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def on_action(self, action: Action) -> List[OrderReceipt]:
+    def on_action(self, action: Action) -> Result:
         raise NotImplementedError
 
     @abstractmethod
-    def step(self, until_time: int) -> StepOutcome:
+    def step(self, until_time: int) -> Result:
         raise NotImplementedError
 
     @abstractmethod
@@ -93,53 +102,36 @@ class IMatchAlgorithm(ABC):
     """撮合算法端口。"""
 
     @abstractmethod
-    def create_state(self) -> object:
-        raise NotImplementedError
-
-    @abstractmethod
     def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def start_session(self, state: object) -> None:
+    def start_session(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def prepare_context(self, state: object, t_start: int, t_end: int) -> None:
+    def prepare_context(self, t_start: int, t_end: int) -> None:
         raise NotImplementedError
 
     @abstractmethod
     def on_order_action_impl(
         self,
-        state: object,
-        order: Order,
-        t_arrive: int,
-        active_orders: Mapping[str, Order],
-    ) -> List[OrderReceipt]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_cancel_action_impl(
-        self,
-        state: object,
-        request: CancelRequest,
-        t_arrive: int,
-        active_orders: Mapping[str, Order],
-    ) -> List[OrderReceipt]:
+        order: ShadowOrder,
+        current_time: int,
+    ) -> Result:
         raise NotImplementedError
 
     @abstractmethod
     def on_step(
         self,
-        state: object,
-        active_orders: Mapping[str, Order],
+        active_orders: Mapping[str, ShadowOrder],
         start_time: int,
         until_time: int,
-    ) -> StepOutcome:
+    ) -> Result:
         raise NotImplementedError
 
     @abstractmethod
-    def flush_window(self, state: object) -> object:
+    def flush_window(self) -> object:
         raise NotImplementedError
 
 

@@ -425,8 +425,10 @@ EVENT_KIND_RECEIPT_DELIVERY = EventKind.RECEIPT_DELIVERY
 class ActionType(Enum):
     """策略动作类型。"""
 
-    PLACE_ORDER = "PLACE_ORDER"
-    CANCEL_ORDER = "CANCEL_ORDER"
+    ORDER_NEW = "ORDER_NEW"
+    ORDER_CANCEL = "ORDER_CANCEL"
+    PLACE_ORDER = "ORDER_NEW"
+    CANCEL_ORDER = "ORDER_CANCEL"
 
 
 @dataclass
@@ -454,6 +456,33 @@ class Action:
 
     def set_payload(self, payload: Any) -> None:
         self.payload = payload
+
+
+@dataclass
+class ShadowOrder:
+    """交易所内影子订单（由 Simulator 维护）。"""
+
+    create_time: int
+    order_id: str
+    side: Side
+    price: Price
+    pos: int
+    init_vol: int
+    now_vol: int
+
+
+@dataclass
+class Result:
+    """执行结果契约。"""
+
+    consumed_vol: int = 0
+    pos: int = 0
+    receipts: List[OrderReceipt] = field(default_factory=list)
+
+    def first_receipt_time(self) -> Optional[int]:
+        if not self.receipts:
+            return None
+        return int(self.receipts[0].timestamp)
 
 
 _event_seq_counter = 0
