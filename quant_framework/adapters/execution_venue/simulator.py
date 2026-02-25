@@ -21,6 +21,7 @@ class Simulator_Impl(ISimulator):
 
     def __init__(self, match_algo: IMatchAlgorithm) -> None:
         self._match_algo = match_algo
+        self._match_state = self._match_algo.create_state()
         self._current_time = 0
         self._interval_start = 0
         self._interval_end = 0
@@ -30,7 +31,8 @@ class Simulator_Impl(ISimulator):
         self._match_algo.set_market_data_feed(market_data_feed)
 
     def start_session(self) -> None:
-        self._match_algo.start_session()
+        self._match_state = self._match_algo.create_state()
+        self._match_algo.start_session(self._match_state)
         self._current_time = 0
         self._interval_start = 0
         self._interval_end = 0
@@ -40,7 +42,7 @@ class Simulator_Impl(ISimulator):
         self._interval_start = int(t_start)
         self._interval_end = int(t_end)
         self._current_time = int(t_start)
-        self._match_algo.prepare_context(self._interval_start, self._interval_end)
+        self._match_algo.prepare_context(self._match_state, self._interval_start, self._interval_end)
 
     def on_action(self, action: Action) -> List[OrderReceipt]:
         t_arrive = int(action.create_time) if int(action.create_time) > 0 else int(self._current_time)
@@ -60,7 +62,7 @@ class Simulator_Impl(ISimulator):
         if t_limit <= t_cur:
             return StepOutcome(next_time=t_cur, receipts_generated=[])
 
-        outcome = self._match_algo.on_step(self._active_orders, t_cur, t_limit)
+        outcome = self._match_algo.on_step(self._match_state, self._active_orders, t_cur, t_limit)
         next_time = self._clamp_time(int(outcome.next_time), t_cur, t_limit)
         receipts = list(outcome.receipts_generated or [])
         self._apply_receipts(receipts)
@@ -68,23 +70,42 @@ class Simulator_Impl(ISimulator):
         return StepOutcome(next_time=next_time, receipts_generated=receipts)
 
     def flush_window(self) -> object:
-        return self._match_algo.flush_window()
+        return self._match_algo.flush_window(self._match_state)
 
     def _on_order_action(self, order: Order, t_arrive: int) -> List[OrderReceipt]:
         internal_order = self._clone_order(order, t_arrive)
-        self._active_orders[internal_order.order_id] = internal_order
-        receipts = self._match_algo.on_order_action_impl(internal_order, t_arrive, self._active_orders) or []
-        self._apply_receipts(receipts)
+        receipts = self._match_algo.on_order_action_impl(
+            self._match_state,
+            internal_order,
+            t_arrive,
+            self._active_orders,
+        ) or []
+
+        if not receipts:
+            # 算法未返回回执，表示订单进入队列成为活跃订单。
+            self._active_orders[internal_order.order_id] = internal_order
+            return []
+
+        temp_orders = {internal_order.order_id: internal_order}
+        self._apply_receipts(receipts, temp_orders)
+        if internal_order.order_id in temp_orders:
+            self._active_orders[internal_order.order_id] = temp_orders[internal_order.order_id]
         return list(receipts)
 
     def _on_cancel_action(self, request: CancelRequest, t_arrive: int) -> List[OrderReceipt]:
-        receipts = self._match_algo.on_cancel_action_impl(request, t_arrive, self._active_orders) or []
+        receipts = self._match_algo.on_cancel_action_impl(
+            self._match_state,
+            request,
+            t_arrive,
+            self._active_orders,
+        ) or []
         self._apply_receipts(receipts)
         return list(receipts)
 
-    def _apply_receipts(self, receipts: List[OrderReceipt]) -> None:
+    def _apply_receipts(self, receipts: List[OrderReceipt], orders: Dict[str, Order] | None = None) -> None:
+        target_orders = self._active_orders if orders is None else orders
         for receipt in receipts:
-            order = self._active_orders.get(receipt.order_id)
+            order = target_orders.get(receipt.order_id)
             if order is None:
                 continue
 
@@ -94,7 +115,7 @@ class Simulator_Impl(ISimulator):
                     order.filled_qty = min(order.qty, order.filled_qty + fill_qty)
                 if order.remaining_qty <= 0 or int(receipt.remaining_qty) <= 0:
                     order.status = OrderStatus.FILLED
-                    self._active_orders.pop(order.order_id, None)
+                    target_orders.pop(order.order_id, None)
                 else:
                     order.status = OrderStatus.PARTIALLY_FILLED
             elif receipt.receipt_type == "FILL":
@@ -104,12 +125,12 @@ class Simulator_Impl(ISimulator):
                 else:
                     order.filled_qty = order.qty
                 order.status = OrderStatus.FILLED
-                self._active_orders.pop(order.order_id, None)
+                target_orders.pop(order.order_id, None)
             elif receipt.receipt_type == "CANCELED":
                 if int(receipt.fill_qty) > order.filled_qty:
                     order.filled_qty = min(order.qty, int(receipt.fill_qty))
                 order.status = OrderStatus.CANCELED
-                self._active_orders.pop(order.order_id, None)
+                target_orders.pop(order.order_id, None)
             elif receipt.receipt_type == "REJECTED":
                 # 取消被拒绝不改变活跃订单状态；是否移除由后续回执决定。
                 continue

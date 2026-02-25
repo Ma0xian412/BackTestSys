@@ -93,20 +93,25 @@ class IMatchAlgorithm(ABC):
     """撮合算法端口。"""
 
     @abstractmethod
+    def create_state(self) -> object:
+        raise NotImplementedError
+
+    @abstractmethod
     def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def start_session(self) -> None:
+    def start_session(self, state: object) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def prepare_context(self, t_start: int, t_end: int) -> None:
+    def prepare_context(self, state: object, t_start: int, t_end: int) -> None:
         raise NotImplementedError
 
     @abstractmethod
     def on_order_action_impl(
         self,
+        state: object,
         order: Order,
         t_arrive: int,
         active_orders: Mapping[str, Order],
@@ -116,6 +121,7 @@ class IMatchAlgorithm(ABC):
     @abstractmethod
     def on_cancel_action_impl(
         self,
+        state: object,
         request: CancelRequest,
         t_arrive: int,
         active_orders: Mapping[str, Order],
@@ -125,6 +131,7 @@ class IMatchAlgorithm(ABC):
     @abstractmethod
     def on_step(
         self,
+        state: object,
         active_orders: Mapping[str, Order],
         start_time: int,
         until_time: int,
@@ -132,7 +139,7 @@ class IMatchAlgorithm(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def flush_window(self) -> object:
+    def flush_window(self, state: object) -> object:
         raise NotImplementedError
 
 

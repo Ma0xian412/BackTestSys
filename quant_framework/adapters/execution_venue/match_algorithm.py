@@ -92,6 +92,21 @@ class PriceLevelState:
                   if o.status == "ACTIVE" and o.arrival_time < t)
 
 
+@dataclass
+class SegmentAlgorithmState:
+    """由 Simulator 持有的算法运行态。"""
+
+    levels: Dict[Tuple[Side, Price], PriceLevelState] = field(default_factory=dict)
+    current_time: int = 0
+    filled_order_ids: Set[str] = field(default_factory=set)
+    trade_pause_intervals: Dict[Side, List[Tuple[int, int]]] = field(
+        default_factory=lambda: {
+            Side.BUY: [],
+            Side.SELL: [],
+        }
+    )
+
+
 class SegmentBaseAlgorithm(IMatchAlgorithm):
     """段模型撮合算法（无冲击假设 + 坐标轴 FIFO 队列）。
     
@@ -146,113 +161,143 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._window_start_data: Optional[NormalizedSnapshot] = None
         self._window_end_data: Optional[NormalizedSnapshot] = None
 
+    def create_state(self) -> object:
+        return SegmentAlgorithmState()
+
     def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
         self._market_data_feed = market_data_feed
 
-    def start_session(self) -> None:
-        self.full_reset()
-        self._context_tape = []
-        self._context_seg_idx = 0
-        self._window_start_data = None
-        self._window_end_data = None
+    def start_session(self, state: object) -> None:
+        runtime_state = self._load_runtime_state(state)
+        try:
+            self.full_reset()
+            self._context_tape = []
+            self._context_seg_idx = 0
+            self._window_start_data = None
+            self._window_end_data = None
+        finally:
+            self._persist_runtime_state(runtime_state)
 
-    def prepare_context(self, t_start: int, t_end: int) -> None:
-        self._context_seg_idx = 0
-        self._context_tape = []
-        self._window_start_data = None
-        self._window_end_data = None
+    def prepare_context(self, state: object, t_start: int, t_end: int) -> None:
+        runtime_state = self._load_runtime_state(state)
+        try:
+            self._context_seg_idx = 0
+            self._context_tape = []
+            self._window_start_data = None
+            self._window_end_data = None
 
-        self.reset()
-        self._interval_start = int(t_start)
-        self._interval_end = int(t_end)
-        if self._interval_end <= self._interval_start:
-            return
+            self.reset()
+            self._interval_start = int(t_start)
+            self._interval_end = int(t_end)
+            if self._interval_end <= self._interval_start:
+                return
 
-        if self._market_data_feed is None:
-            raise RuntimeError("SegmentBaseAlgorithm requires market_data_feed for prepare_context().")
-        if self._tape_builder is None:
-            raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for prepare_context().")
+            if self._market_data_feed is None:
+                raise RuntimeError("SegmentBaseAlgorithm requires market_data_feed for prepare_context().")
+            if self._tape_builder is None:
+                raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for prepare_context().")
 
-        window_data = self._market_data_feed.query_data(self._interval_start, self._interval_end)
-        if not window_data:
-            return
+            window_data = self._market_data_feed.query_data(self._interval_start, self._interval_end)
+            if not window_data:
+                return
 
-        self._window_start_data = window_data[0]
-        self._window_end_data = window_data[-1]
-        if self._window_start_data is None or self._window_end_data is None:
-            return
+            self._window_start_data = window_data[0]
+            self._window_end_data = window_data[-1]
+            if self._window_start_data is None or self._window_end_data is None:
+                return
 
-        if int(self._window_end_data.ts_recv) <= int(self._window_start_data.ts_recv):
-            return
+            if int(self._window_end_data.ts_recv) <= int(self._window_start_data.ts_recv):
+                return
 
-        self._context_tape = self._tape_builder.build(self._window_start_data, self._window_end_data)
-        if self._context_tape:
-            self.set_tape(self._context_tape, self._interval_start, self._interval_end)
+            self._context_tape = self._tape_builder.build(self._window_start_data, self._window_end_data)
+            if self._context_tape:
+                self.set_tape(self._context_tape, self._interval_start, self._interval_end)
+        finally:
+            self._persist_runtime_state(runtime_state)
 
     def on_order_action_impl(
         self,
+        state: object,
         order: Order,
         t_arrive: int,
         active_orders: Mapping[str, Order],
     ) -> List[OrderReceipt]:
-        del active_orders
-        market_qty = self._market_qty_at_price(order)
-        receipt = self.on_order_arrival(order, t_arrive, market_qty)
-        return [receipt] if receipt else []
+        runtime_state = self._load_runtime_state(state)
+        try:
+            del active_orders
+            market_qty = self._market_qty_at_price(order)
+            receipt = self.on_order_arrival(order, t_arrive, market_qty)
+            return [receipt] if receipt else []
+        finally:
+            self._persist_runtime_state(runtime_state)
 
     def on_cancel_action_impl(
         self,
+        state: object,
         request: CancelRequest,
         t_arrive: int,
         active_orders: Mapping[str, Order],
     ) -> List[OrderReceipt]:
-        del active_orders
+        runtime_state = self._load_runtime_state(state)
         try:
-            receipt = self.on_cancel_arrival(request.order_id, t_arrive)
-        except ValueError:
-            receipt = OrderReceipt(
-                order_id=request.order_id,
-                receipt_type="REJECTED",
-                timestamp=t_arrive,
-            )
-        return [receipt]
+            del active_orders
+            try:
+                receipt = self.on_cancel_arrival(request.order_id, t_arrive)
+            except ValueError:
+                receipt = OrderReceipt(
+                    order_id=request.order_id,
+                    receipt_type="REJECTED",
+                    timestamp=t_arrive,
+                )
+            return [receipt]
+        finally:
+            self._persist_runtime_state(runtime_state)
 
     def on_step(
         self,
+        state: object,
         active_orders: Mapping[str, Order],
         start_time: int,
         until_time: int,
     ) -> StepOutcome:
-        del active_orders
-        t_cur = int(start_time)
-        t_limit = int(until_time)
-        if t_limit <= t_cur:
-            return StepOutcome(next_time=t_cur, receipts_generated=[])
-        if not self._current_tape:
-            return StepOutcome(next_time=t_limit, receipts_generated=[])
+        runtime_state = self._load_runtime_state(state)
+        try:
+            del active_orders
+            t_cur = int(start_time)
+            t_limit = int(until_time)
+            if t_limit <= t_cur:
+                return StepOutcome(next_time=t_cur, receipts_generated=[])
+            if not self._current_tape:
+                return StepOutcome(next_time=t_limit, receipts_generated=[])
 
-        seg_idx = self._find_step_segment_idx(t_cur)
-        if seg_idx >= len(self._current_tape):
-            return StepOutcome(next_time=t_limit, receipts_generated=[])
+            seg_idx = self._find_step_segment_idx(t_cur)
+            if seg_idx >= len(self._current_tape):
+                return StepOutcome(next_time=t_limit, receipts_generated=[])
 
-        seg = self._current_tape[seg_idx]
-        seg_limit = min(int(t_limit), int(seg.t_end))
-        receipts, t_stop = self.advance(int(t_cur), seg_limit, seg)
-        t_stop = int(t_stop)
-        if t_stop < t_cur:
-            t_stop = int(t_cur)
-        if t_stop > t_limit:
-            t_stop = int(t_limit)
-        return StepOutcome(next_time=t_stop, receipts_generated=receipts or [])
+            seg = self._current_tape[seg_idx]
+            seg_limit = min(int(t_limit), int(seg.t_end))
+            receipts, t_stop = self.advance(int(t_cur), seg_limit, seg)
+            t_stop = int(t_stop)
+            if t_stop < t_cur:
+                t_stop = int(t_cur)
+            if t_stop > t_limit:
+                t_stop = int(t_limit)
+            return StepOutcome(next_time=t_stop, receipts_generated=receipts or [])
+        finally:
+            self._persist_runtime_state(runtime_state)
 
-    def flush_window(self) -> object:
-        if self._window_end_data is not None:
-            self.align_at_boundary(self._window_end_data)
-        return {
-            "interval_start": self._interval_start,
-            "interval_end": self._interval_end,
-            "segment_count": len(self._current_tape),
-        }
+    def flush_window(self, state: object) -> object:
+        runtime_state = self._load_runtime_state(state)
+        try:
+            if self._window_end_data is not None:
+                self.align_at_boundary(self._window_end_data)
+            return {
+                "interval_start": self._interval_start,
+                "interval_end": self._interval_end,
+                "segment_count": len(self._current_tape),
+            }
+        finally:
+            self._persist_runtime_state(runtime_state)
 
     def _find_step_segment_idx(self, t: int) -> int:
         while self._context_seg_idx < len(self._current_tape) and int(t) >= int(self._current_tape[self._context_seg_idx].t_end):
@@ -269,6 +314,22 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             if abs(float(level.price) - target_price) < EPSILON:
                 return int(level.qty)
         return 0
+
+    def _load_runtime_state(self, state: object) -> SegmentAlgorithmState:
+        if not isinstance(state, SegmentAlgorithmState):
+            raise TypeError(f"Invalid state type for SegmentBaseAlgorithm: {type(state)!r}")
+        runtime_state = state
+        self._levels = runtime_state.levels
+        self.current_time = int(runtime_state.current_time)
+        self._filled_order_ids = runtime_state.filled_order_ids
+        self._trade_pause_intervals = runtime_state.trade_pause_intervals
+        return runtime_state
+
+    def _persist_runtime_state(self, runtime_state: SegmentAlgorithmState) -> None:
+        runtime_state.levels = self._levels
+        runtime_state.current_time = int(self.current_time)
+        runtime_state.filled_order_ids = self._filled_order_ids
+        runtime_state.trade_pause_intervals = self._trade_pause_intervals
 
     def _compute_cancel_front_prob(self, x: float) -> float:
         """Compute position-dependent cancel probability p_k(x).
