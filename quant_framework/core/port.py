@@ -13,12 +13,20 @@ class IMarketDataFeed(ABC):
     """行情数据源端口。"""
 
     @abstractmethod
-    def next(self) -> Optional[NormalizedSnapshot]:
+    def next(self) -> Optional[Any]:
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self):
+    def reset(self) -> None:
         raise NotImplementedError
+
+    @abstractmethod
+    def query_data(self, t_start: int, t_end: int) -> List[Any]:
+        raise NotImplementedError
+
+    # 兼容旧命名（与需求文档中的 Query_Data 对齐）
+    def Query_Data(self, T_Start: int, T_End: int) -> List[Any]:
+        return self.query_data(int(T_Start), int(T_End))
 
 
 class IIntervalModel(ABC):
@@ -33,24 +41,39 @@ class IExecutionVenue(ABC):
     """执行场所端口。"""
 
     @abstractmethod
+    def start_session(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_time_window(self, t_start: int, t_end: int) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_action(self, action: Action) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def step(self, until_time: int) -> StepOutcome:
+        raise NotImplementedError
+
+    @abstractmethod
+    def flush_window(self) -> object:
+        raise NotImplementedError
+
+    # --- backward compatibility helpers ---
     def startSession(self) -> None:
-        raise NotImplementedError
+        self.start_session()
 
-    @abstractmethod
     def beginInterval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
-        raise NotImplementedError
+        self.set_time_window(int(prev.ts_recv), int(curr.ts_recv))
 
-    @abstractmethod
     def onActionArrival(self, action: Action, t_arrive: int) -> List[OrderReceipt]:
-        raise NotImplementedError
+        action.create_time = int(t_arrive)
+        return self.on_action(action)
 
-    @abstractmethod
-    def step(self, t_cur: int, t_limit: int) -> StepOutcome:
-        raise NotImplementedError
-
-    @abstractmethod
     def endInterval(self, snapshot_end: NormalizedSnapshot) -> object:
-        raise NotImplementedError
+        _ = snapshot_end
+        return self.flush_window()
 
 
 class IOMS(ABC):

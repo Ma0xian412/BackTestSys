@@ -1,6 +1,7 @@
 """快照复制数据源包装器实现。"""
 
 import logging
+from bisect import bisect_left, bisect_right
 from typing import List, Optional
 from ...core.port import IMarketDataFeed
 from ...core.data_structure import NormalizedSnapshot
@@ -59,6 +60,9 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
         self._buffer: List[NormalizedSnapshot] = []
         self._buffer_idx = 0
         self._prev_snapshot: Optional[NormalizedSnapshot] = None
+        self._emitted_data: List[NormalizedSnapshot] = []
+        self._emitted_ticks: List[int] = []
+        self._query_hint = 0
         self._initialized = False
     
     def next(self) -> Optional[NormalizedSnapshot]:
@@ -67,6 +71,7 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
         if self._buffer_idx < len(self._buffer):
             snap = self._buffer[self._buffer_idx]
             self._buffer_idx += 1
+            self._record_emitted(snap)
             return snap
         
         # buffer为空，从内部feed获取下一个快照
@@ -80,6 +85,7 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
         # 第一个快照，直接返回
         if self._prev_snapshot is None:
             self._prev_snapshot = curr
+            self._record_emitted(curr)
             return curr
         
         # 计算间隔
@@ -92,12 +98,14 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
         threshold = self.min_interval + self.tolerance
         if gap <= threshold:
             self._prev_snapshot = curr
+            self._record_emitted(curr)
             return curr
         
         # 检查是否跨越交易时段间隔
         # 如果跨越了间隔，不进行快照复制
         if self._trading_hours_helper.spans_trading_session_gap(t_prev, t_curr):
             self._prev_snapshot = curr
+            self._record_emitted(curr)
             return curr
         
         # 间隔超过阈值，需要插入复制的快照
@@ -157,19 +165,72 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
             snap = self._buffer[self._buffer_idx]
             self._buffer_idx += 1
             self._prev_snapshot = curr  # 更新prev为原始的curr
+            self._record_emitted(snap)
             return snap
         
         # 理论上不应该到这里
         self._prev_snapshot = curr
+        self._record_emitted(curr)
         return curr
     
-    def reset(self):
+    def reset(self) -> None:
         """重置feed。"""
         self.inner_feed.reset()
         self._buffer.clear()
         self._buffer_idx = 0
         self._prev_snapshot = None
+        self._emitted_data.clear()
+        self._emitted_ticks.clear()
+        self._query_hint = 0
         self._initialized = False
+
+    def query_data(self, t_start: int, t_end: int) -> List[NormalizedSnapshot]:
+        """按时间窗口查询已经通过 next() 发出的数据。"""
+        t_start = int(t_start)
+        t_end = int(t_end)
+        if t_end < t_start or not self._emitted_ticks:
+            return []
+
+        left = self._find_left_index(t_start)
+        right = bisect_right(self._emitted_ticks, t_end, lo=left)
+        self._query_hint = left
+        return [self._emitted_data[i] for i in range(left, right)]
+
+    def Query_Data(self, T_Start: int, T_End: int) -> List[NormalizedSnapshot]:
+        return self.query_data(int(T_Start), int(T_End))
+
+    def _record_emitted(self, snap: NormalizedSnapshot) -> None:
+        self._emitted_data.append(snap)
+        self._emitted_ticks.append(int(snap.ts_recv))
+
+    def _find_left_index(self, t_start: int) -> int:
+        n = len(self._emitted_ticks)
+        if n == 0:
+            return 0
+
+        hint_candidates = [n - 1, self._query_hint]
+        for hint in hint_candidates:
+            if hint < 0 or hint >= n:
+                continue
+
+            if self._emitted_ticks[hint] <= t_start:
+                i = hint
+                steps = 0
+                while i < n and self._emitted_ticks[i] < t_start and steps < 64:
+                    i += 1
+                    steps += 1
+                if i < n and (i == 0 or self._emitted_ticks[i - 1] < t_start):
+                    return i
+            else:
+                i = hint
+                steps = 0
+                while i > 0 and self._emitted_ticks[i - 1] >= t_start and steps < 64:
+                    i -= 1
+                    steps += 1
+                if i == 0 or self._emitted_ticks[i - 1] < t_start:
+                    return i
+
+        return bisect_left(self._emitted_ticks, t_start)
     
     def __len__(self) -> int:
         """返回内部feed的长度（用于进度条初始化）。

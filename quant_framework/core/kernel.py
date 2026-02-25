@@ -8,7 +8,6 @@ from .data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_SNAPSHOT_ARRIVAL,
     Event,
-    NormalizedSnapshot,
     RuntimeContext,
     reset_event_seq,
 )
@@ -32,57 +31,61 @@ class EventLoopKernel:
         reset_event_seq()
 
         ctx.feed.reset()
-        ctx.venue.startSession()
+        if hasattr(ctx.venue, "bind_market_data_feed"):
+            ctx.venue.bind_market_data_feed(ctx.feed)
+        ctx.venue.start_session()
         self._scheduler.clear()
 
-        prev_snapshot = ctx.feed.next()
-        if prev_snapshot is None:
+        prev_data = ctx.feed.next()
+        if prev_data is None:
             ctx.obs.on_run_end(final_time=0, error="No data")
             return ctx.obs.get_run_result()
 
-        first_t = int(prev_snapshot.ts_recv)
+        first_t = self._extract_tick(prev_data)
         self._t_cur = first_t
         self._scheduler.push(
             Event(
                 time=first_t,
                 kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
                 priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
-                payload=prev_snapshot,
+                payload=prev_data,
             )
         )
+        prev_time = first_t
 
         while True:
-            curr_snapshot = ctx.feed.next()
-            if curr_snapshot is None:
+            curr_data = ctx.feed.next()
+            if curr_data is None:
                 break
 
-            self._runInterval(ctx, prev_snapshot, curr_snapshot)
-            prev_snapshot = curr_snapshot
+            curr_time = self._extract_tick(curr_data)
+            self._scheduler.push(
+                Event(
+                    time=curr_time,
+                    kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
+                    priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
+                    payload=curr_data,
+                )
+            )
+
+            self._run_interval(ctx, prev_time=prev_time, curr_time=curr_time)
+            prev_time = curr_time
 
         ctx.obs.on_run_end(final_time=self._t_cur, error=None)
         return ctx.obs.get_run_result()
 
-    def _runInterval(
+    def _run_interval(
         self,
         ctx: RuntimeContext,
-        prev: NormalizedSnapshot,
-        curr: NormalizedSnapshot,
+        prev_time: int,
+        curr_time: int,
     ) -> None:
-        t_a = int(prev.ts_recv)
-        t_b = int(curr.ts_recv)
+        t_a = int(prev_time)
+        t_b = int(curr_time)
         if t_b <= t_a:
             return
 
-        ctx.venue.beginInterval(prev, curr)
-
-        self._scheduler.push(
-            Event(
-                time=t_b,
-                kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
-                priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
-                payload=curr,
-            )
-        )
+        ctx.venue.set_time_window(t_a, t_b)
 
         t_cur = t_a
         while t_cur < t_b:
@@ -103,7 +106,7 @@ class EventLoopKernel:
                 if t_limit <= t_cur:
                     break
 
-            outcome = ctx.venue.step(t_cur, t_limit)
+            outcome = ctx.venue.step(t_limit)
             next_time = self._clampTime(int(outcome.next_time), t_cur, t_limit)
 
             for receipt in outcome.receipts_generated:
@@ -128,9 +131,17 @@ class EventLoopKernel:
             if emitted:
                 self._scheduler.pushAll(emitted)
 
-        interval_stats = ctx.venue.endInterval(curr)
+        interval_stats = ctx.venue.flush_window()
         ctx.obs.on_interval_end(interval_stats)
         self._t_cur = t_b
+
+    @staticmethod
+    def _extract_tick(data: object) -> int:
+        if hasattr(data, "ts_recv"):
+            return int(getattr(data, "ts_recv"))
+        if isinstance(data, dict) and "ts_recv" in data:
+            return int(data["ts_recv"])
+        raise ValueError("Market data item must carry 'ts_recv' for Kernel timeline scheduling.")
 
     @staticmethod
     def _clampTime(t: int, t_cur: int, t_max: int | None = None) -> int:

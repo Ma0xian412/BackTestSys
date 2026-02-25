@@ -79,7 +79,7 @@ class CompositionRoot:
     def _build_from_backtest_config(self, config: BacktestConfig) -> RuntimeBuildConfig:
         feed = self._create_feed(config)
         tape_builder = self._create_tape_builder(config)
-        venue = self._create_venue(config, tape_builder)
+        venue = self._create_venue(config, tape_builder, feed)
         strategy = self._create_strategy(config)
         oms = self._create_oms(config)
         time_model = self._create_time_model(config)
@@ -125,9 +125,13 @@ class CompositionRoot:
         return UnifiedIntervalModel_impl(config=tape_cfg, tick_size=config.tape.tick_size)
 
     @staticmethod
-    def _create_venue(config: BacktestConfig, tape_builder: UnifiedIntervalModel_impl) -> ExecutionVenue_Impl:
+    def _create_venue(
+        config: BacktestConfig,
+        tape_builder: UnifiedIntervalModel_impl,
+        feed: Any,
+    ) -> ExecutionVenue_Impl:
         simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_front_ratio)
-        return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder)
+        return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder, market_data_feed=feed)
 
     @staticmethod
     def _create_strategy(config: BacktestConfig):
