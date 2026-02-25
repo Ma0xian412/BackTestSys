@@ -8,7 +8,7 @@ from quant_framework.core.data_structure import (
 from quant_framework.core.data_structure import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     Event,
     EventKind,
     EventSpecRegistry,
@@ -25,7 +25,7 @@ def test_event_priority_ordering():
     t = 1000 * TICK_PER_MS
     events = [
         Event(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt1"),
-        Event(time=t, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload="snapshot"),
+        Event(time=t, kind=EVENT_KIND_MDARRIVE, priority=event_spec.priorityOf(EVENT_KIND_MDARRIVE), payload="snapshot"),
         Event(time=t, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload="order"),
         Event(time=t, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload="receipt2"),
     ]
@@ -39,7 +39,7 @@ def test_event_priority_ordering():
         popped.append(heapq.heappop(heap))
 
     expected = [
-        EVENT_KIND_SNAPSHOT_ARRIVAL,
+        EVENT_KIND_MDARRIVE,
         EVENT_KIND_ACTION_ARRIVAL,
         EVENT_KIND_RECEIPT_DELIVERY,
         EVENT_KIND_RECEIPT_DELIVERY,
@@ -72,7 +72,7 @@ def test_scheduler_pop_all_at_time():
     event_spec = EventSpecRegistry.default()
     scheduler = HeapScheduler()
 
-    scheduler.push(Event(time=100, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL), payload=1))
+    scheduler.push(Event(time=100, kind=EVENT_KIND_MDARRIVE, priority=event_spec.priorityOf(EVENT_KIND_MDARRIVE), payload=1))
     scheduler.push(Event(time=100, kind=EVENT_KIND_ACTION_ARRIVAL, priority=event_spec.priorityOf(EVENT_KIND_ACTION_ARRIVAL), payload=2))
     scheduler.push(Event(time=200, kind=EVENT_KIND_RECEIPT_DELIVERY, priority=event_spec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY), payload=3))
 
@@ -106,7 +106,7 @@ def test_request_receipt_types():
 
 def test_event_kind_is_enum():
     kinds = [
-        EVENT_KIND_SNAPSHOT_ARRIVAL,
+        EVENT_KIND_MDARRIVE,
         EVENT_KIND_ACTION_ARRIVAL,
         EVENT_KIND_RECEIPT_DELIVERY,
     ]

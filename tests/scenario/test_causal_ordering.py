@@ -3,7 +3,7 @@
 from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     Action,
     ActionType,
 )
@@ -44,7 +44,7 @@ def test_event_causal_ordering():
             self.log = []
 
         def on_event(self, e, ctx):
-            if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
+            if e.kind == EVENT_KIND_MDARRIVE:
                 self.log.append(("SNAPSHOT", e.time))
                 if len(self.log) == 1:
                     order = Order(order_id="test-order", side=Side.BUY, price=100.0, qty=5)
@@ -82,7 +82,7 @@ def test_receipt_delay_consistency():
             self.placed = False
 
         def on_event(self, e, ctx):
-            if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and not self.placed:
+            if e.kind == EVENT_KIND_MDARRIVE and not self.placed:
                 self.placed = True
                 order = Order(order_id="recv-test", side=Side.BUY, price=100.0, qty=3)
                 return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
@@ -109,7 +109,7 @@ def test_time_clamping():
             self.count = 0
 
         def on_event(self, e, ctx):
-            if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
+            if e.kind == EVENT_KIND_MDARRIVE:
                 self.count += 1
                 order = Order(order_id=f"t-{self.count}", side=Side.BUY, price=100.0, qty=5)
                 return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]

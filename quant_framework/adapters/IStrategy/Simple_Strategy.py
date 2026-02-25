@@ -4,7 +4,7 @@ from typing import List
 
 from ...core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     Action,
     ActionType,
     StrategyContext,
@@ -22,7 +22,7 @@ class SimpleStrategy_Impl(IStrategy):
         self.last_fill_time = 0
 
     def on_event(self, e, ctx: StrategyContext) -> List[Action]:
-        if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
+        if e.kind == EVENT_KIND_MDARRIVE:
             return self._on_snapshot(e, ctx)
         if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
             return self._on_receipt(e, ctx)

@@ -4,6 +4,7 @@ import csv
 import ast
 import math
 import logging
+from bisect import bisect_left, bisect_right
 from typing import List, Any, Optional, Tuple
 from ...core.port import IMarketDataFeed
 from ...core.data_structure import NormalizedSnapshot, Level
@@ -24,6 +25,8 @@ class CsvMarketDataFeed_Impl(IMarketDataFeed):
     - LastVolSplit: [(price, qty), ...]（CSV中存储为字符串形式）
     """
     
+    _UNSET = object()
+
     def __init__(self, file_path: str):
         """初始化CSV数据源。
         
@@ -32,8 +35,11 @@ class CsvMarketDataFeed_Impl(IMarketDataFeed):
         """
         self.file_path = file_path
         self.data: List[Any] = []
-        self._load_data()
         self.idx = 0
+        self._recv_ticks: List[int] = []
+        self._parsed_cache: List[Any] = []
+        self._query_hint = 0
+        self._load_data()
     
     def _load_data(self):
         """加载CSV数据并按RecvTick排序。"""
@@ -41,37 +47,102 @@ class CsvMarketDataFeed_Impl(IMarketDataFeed):
             with open(self.file_path, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 self.data = list(reader)
-            
-            # 按RecvTick排序（处理可能的空值和类型转换）
-            def get_recv_tick(row):
-                val = row.get('RecvTick', '')
-                if val == '' or val is None:
-                    return 0
-                try:
-                    return int(float(val))
-                except (ValueError, TypeError):
-                    return 0
-            
-            self.data.sort(key=get_recv_tick)
+
+            self.data.sort(key=self._read_recv_tick)
+            self._recv_ticks = [self._read_recv_tick(row) for row in self.data]
+            self._parsed_cache = [self._UNSET] * len(self.data)
+            self._query_hint = 0
         except Exception as e:
             print(f"Error loading {self.file_path}: {e}")
             self.data = []
+            self._recv_ticks = []
+            self._parsed_cache = []
+            self._query_hint = 0
     
     def next(self) -> Optional[NormalizedSnapshot]:
         """获取下一个快照。"""
         if self.idx >= len(self.data):
             return None
-        row = self.data[self.idx]
+        snap = self._get_snapshot_by_idx(self.idx)
         self.idx += 1
-        return self._parse_row(row)
+        return snap
     
-    def reset(self):
+    def reset(self) -> None:
         """重置数据源。"""
         self.idx = 0
-    
+        self._query_hint = 0
+
+    def query_data(self, t_start: int, t_end: int) -> List[NormalizedSnapshot]:
+        """按时间窗口查询数据（含边界），并优先利用 next() 游标附近的局部性。"""
+        t_start = int(t_start)
+        t_end = int(t_end)
+        if t_end < t_start or not self._recv_ticks:
+            return []
+
+        left = self._find_left_index(t_start)
+        right = bisect_right(self._recv_ticks, t_end, lo=left)
+        self._query_hint = left
+
+        result: List[NormalizedSnapshot] = []
+        for i in range(left, right):
+            snap = self._get_snapshot_by_idx(i)
+            if snap is None:
+                continue
+            ts = int(snap.ts_recv)
+            if t_start <= ts <= t_end:
+                result.append(snap)
+        return result
+
     def __len__(self) -> int:
         """快照条数（用于进度条等场景）。"""
         return int(len(self.data))
+
+    @staticmethod
+    def _read_recv_tick(row: Any) -> int:
+        val = row.get("RecvTick", "")
+        if val == "" or val is None:
+            return 0
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            return 0
+
+    def _get_snapshot_by_idx(self, index: int) -> Optional[NormalizedSnapshot]:
+        cached = self._parsed_cache[index]
+        if cached is self._UNSET:
+            parsed = self._parse_row(self.data[index])
+            self._parsed_cache[index] = parsed
+            return parsed
+        return cached
+
+    def _find_left_index(self, t_start: int) -> int:
+        n = len(self._recv_ticks)
+        if n == 0:
+            return 0
+
+        hint_candidates = [self.idx - 1, self._query_hint]
+        for hint in hint_candidates:
+            if hint < 0 or hint >= n:
+                continue
+
+            if self._recv_ticks[hint] <= t_start:
+                i = hint
+                steps = 0
+                while i < n and self._recv_ticks[i] < t_start and steps < 64:
+                    i += 1
+                    steps += 1
+                if i < n and (i == 0 or self._recv_ticks[i - 1] < t_start):
+                    return i
+            else:
+                i = hint
+                steps = 0
+                while i > 0 and self._recv_ticks[i - 1] >= t_start and steps < 64:
+                    i -= 1
+                    steps += 1
+                if i == 0 or self._recv_ticks[i - 1] < t_start:
+                    return i
+
+        return bisect_left(self._recv_ticks, t_start)
     
     def _parse_row(self, row) -> Optional[NormalizedSnapshot]:
         """把CSV行解析成标准快照。

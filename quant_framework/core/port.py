@@ -13,11 +13,15 @@ class IMarketDataFeed(ABC):
     """行情数据源端口。"""
 
     @abstractmethod
-    def next(self) -> Optional[NormalizedSnapshot]:
+    def next(self) -> Optional[Any]:
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self):
+    def reset(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def query_data(self, t_start: int, t_end: int) -> List[Any]:
         raise NotImplementedError
 
 
@@ -33,23 +37,27 @@ class IExecutionVenue(ABC):
     """执行场所端口。"""
 
     @abstractmethod
-    def startSession(self) -> None:
+    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def beginInterval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
+    def start_session(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def onActionArrival(self, action: Action, t_arrive: int) -> List[OrderReceipt]:
+    def set_time_window(self, t_start: int, t_end: int) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def step(self, t_cur: int, t_limit: int) -> StepOutcome:
+    def on_action(self, action: Action) -> List[OrderReceipt]:
         raise NotImplementedError
 
     @abstractmethod
-    def endInterval(self, snapshot_end: NormalizedSnapshot) -> object:
+    def step(self, until_time: int) -> StepOutcome:
+        raise NotImplementedError
+
+    @abstractmethod
+    def flush_window(self) -> object:
         raise NotImplementedError
 
 

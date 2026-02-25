@@ -97,37 +97,16 @@ class DataConfig:
 @dataclass
 class TapeConfig:
     """Tape构建器配置。"""
-    ghost_rule: str = "symmetric"
-    ghost_alpha: float = 0.5
     epsilon: float = 1.0
-    segment_iterations: int = 2
     time_scale_lambda: float = 0.0
-    cancel_front_ratio: float = 0.5
-    crossing_order_policy: str = "passive"
     top_k: int = 5
     tick_size: float = 1.0
-    
-    def __post_init__(self):
-        """Validate configuration values."""
-        valid_ghost_rules = {"symmetric", "proportion", "single_bid", "single_ask"}
-        if self.ghost_rule not in valid_ghost_rules:
-            raise ValueError(
-                f"Invalid ghost_rule '{self.ghost_rule}'. "
-                f"Must be one of: {', '.join(valid_ghost_rules)}"
-            )
-        
-        valid_crossing_policies = {"reject", "adjust", "passive"}
-        if self.crossing_order_policy not in valid_crossing_policies:
-            raise ValueError(
-                f"Invalid crossing_order_policy '{self.crossing_order_policy}'. "
-                f"Must be one of: {', '.join(valid_crossing_policies)}"
-            )
 
 
 @dataclass
 class ExchangeConfig:
     """交易所模拟器配置。"""
-    cancel_front_ratio: float = 0.5
+    cancel_bias_k: float = 0.0
 
 
 @dataclass
@@ -758,18 +737,13 @@ def print_config(config: BacktestConfig) -> None:
     print(f"  path: {config.data.path}")
     
     print("\n[Tape Builder]")
-    print(f"  ghost_rule: {config.tape.ghost_rule}")
-    print(f"  ghost_alpha: {config.tape.ghost_alpha}")
     print(f"  epsilon: {config.tape.epsilon}")
-    print(f"  segment_iterations: {config.tape.segment_iterations}")
     print(f"  time_scale_lambda: {config.tape.time_scale_lambda}")
-    print(f"  cancel_front_ratio: {config.tape.cancel_front_ratio}")
-    print(f"  crossing_order_policy: {config.tape.crossing_order_policy}")
     print(f"  top_k: {config.tape.top_k}")
     print(f"  tick_size: {config.tape.tick_size}")
     
     print("\n[Exchange]")
-    print(f"  cancel_front_ratio: {config.exchange.cancel_front_ratio}")
+    print(f"  cancel_bias_k: {config.exchange.cancel_bias_k}")
     
     print("\n[Runner]")
     print(f"  delay_out: {config.runner.delay_out}")

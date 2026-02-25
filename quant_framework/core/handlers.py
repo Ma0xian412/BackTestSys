@@ -1,4 +1,4 @@
-"""核心事件处理器：快照、动作、回执。"""
+"""核心事件处理器：行情到达、动作、回执。"""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ def _clamp_time(t: int, floor: int) -> int:
     return t if t >= floor else floor
 
 
-class SnapshotArrivalHandler(IEventHandler):
-    """处理 SnapshotArrival 事件。"""
+class MDArriveHandler(IEventHandler):
+    """处理 MDArrive 事件。"""
 
     def handle(self, e: Event, ctx: RuntimeContext) -> List[Event]:
         snapshot = e.payload
@@ -67,7 +67,8 @@ class ActionArrivalHandler(IEventHandler):
 
     def handle(self, e: Event, ctx: RuntimeContext) -> List[Event]:
         action: Action = e.payload
-        receipts = ctx.venue.onActionArrival(action, t_arrive=e.time) or []
+        action.create_time = int(e.time)
+        receipts = ctx.venue.on_action(action) or []
 
         emitted: List[Event] = []
         for receipt in receipts:

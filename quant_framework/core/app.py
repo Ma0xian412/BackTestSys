@@ -13,12 +13,12 @@ from ..adapters.IStrategy import SimpleStrategy_Impl
 from ..adapters.execution_venue import FIFOExchangeSimulator
 from ..config import BacktestConfig
 from .dispatcher import Dispatcher
-from .handlers import ActionArrivalHandler, ReceiptDeliveryHandler, SnapshotArrivalHandler
+from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
 from .kernel import EventLoopKernel
 from .data_structure import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     EventSpecRegistry,
     RuntimeContext,
 )
@@ -49,11 +49,12 @@ class CompositionRoot:
         - RuntimeBuildConfig: 直接注入组件（测试/高级路径）
         """
         runtime_cfg = self._to_runtime_build_config(config)
+        runtime_cfg.venue.set_market_data_feed(runtime_cfg.feed)
 
         event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()
         dispatcher = runtime_cfg.dispatcher or Dispatcher(event_spec)
 
-        dispatcher.register(EVENT_KIND_SNAPSHOT_ARRIVAL, SnapshotArrivalHandler())
+        dispatcher.register(EVENT_KIND_MDARRIVE, MDArriveHandler())
         dispatcher.register(EVENT_KIND_ACTION_ARRIVAL, ActionArrivalHandler())
         dispatcher.register(EVENT_KIND_RECEIPT_DELIVERY, ReceiptDeliveryHandler())
 
@@ -79,7 +80,7 @@ class CompositionRoot:
     def _build_from_backtest_config(self, config: BacktestConfig) -> RuntimeBuildConfig:
         feed = self._create_feed(config)
         tape_builder = self._create_tape_builder(config)
-        venue = self._create_venue(config, tape_builder)
+        venue = self._create_venue(config, tape_builder, feed)
         strategy = self._create_strategy(config)
         oms = self._create_oms(config)
         time_model = self._create_time_model(config)
@@ -113,21 +114,20 @@ class CompositionRoot:
     @staticmethod
     def _create_tape_builder(config: BacktestConfig) -> UnifiedIntervalModel_impl:
         tape_cfg = BuilderTapeConfig(
-            ghost_rule=config.tape.ghost_rule,
-            ghost_alpha=config.tape.ghost_alpha,
             epsilon=config.tape.epsilon,
-            segment_iterations=config.tape.segment_iterations,
             time_scale_lambda=config.tape.time_scale_lambda,
-            cancel_front_ratio=config.tape.cancel_front_ratio,
-            crossing_order_policy=config.tape.crossing_order_policy,
             top_k=config.tape.top_k,
         )
         return UnifiedIntervalModel_impl(config=tape_cfg, tick_size=config.tape.tick_size)
 
     @staticmethod
-    def _create_venue(config: BacktestConfig, tape_builder: UnifiedIntervalModel_impl) -> ExecutionVenue_Impl:
-        simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_front_ratio)
-        return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder)
+    def _create_venue(
+        config: BacktestConfig,
+        tape_builder: UnifiedIntervalModel_impl,
+        feed: Any,
+    ) -> ExecutionVenue_Impl:
+        simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_bias_k)
+        return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder, market_data_feed=feed)
 
     @staticmethod
     def _create_strategy(config: BacktestConfig):
