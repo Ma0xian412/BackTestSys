@@ -196,9 +196,6 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
         self._query_hint = left
         return [self._emitted_data[i] for i in range(left, right)]
 
-    def Query_Data(self, T_Start: int, T_End: int) -> List[NormalizedSnapshot]:
-        return self.query_data(int(T_Start), int(T_End))
-
     def _record_emitted(self, snap: NormalizedSnapshot) -> None:
         self._emitted_data.append(snap)
         self._emitted_ticks.append(int(snap.ts_recv))
@@ -238,6 +235,4 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
         注意：由于快照复制逻辑，实际返回的快照数可能大于此值。
         进度条应使用动态更新来处理这种情况。
         """
-        if hasattr(self.inner_feed, '__len__'):
-            return len(self.inner_feed)
-        raise TypeError(f"object of type '{type(self.inner_feed).__name__}' has no len()")
+        return len(self.inner_feed)

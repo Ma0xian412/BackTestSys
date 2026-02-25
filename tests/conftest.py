@@ -141,5 +141,3 @@ class MockFeed:
         self._query_hint = left
         return self.snapshots[left:right]
 
-    def Query_Data(self, T_Start: int, T_End: int):
-        return self.query_data(int(T_Start), int(T_End))

@@ -71,9 +71,6 @@ class PickleMarketDataFeed_Impl(IMarketDataFeed):
                 result.append(snap)
         return result
 
-    def Query_Data(self, T_Start: int, T_End: int) -> List[NormalizedSnapshot]:
-        return self.query_data(int(T_Start), int(T_End))
-
     def __len__(self) -> int:
         """快照条数（用于进度条等场景）。"""
         return int(len(self.data))

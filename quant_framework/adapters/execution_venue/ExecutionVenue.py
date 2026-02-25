@@ -29,7 +29,7 @@ class ExecutionVenue_Impl(IExecutionVenue):
         self._interval_start = 0
         self._interval_end = 0
 
-    def bind_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
+    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
         self._market_data_feed = market_data_feed
 
     def start_session(self) -> None:
@@ -113,30 +113,6 @@ class ExecutionVenue_Impl(IExecutionVenue):
             "interval_end": self._interval_end,
             "segment_count": len(self._tape),
         }
-
-    # --- backward compatibility helpers ---
-    def startSession(self) -> None:
-        self.start_session()
-
-    def beginInterval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
-        self._window_start_data = prev
-        self._window_end_data = curr
-        self._interval_start = int(prev.ts_recv)
-        self._interval_end = int(curr.ts_recv)
-        self._current_time = self._interval_start
-        self._tape = self._tape_builder.build(prev, curr)
-        self._seg_idx = 0
-        self._simulator.reset()
-        if self._tape:
-            self._simulator.set_tape(self._tape, self._interval_start, self._interval_end)
-
-    def onActionArrival(self, action: Action, t_arrive: int) -> List[OrderReceipt]:
-        action.create_time = int(t_arrive)
-        return self.on_action(action)
-
-    def endInterval(self, snapshot_end: NormalizedSnapshot) -> object:
-        self._window_end_data = snapshot_end
-        return self.flush_window()
 
     def execute_place_order(self, order: Order, t_arrive: int) -> List[OrderReceipt]:
         market_qty = self._market_qty_at_price(order)

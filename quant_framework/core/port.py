@@ -24,10 +24,6 @@ class IMarketDataFeed(ABC):
     def query_data(self, t_start: int, t_end: int) -> List[Any]:
         raise NotImplementedError
 
-    # 兼容旧命名（与需求文档中的 Query_Data 对齐）
-    def Query_Data(self, T_Start: int, T_End: int) -> List[Any]:
-        return self.query_data(int(T_Start), int(T_End))
-
 
 class IIntervalModel(ABC):
     """区间模型端口。"""
@@ -39,6 +35,10 @@ class IIntervalModel(ABC):
 
 class IExecutionVenue(ABC):
     """执行场所端口。"""
+
+    @abstractmethod
+    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
+        raise NotImplementedError
 
     @abstractmethod
     def start_session(self) -> None:
@@ -59,21 +59,6 @@ class IExecutionVenue(ABC):
     @abstractmethod
     def flush_window(self) -> object:
         raise NotImplementedError
-
-    # --- backward compatibility helpers ---
-    def startSession(self) -> None:
-        self.start_session()
-
-    def beginInterval(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> None:
-        self.set_time_window(int(prev.ts_recv), int(curr.ts_recv))
-
-    def onActionArrival(self, action: Action, t_arrive: int) -> List[OrderReceipt]:
-        action.create_time = int(t_arrive)
-        return self.on_action(action)
-
-    def endInterval(self, snapshot_end: NormalizedSnapshot) -> object:
-        _ = snapshot_end
-        return self.flush_window()
 
 
 class IOMS(ABC):

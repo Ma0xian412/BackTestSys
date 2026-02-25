@@ -31,8 +31,6 @@ class EventLoopKernel:
         reset_event_seq()
 
         ctx.feed.reset()
-        if hasattr(ctx.venue, "bind_market_data_feed"):
-            ctx.venue.bind_market_data_feed(ctx.feed)
         ctx.venue.start_session()
         self._scheduler.clear()
 
@@ -137,11 +135,7 @@ class EventLoopKernel:
 
     @staticmethod
     def _extract_tick(data: object) -> int:
-        if hasattr(data, "ts_recv"):
-            return int(getattr(data, "ts_recv"))
-        if isinstance(data, dict) and "ts_recv" in data:
-            return int(data["ts_recv"])
-        raise ValueError("Market data item must carry 'ts_recv' for Kernel timeline scheduling.")
+        return int(data.ts_recv)
 
     @staticmethod
     def _clampTime(t: int, t_cur: int, t_max: int | None = None) -> int:
