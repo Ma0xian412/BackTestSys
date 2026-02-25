@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
 from ...core.data_structure import (
+    NormalizedSnapshot,
     Order,
     OrderReceipt,
     Price,
