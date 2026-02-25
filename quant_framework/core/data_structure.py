@@ -412,12 +412,12 @@ class ReadOnlyOMSView:
 class EventKind(str, Enum):
     """事件类型枚举。"""
 
-    SNAPSHOT_ARRIVAL = "SnapshotArrival"
+    MDARRIVE = "MDArrive"
     ACTION_ARRIVAL = "ActionArrival"
     RECEIPT_DELIVERY = "ReceiptDelivery"
 
 
-EVENT_KIND_SNAPSHOT_ARRIVAL = EventKind.SNAPSHOT_ARRIVAL
+EVENT_KIND_MDARRIVE = EventKind.MDARRIVE
 EVENT_KIND_ACTION_ARRIVAL = EventKind.ACTION_ARRIVAL
 EVENT_KIND_RECEIPT_DELIVERY = EventKind.RECEIPT_DELIVERY
 
@@ -508,12 +508,13 @@ class EventSpecRegistry:
     def default(cls) -> "EventSpecRegistry":
         return cls(
             _priorities={
-                EVENT_KIND_SNAPSHOT_ARRIVAL: 10,
+                EVENT_KIND_MDARRIVE: 10,
                 EVENT_KIND_ACTION_ARRIVAL: 20,
                 EVENT_KIND_RECEIPT_DELIVERY: 30,
             },
             _validators={
-                EVENT_KIND_SNAPSHOT_ARRIVAL: lambda payload: isinstance(payload, NormalizedSnapshot),
+                # MDArrive 不限定具体 MD 类型，仅要求 payload 非空。
+                EVENT_KIND_MDARRIVE: lambda payload: payload is not None,
                 EVENT_KIND_ACTION_ARRIVAL: lambda payload: isinstance(payload, Action),
                 EVENT_KIND_RECEIPT_DELIVERY: lambda payload: isinstance(payload, OrderReceipt),
             },

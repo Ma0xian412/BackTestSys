@@ -7,7 +7,7 @@ from typing import List, Tuple, Optional
 
 from ...core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     Action,
     ActionType,
     StrategyContext,
@@ -125,7 +125,7 @@ class ReplayStrategy_Impl(IStrategy):
                     logger.warning(f"Skipping invalid cancel row: {row}, error: {e}")
     
     def on_event(self, e, ctx: StrategyContext) -> List:
-        if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and self.is_first_snapshot:
+        if e.kind == EVENT_KIND_MDARRIVE and self.is_first_snapshot:
             self.is_first_snapshot = False
             actions = []
             for sent_time, order in self.pending_orders:

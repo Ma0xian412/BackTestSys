@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from .data_structure import (
+    EVENT_KIND_MDARRIVE,
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
     Event,
     RuntimeContext,
     reset_event_seq,
@@ -44,8 +44,8 @@ class EventLoopKernel:
         self._scheduler.push(
             Event(
                 time=first_t,
-                kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
-                priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
+                kind=EVENT_KIND_MDARRIVE,
+                priority=ctx.eventSpec.priorityOf(EVENT_KIND_MDARRIVE),
                 payload=prev_data,
             )
         )
@@ -60,8 +60,8 @@ class EventLoopKernel:
             self._scheduler.push(
                 Event(
                     time=curr_time,
-                    kind=EVENT_KIND_SNAPSHOT_ARRIVAL,
-                    priority=ctx.eventSpec.priorityOf(EVENT_KIND_SNAPSHOT_ARRIVAL),
+                    kind=EVENT_KIND_MDARRIVE,
+                    priority=ctx.eventSpec.priorityOf(EVENT_KIND_MDARRIVE),
                     payload=curr_data,
                 )
             )

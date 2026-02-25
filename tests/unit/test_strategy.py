@@ -10,7 +10,7 @@ import tempfile
 
 from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     ActionType,
     Event,
     StrategyContext,
@@ -33,7 +33,7 @@ def test_simple_strategy():
 
     all_orders = []
     for _ in range(15):
-        ev = Event(time=snap.ts_recv, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, payload=snap, priority=10)
+        ev = Event(time=snap.ts_recv, kind=EVENT_KIND_MDARRIVE, payload=snap, priority=10)
         ctx = StrategyContext(t=snap.ts_recv, snapshot=snap, omsView=view)
         all_orders.extend(strategy.on_event(ev, ctx))
 
@@ -85,7 +85,7 @@ def test_replay_strategy():
                 return None
 
         snap = create_test_snapshot(1000, 100.0, 101.0, bid_qty=100, ask_qty=100)
-        sev = Event(time=snap.ts_recv, kind=EVENT_KIND_SNAPSHOT_ARRIVAL, payload=snap, priority=10)
+        sev = Event(time=snap.ts_recv, kind=EVENT_KIND_MDARRIVE, payload=snap, priority=10)
         sctx = StrategyContext(t=snap.ts_recv, snapshot=snap, omsView=_MockOMSView())
         actions = strategy.on_event(sev, sctx)
         assert len(actions) == 5, "第一次快照应返回 3 个订单 + 2 个撤单动作"

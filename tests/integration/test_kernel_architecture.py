@@ -8,7 +8,7 @@ from quant_framework.adapters import (
     NullObservability_Impl,
     TimeModel_Impl,
 )
-from quant_framework.core.data_structure import EVENT_KIND_SNAPSHOT_ARRIVAL, Action, ActionType
+from quant_framework.core.data_structure import EVENT_KIND_MDARRIVE, Action, ActionType
 from quant_framework.core.app import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
@@ -25,7 +25,7 @@ class _FrequentOrderStrategy:
         self._seq = 0
 
     def on_event(self, e, ctx):
-        if e.kind != EVENT_KIND_SNAPSHOT_ARRIVAL or ctx.snapshot is None or not ctx.snapshot.bids:
+        if e.kind != EVENT_KIND_MDARRIVE or ctx.snapshot is None or not ctx.snapshot.bids:
             return []
         self._seq += 1
         order = Order(order_id=f"snap-{self._seq}", side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)

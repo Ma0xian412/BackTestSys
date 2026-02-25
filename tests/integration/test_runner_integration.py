@@ -6,7 +6,7 @@ import tempfile
 from quant_framework.adapters import ExecutionVenue_Impl, ReceiptLogger_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     Action,
     ActionType,
 )
@@ -37,7 +37,7 @@ def test_basic_pipeline():
             self.sent = False
 
         def on_event(self, e, ctx):
-            if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL and not self.sent:
+            if e.kind == EVENT_KIND_MDARRIVE and not self.sent:
                 self.sent = True
                 order = Order(order_id="one-shot", side=Side.BUY, price=100.0, qty=1)
                 return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
@@ -87,7 +87,7 @@ def test_pipeline_with_delays():
             self.receipts_received = []
 
         def on_event(self, e, ctx):
-            if e.kind == EVENT_KIND_SNAPSHOT_ARRIVAL:
+            if e.kind == EVENT_KIND_MDARRIVE:
                 self.count += 1
                 self.snapshots_received.append(e.time)
                 if ctx.snapshot and ctx.snapshot.bids:

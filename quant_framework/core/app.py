@@ -13,12 +13,12 @@ from ..adapters.IStrategy import SimpleStrategy_Impl
 from ..adapters.execution_venue import FIFOExchangeSimulator
 from ..config import BacktestConfig
 from .dispatcher import Dispatcher
-from .handlers import ActionArrivalHandler, ReceiptDeliveryHandler, SnapshotArrivalHandler
+from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
 from .kernel import EventLoopKernel
 from .data_structure import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
-    EVENT_KIND_SNAPSHOT_ARRIVAL,
+    EVENT_KIND_MDARRIVE,
     EventSpecRegistry,
     RuntimeContext,
 )
@@ -54,7 +54,7 @@ class CompositionRoot:
         event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()
         dispatcher = runtime_cfg.dispatcher or Dispatcher(event_spec)
 
-        dispatcher.register(EVENT_KIND_SNAPSHOT_ARRIVAL, SnapshotArrivalHandler())
+        dispatcher.register(EVENT_KIND_MDARRIVE, MDArriveHandler())
         dispatcher.register(EVENT_KIND_ACTION_ARRIVAL, ActionArrivalHandler())
         dispatcher.register(EVENT_KIND_RECEIPT_DELIVERY, ReceiptDeliveryHandler())
 

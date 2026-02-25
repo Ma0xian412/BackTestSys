@@ -14,7 +14,7 @@ from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
 from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl, TimeModel_Impl
-from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_SNAPSHOT_ARRIVAL
+from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_MDARRIVE
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
 from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
@@ -234,7 +234,7 @@ def test_multiple_orders_same_price():
             self.created = False
 
         def on_event(self, e, ctx):
-            if e.kind != EVENT_KIND_SNAPSHOT_ARRIVAL:
+            if e.kind != EVENT_KIND_MDARRIVE:
                 return []
             if self.created:
                 return []
