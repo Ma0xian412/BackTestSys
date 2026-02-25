@@ -54,7 +54,6 @@ python main.py --show-config
     </data>
     
     <tape>
-        <ghost_rule>symmetric</ghost_rule>
         <epsilon>1.0</epsilon>
     </tape>
 </config>
@@ -66,7 +65,6 @@ data:
   path: "data/sample.pkl"
 
 tape:
-  ghost_rule: "symmetric"
   epsilon: 1.0
 ```
 
@@ -77,7 +75,6 @@ tape:
     "path": "data/sample.pkl"
   },
   "tape": {
-    "ghost_rule": "symmetric",
     "epsilon": 1.0
   }
 }
@@ -126,19 +123,19 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `cancel_front_ratio` | float | `0.5` | 撤单前端比例 |
+| `cancel_bias_k` | float | `0.0` | 撤单偏置参数 |
 
-#### cancel_front_ratio 详解
+#### cancel_bias_k 详解
 
-- `0.0` = 悲观假设（撤单全部发生在队列后端，对我们不利）
-- `0.5` = 中性假设（撤单均匀分布）
-- `1.0` = 乐观假设（撤单全部发生在队列前端，对我们有利）
+- `k < 0` = 撤单更偏向队列后部（通常更保守）
+- `k = 0` = 近似均匀分布
+- `k > 0` = 撤单更偏向队列前部（通常更乐观）
 
 
 **示例：**
 ```xml
 <exchange>
-    <cancel_front_ratio>0.5</cancel_front_ratio>
+    <cancel_bias_k>0.0</cancel_bias_k>
 </exchange>
 ```
 

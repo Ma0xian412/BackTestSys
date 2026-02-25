@@ -114,13 +114,8 @@ class CompositionRoot:
     @staticmethod
     def _create_tape_builder(config: BacktestConfig) -> UnifiedIntervalModel_impl:
         tape_cfg = BuilderTapeConfig(
-            ghost_rule=config.tape.ghost_rule,
-            ghost_alpha=config.tape.ghost_alpha,
             epsilon=config.tape.epsilon,
-            segment_iterations=config.tape.segment_iterations,
             time_scale_lambda=config.tape.time_scale_lambda,
-            cancel_front_ratio=config.tape.cancel_front_ratio,
-            crossing_order_policy=config.tape.crossing_order_policy,
             top_k=config.tape.top_k,
         )
         return UnifiedIntervalModel_impl(config=tape_cfg, tick_size=config.tape.tick_size)
@@ -131,7 +126,7 @@ class CompositionRoot:
         tape_builder: UnifiedIntervalModel_impl,
         feed: Any,
     ) -> ExecutionVenue_Impl:
-        simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_front_ratio)
+        simulator = FIFOExchangeSimulator(cancel_bias_k=config.exchange.cancel_bias_k)
         return ExecutionVenue_Impl(simulator=simulator, tape_builder=tape_builder, market_data_feed=feed)
 
     @staticmethod
