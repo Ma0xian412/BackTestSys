@@ -13,7 +13,7 @@ from .data_structure import (
 )
 from .port import (
     IMarketDataFeed, IIntervalModel,
-    IExecutionVenue, ISimulator, IOMS, ITimeModel, IObservabilitySinks,
+    IExecutionVenue, ISimulator, IMatchAlgorithm, IOMS, ITimeModel, IObservabilitySinks,
     IStrategy,
 )
 from .scheduler import HeapScheduler

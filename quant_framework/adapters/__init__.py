@@ -1,7 +1,6 @@
 """核心端口的默认适配器实现。"""
 
-from .execution_venue import ExecutionVenue_Impl, FIFOExchangeSimulator
-from .execution_venue import SegmentMatchAlgorithm, Simulator_Impl
+from .execution_venue import ExecutionVenue_Impl, SegmentBaseAlgorithm, Simulator_Impl
 from .observability import ReceiptLogger_Impl, NullObservability_Impl
 from .time_model import TimeModel_Impl
 from .IOMS import OMS_Impl, Portfolio
@@ -9,8 +8,7 @@ from .IStrategy import SimpleStrategy_Impl, ReplayStrategy_Impl
 
 __all__ = [
     "ExecutionVenue_Impl",
-    "FIFOExchangeSimulator",
-    "SegmentMatchAlgorithm",
+    "SegmentBaseAlgorithm",
     "Simulator_Impl",
     "NullObservability_Impl",
     "ReceiptLogger_Impl",

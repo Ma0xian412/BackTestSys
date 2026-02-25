@@ -1,4 +1,4 @@
-"""交易所模拟器（FIFOExchangeSimulator）单元测试。
+"""交易所模拟器（SegmentBaseAlgorithm）单元测试。
 
 验证内容：
 - 订单到达与队列注册
@@ -17,7 +17,7 @@ from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl
 from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_MDARRIVE
 from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator, SegmentMatchAlgorithm, Simulator_Impl
+from quant_framework.adapters.execution_venue import SegmentBaseAlgorithm, Simulator_Impl
 
 from tests.conftest import create_test_snapshot, create_multi_level_snapshot, print_tape_path, MockFeed
 
@@ -30,7 +30,7 @@ from quant_framework.adapters.IOMS.oms import OMS_Impl
 
 def test_basic_order_arrival():
     """订单到达：GTC 订单被接受入队，队列深度和 shadow 记录正确。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
 
     order = Order(order_id="test-1", side=Side.BUY, price=100.0, qty=10)
     receipt = exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=50)
@@ -45,7 +45,7 @@ def test_basic_order_arrival():
 
 def test_ioc_order():
     """IOC 订单：无法立即成交时应收到 CANCELED 回执。"""
-    exchange = FIFOExchangeSimulator()
+    exchange = SegmentBaseAlgorithm()
 
     order = Order(
         order_id="ioc-1", side=Side.BUY, price=100.0, qty=10,
@@ -63,7 +63,7 @@ def test_ioc_order():
 
 def test_coordinate_axis():
     """坐标轴模型：先到订单的 pos 小于后到订单（FIFO）。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30, ask_qty=30)
@@ -95,7 +95,7 @@ def test_coordinate_axis():
 
 def test_fill():
     """成交逻辑：当 trades > market_queue + order_qty 时订单应被成交。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30)
@@ -129,7 +129,7 @@ def test_fill():
 
 def test_multi_partial_to_fill():
     """多次部分成交：最终应返回 FILL 回执，总成交量等于订单量。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
 
     seg = TapeSegment(
         index=1,
@@ -160,7 +160,7 @@ def test_multi_partial_to_fill():
 
 def test_fill_priority_fifo():
     """FIFO 优先级：先到订单应先成交。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30)
@@ -226,7 +226,7 @@ def test_multiple_orders_same_price():
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0, tape_builder=builder)
     oms = OMS_Impl()
 
     class MultiOrderStrategy:
@@ -252,10 +252,7 @@ def test_multiple_orders_same_price():
             feed=MockFeed([prev, curr]),
             venue=ExecutionVenue_Impl(
                 simulator=Simulator_Impl(
-                    match_algo=SegmentMatchAlgorithm(
-                        exchange_simulator=exchange,
-                        tape_builder=builder,
-                    )
+                    match_algo=exchange
                 )
             ),
             strategy=MultiOrderStrategy(),
@@ -295,7 +292,7 @@ def test_improvement_mode_fill():
         activation_bid={100.0}, activation_ask={101.0},
     )
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange.set_tape([seg], seg.t_start, seg.t_end)
 
     # 改善价订单 100.5 > bid=100 但 < ask=101

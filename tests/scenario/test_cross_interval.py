@@ -8,7 +8,7 @@
 from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, NormalizedSnapshot, Level,
 )
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import SegmentBaseAlgorithm
 
 
 # ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
 
 def test_cancel_across_interval():
     """exchange.reset() 后：订单仍在 _levels 中，可被取消。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
 
     tape = [TapeSegment(
         index=1, t_start=10_000_000, t_end=15_000_000,
@@ -51,7 +51,7 @@ def test_cancel_across_interval():
     assert exchange._find_order_by_id("cancel-1").status == "CANCELED"
 
     # 取消不存在的订单
-    exchange2 = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange2 = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange2.set_tape(tape, 10_000_000, 15_000_000)
     try:
         exchange2.on_cancel_arrival("non-existent", 12_000_000)
@@ -60,7 +60,7 @@ def test_cancel_across_interval():
         pass
 
     # 重复取消返回 REJECTED
-    exchange3 = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange3 = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange3.set_tape(tape, 10_000_000, 15_000_000)
     o3 = Order(order_id="cancel-3", side=Side.BUY, price=100.0, qty=10,
                tif=TimeInForce.GTC, create_time=10_000_000)
@@ -70,7 +70,7 @@ def test_cancel_across_interval():
     assert r3.receipt_type == "REJECTED"
 
     # full_reset 清空 _levels
-    exchange4 = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange4 = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange4.set_tape(tape, 10_000_000, 15_000_000)
     o4 = Order(order_id="cancel-4", side=Side.BUY, price=100.0, qty=10,
                tif=TimeInForce.GTC, create_time=10_000_000)
@@ -91,7 +91,7 @@ def test_fill_across_interval():
     区间 BC: X+30, pos 70→40
     区间 CD: X+60, threshold=50 → 成交
     """
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
 
     t_A, t_B, t_C, t_D = 10_000_000, 15_000_000, 20_000_000, 25_000_000
 

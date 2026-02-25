@@ -34,7 +34,6 @@ def _setup_debug_logging():
     for name in (
         'quant_framework.adapters.execution_venue.simulator',
         'quant_framework.adapters.execution_venue.match_algorithm',
-        'quant_framework.adapters.execution_venue.fifo_exchange',
         'quant_framework.core.kernel',
         'quant_framework.core.handlers',
         'quant_framework.adapters.observability.ReceiptLogger_Impl',

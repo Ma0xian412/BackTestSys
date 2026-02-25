@@ -12,8 +12,7 @@ from quant_framework.core.data_structure import EVENT_KIND_MDARRIVE, Action, Act
 from quant_framework.core.app import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side
 from quant_framework.adapters.execution_venue import (
-    FIFOExchangeSimulator,
-    SegmentMatchAlgorithm,
+    SegmentBaseAlgorithm,
     Simulator_Impl,
 )
 from quant_framework.adapters.interval_model import TapeConfig, UnifiedIntervalModel_impl
@@ -39,8 +38,8 @@ def _build_basic_app(strategy, snapshots):
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
     venue = ExecutionVenue_Impl(
         simulator=Simulator_Impl(
-            match_algo=SegmentMatchAlgorithm(
-                exchange_simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+            match_algo=SegmentBaseAlgorithm(
+                cancel_bias_k=0.0,
                 tape_builder=builder,
             )
         )
@@ -109,8 +108,8 @@ def test_backtest_app_replay_strategy_cancel_compat():
         )
         venue = ExecutionVenue_Impl(
             simulator=Simulator_Impl(
-                match_algo=SegmentMatchAlgorithm(
-                    exchange_simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                match_algo=SegmentBaseAlgorithm(
+                    cancel_bias_k=0.0,
                     tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
                 )
             ),

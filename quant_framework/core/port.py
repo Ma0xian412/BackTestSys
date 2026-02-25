@@ -1,7 +1,7 @@
 """核心端口定义。"""
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, List, Mapping, Optional, TYPE_CHECKING
 
 from .data_structure import Action, CancelRequest, NormalizedSnapshot, Order, OrderReceipt, StepOutcome, TapeSegment
 
@@ -82,6 +82,53 @@ class ISimulator(ABC):
 
     @abstractmethod
     def step(self, until_time: int) -> StepOutcome:
+        raise NotImplementedError
+
+    @abstractmethod
+    def flush_window(self) -> object:
+        raise NotImplementedError
+
+
+class IMatchAlgorithm(ABC):
+    """撮合算法端口。"""
+
+    @abstractmethod
+    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_session(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def prepare_context(self, t_start: int, t_end: int) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_order_action_impl(
+        self,
+        order: Order,
+        t_arrive: int,
+        active_orders: Mapping[str, Order],
+    ) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_cancel_action_impl(
+        self,
+        request: CancelRequest,
+        t_arrive: int,
+        active_orders: Mapping[str, Order],
+    ) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_step(
+        self,
+        active_orders: Mapping[str, Order],
+        start_time: int,
+        until_time: int,
+    ) -> StepOutcome:
         raise NotImplementedError
 
     @abstractmethod

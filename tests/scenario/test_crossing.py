@@ -12,7 +12,7 @@ from quant_framework.core.data_structure import (
     Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
 )
 from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import SegmentBaseAlgorithm
 
 from tests.conftest import create_test_snapshot, print_tape_path
 
@@ -33,7 +33,7 @@ def test_immediate_execution():
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
 
     # BUY crossing
@@ -82,7 +82,7 @@ def test_partial_fill_position_zero():
     )
     tape = builder.build(prev, curr)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
 
     # post-crossing 入队（already_filled > 0）
@@ -93,7 +93,7 @@ def test_partial_fill_position_zero():
     assert so1.pos == 0, f"crossing 后 pos 应为 0，实际 {so1.pos}"
 
     # 被动入队（already_filled = 0）
-    exchange2 = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange2 = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange2.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
     lvl = exchange2._get_level(Side.BUY, 99.0)
     lvl.q_mkt = 30.0
@@ -121,7 +121,7 @@ def test_blocked_by_existing_shadow():
         activation_ask={101.0, 102.0, 103.0, 104.0, 105.0},
     )
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange.set_tape([seg], seg.t_start, seg.t_end)
 
     bid_100 = exchange._get_level(Side.BUY, 100.0)
@@ -157,7 +157,7 @@ def test_blocked_by_queue_depth():
         activation_bid={101.0}, activation_ask={101.0},
     )
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange.set_tape([seg], seg.t_start, seg.t_end)
 
     exchange._get_level(Side.SELL, 101.0).q_mkt = 50.0
@@ -188,7 +188,7 @@ def test_post_crossing_pos_uses_x_coord():
     tape = builder.build(prev, curr)
     print_tape_path(tape)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
 
     mid_time = 1250 * TICK_PER_MS

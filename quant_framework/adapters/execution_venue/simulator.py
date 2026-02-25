@@ -13,8 +13,7 @@ from ...core.data_structure import (
     OrderStatus,
     StepOutcome,
 )
-from ...core.port import ISimulator, IMarketDataFeed
-from .match_algorithm import IMatchAlgorithm
+from ...core.port import ISimulator, IMarketDataFeed, IMatchAlgorithm
 
 
 class Simulator_Impl(ISimulator):

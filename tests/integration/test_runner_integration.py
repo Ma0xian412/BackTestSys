@@ -14,8 +14,7 @@ from quant_framework.core import BacktestApp, RuntimeBuildConfig
 from quant_framework.core.data_structure import Level, NormalizedSnapshot, Order, Side, TICK_PER_MS
 from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
 from quant_framework.adapters.execution_venue import (
-    FIFOExchangeSimulator,
-    SegmentMatchAlgorithm,
+    SegmentBaseAlgorithm,
     Simulator_Impl,
 )
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
@@ -34,8 +33,8 @@ def test_basic_pipeline():
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
     exchange = ExecutionVenue_Impl(
         simulator=Simulator_Impl(
-            match_algo=SegmentMatchAlgorithm(
-                exchange_simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+            match_algo=SegmentBaseAlgorithm(
+                cancel_bias_k=0.0,
                 tape_builder=builder,
             )
         )
@@ -123,8 +122,8 @@ def test_pipeline_with_delays():
             feed=MockFeed(snapshots),
             venue=ExecutionVenue_Impl(
                 simulator=Simulator_Impl(
-                    match_algo=SegmentMatchAlgorithm(
-                        exchange_simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                    match_algo=SegmentBaseAlgorithm(
+                        cancel_bias_k=0.0,
                         tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
                     )
                 ),
@@ -177,8 +176,8 @@ def test_replay_pipeline():
                 feed=MockFeed(snapshots),
                 venue=ExecutionVenue_Impl(
                     simulator=Simulator_Impl(
-                        match_algo=SegmentMatchAlgorithm(
-                            exchange_simulator=FIFOExchangeSimulator(cancel_bias_k=0.0),
+                        match_algo=SegmentBaseAlgorithm(
+                            cancel_bias_k=0.0,
                             tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
                         )
                     ),

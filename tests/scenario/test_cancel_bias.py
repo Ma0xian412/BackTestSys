@@ -9,7 +9,7 @@
 """
 
 from quant_framework.core.data_structure import Order, Side, TapeSegment, TICK_PER_MS
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
+from quant_framework.adapters.execution_venue import SegmentBaseAlgorithm
 
 
 def _advance_all(exchange, tape, t_start):
@@ -64,7 +64,7 @@ def test_negative_bias_overfill():
 
     tape = _build_two_segment_tape(price, t0, t1, t2, netflow_seg1=80, cancels_seg2=80, trades_seg2=1)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=-0.8)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=-0.8)
     exchange.set_tape(tape, t0, t2)
 
     order = Order(order_id="neg-bias", side=Side.BUY, price=price, qty=5)
@@ -85,7 +85,7 @@ def test_zero_trades_no_fill():
 
     tape = _build_two_segment_tape(price, t0, t1, t2, netflow_seg1=80, cancels_seg2=80, trades_seg2=0)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=-0.8)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=-0.8)
     exchange.set_tape(tape, t0, t2)
 
     order = Order(order_id="zero-trade", side=Side.BUY, price=price, qty=5)
@@ -108,7 +108,7 @@ def test_uniform_bias_control():
 
     tape = _build_two_segment_tape(price, t0, t1, t2, netflow_seg1=80, cancels_seg2=80, trades_seg2=1)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=0.0)
     exchange.set_tape(tape, t0, t2)
 
     order = Order(order_id="uniform-bias", side=Side.BUY, price=price, qty=5)
@@ -143,7 +143,7 @@ def test_positive_bias_behavior():
 
     tape = _build_two_segment_tape(price, t0, t1, t2, netflow_seg1=80, cancels_seg2=80, trades_seg2=1)
 
-    exchange_pos = FIFOExchangeSimulator(cancel_bias_k=0.8)
+    exchange_pos = SegmentBaseAlgorithm(cancel_bias_k=0.8)
     exchange_pos.set_tape(tape, t0, t2)
 
     order = Order(order_id="pos-bias", side=Side.BUY, price=price, qty=5)
@@ -169,7 +169,7 @@ def test_positive_bias_behavior():
 
     # 验证 k > 0 也能正常运行零 trade 场景
     tape_zero = _build_two_segment_tape(price, t0, t1, t2, netflow_seg1=80, cancels_seg2=80, trades_seg2=0)
-    exchange_pos2 = FIFOExchangeSimulator(cancel_bias_k=0.8)
+    exchange_pos2 = SegmentBaseAlgorithm(cancel_bias_k=0.8)
     exchange_pos2.set_tape(tape_zero, t0, t2)
 
     order2 = Order(order_id="pos-bias-zero", side=Side.BUY, price=price, qty=5)
@@ -220,7 +220,7 @@ def test_multi_segment_cumulative():
     )
 
     tape = [seg1, seg2, seg3]
-    exchange = FIFOExchangeSimulator(cancel_bias_k=-0.8)
+    exchange = SegmentBaseAlgorithm(cancel_bias_k=-0.8)
     exchange.set_tape(tape, t0, t3)
 
     order = Order(order_id="multi-seg", side=Side.BUY, price=price, qty=5)
