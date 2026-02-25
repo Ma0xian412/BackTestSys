@@ -94,7 +94,7 @@ class Simulator_Impl(ISimulator):
             self._active_orders[shadow.order_id].pos = int(result.pos)
 
         self._apply_result_to_shadow_orders(result)
-        self._advance_time_from_result(result, floor=t_arrive)
+        # self._advance_time_from_result(result, floor=t_arrive)
         return result
 
     def _on_cancel_action(self, action: Action, t_arrive: int) -> Result:
@@ -110,7 +110,7 @@ class Simulator_Impl(ISimulator):
                 remaining_qty=0,
             )
             result = Result(consumed_vol=0, pos=0, receipts=[receipt])
-            self._advance_time_from_result(result, floor=t_arrive)
+            # self._advance_time_from_result(result, floor=t_arrive)
             return result
 
         traded = max(0, int(shadow.init_vol - shadow.now_vol))
@@ -123,7 +123,7 @@ class Simulator_Impl(ISimulator):
             remaining_qty=0,
         )
         result = Result(consumed_vol=0, pos=int(shadow.pos), receipts=[receipt])
-        self._advance_time_from_result(result, floor=t_arrive)
+        # self._advance_time_from_result(result, floor=t_arrive)
         return result
 
     def _apply_result_to_shadow_orders(self, result: Result) -> None:
