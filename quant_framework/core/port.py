@@ -33,7 +33,7 @@ class IMarketDataQuery(ABC):
     """行情查询端口：负责窗口查询。"""
 
     @abstractmethod
-    def query_data(self) -> List[Any]:
+    def query_data(self, n: int) -> List[Any]:
         raise NotImplementedError
 
 

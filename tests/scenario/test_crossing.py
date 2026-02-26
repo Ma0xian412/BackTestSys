@@ -31,10 +31,12 @@ class _StaticQueryFeed:
     def reset(self):
         self._idx = 0
 
-    def query_data(self):
-        if self._idx >= len(self._snapshots):
+    def query_data(self, n: int):
+        n = int(n)
+        if n <= 0 or self._idx >= len(self._snapshots):
             return []
-        return [self._snapshots[self._idx]]
+        right = min(len(self._snapshots), self._idx + n)
+        return self._snapshots[self._idx:right]
 
 
 class _WindowBuilder:

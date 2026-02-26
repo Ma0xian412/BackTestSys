@@ -183,30 +183,64 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataStream, IMarketDataQuery):
         self._query_hint = 0
         self._initialized = False
 
-    def query_data(self) -> List[NormalizedSnapshot]:
-        """从 next 游标位置开始，peek 下一条（不推进游标）。"""
+    def query_data(self, n: int) -> List[NormalizedSnapshot]:
+        """从 next 游标位置开始，peek 头部 n 条（不推进游标）。"""
+        n = int(n)
+        if n <= 0:
+            return []
+
+        out: List[NormalizedSnapshot] = []
         if self._buffer_idx < len(self._buffer):
-            return [self._buffer[self._buffer_idx]]
+            right = min(len(self._buffer), self._buffer_idx + n)
+            out.extend(self._buffer[self._buffer_idx:right])
+        if len(out) >= n:
+            return out[:n]
 
+        need = n - len(out)
         if not hasattr(self.inner_feed, "query_data"):
-            return []
-        raw_future = list(self.inner_feed.query_data() or [])
-        if not raw_future:
-            return []
-        curr = raw_future[0]
+            return out
 
-        if self._prev_snapshot is None:
-            return [curr]
+        raw_peek_n = max(need * 8, need + 8)
+        raw_future = list(self.inner_feed.query_data(raw_peek_n) or [])
+        sim_prev = self._prev_snapshot
+        sim_buffer: List[NormalizedSnapshot] = []
+        raw_idx = 0
 
-        t_prev = int(self._prev_snapshot.ts_recv)
+        while len(out) < n:
+            if sim_buffer:
+                out.append(sim_buffer.pop(0))
+                continue
+            if raw_idx >= len(raw_future):
+                break
+            curr = raw_future[raw_idx]
+            raw_idx += 1
+            emitted, sim_prev = self._simulate_emit_with_gap(sim_prev, curr)
+            sim_buffer.extend(emitted)
+
+        return out[:n]
+
+    def _record_emitted(self, snap: NormalizedSnapshot) -> None:
+        self._emitted_data.append(snap)
+        self._emitted_ticks.append(int(snap.ts_recv))
+
+    def _simulate_emit_with_gap(
+        self,
+        prev: Optional[NormalizedSnapshot],
+        curr: NormalizedSnapshot,
+    ) -> tuple[List[NormalizedSnapshot], Optional[NormalizedSnapshot]]:
+        if prev is None:
+            return [curr], curr
+
+        t_prev = int(prev.ts_recv)
         t_curr = int(curr.ts_recv)
         gap = t_curr - t_prev
         threshold = self.min_interval + self.tolerance
         if gap <= threshold:
-            return [curr]
+            return [curr], curr
         if self._trading_hours_helper.spans_trading_session_gap(t_prev, t_curr):
-            return [curr]
+            return [curr], curr
 
+        out: List[NormalizedSnapshot] = []
         num_copies = int((gap - self.tolerance - 1) // self.min_interval)
         num_copies = max(0, num_copies)
         for i in range(num_copies):
@@ -216,24 +250,21 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataStream, IMarketDataQuery):
             copy_seconds = self._trading_hours_helper.tick_to_day_seconds(copy_time)
             if not self._trading_hours_helper.is_in_any_trading_session(copy_seconds):
                 continue
-            return [
+            out.append(
                 NormalizedSnapshot(
                     ts_recv=copy_time,
-                    bids=list(self._prev_snapshot.bids),
-                    asks=list(self._prev_snapshot.asks),
+                    bids=list(prev.bids),
+                    asks=list(prev.asks),
                     last_vol_split=[],
-                    ts_exch=self._prev_snapshot.ts_exch,
-                    last=self._prev_snapshot.last,
-                    volume=self._prev_snapshot.volume,
-                    turnover=self._prev_snapshot.turnover,
-                    average_price=self._prev_snapshot.average_price,
+                    ts_exch=prev.ts_exch,
+                    last=prev.last,
+                    volume=prev.volume,
+                    turnover=prev.turnover,
+                    average_price=prev.average_price,
                 )
-            ]
-        return [curr]
-
-    def _record_emitted(self, snap: NormalizedSnapshot) -> None:
-        self._emitted_data.append(snap)
-        self._emitted_ticks.append(int(snap.ts_recv))
+            )
+        out.append(curr)
+        return out, curr
 
     def __len__(self) -> int:
         """返回内部feed的长度（用于进度条初始化）。

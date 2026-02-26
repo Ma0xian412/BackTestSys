@@ -45,7 +45,7 @@ class Simulator_Impl(ISimulator):
         self._interval_end = 0
         self._active_orders.clear()
         if self._market_data_query is not None:
-            head = list(self._market_data_query.query_data() or [])
+            head = list(self._market_data_query.query_data(1) or [])
             if head:
                 ts = getattr(head[0], "ts_recv", None)
                 if ts is not None:

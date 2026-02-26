@@ -57,7 +57,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._t_start = 0
         self._t_end = 0
         if self._market_data_query is not None:
-            raw = self._market_data_query.query_data() or []
+            raw = self._market_data_query.query_data(1) or []
             first = self._decode_raw_md(raw[0]) if raw else None
             if first is not None:
                 self._prev_snapshot = first
@@ -77,7 +77,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         if self._tape_builder is None:
             raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for start_session().")
 
-        raw_list = self._market_data_query.query_data() or []
+        raw_list = self._market_data_query.query_data(1) or []
         curr_snapshot = self._decode_raw_md(raw_list[0]) if raw_list else None
         if curr_snapshot is None:
             return

@@ -117,8 +117,10 @@ class MockFeed:
     def reset(self):
         self.idx = 0
 
-    def query_data(self):
-        if self.idx >= len(self.snapshots):
+    def query_data(self, n: int):
+        n = int(n)
+        if n <= 0 or self.idx >= len(self.snapshots):
             return []
-        return [self.snapshots[self.idx]]
+        right = min(len(self.snapshots), self.idx + n)
+        return self.snapshots[self.idx:right]
 
