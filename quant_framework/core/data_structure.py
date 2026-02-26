@@ -270,11 +270,12 @@ class OrderReceipt:
 
     Attributes:
         order_id: 订单ID
-        receipt_type: 回执类型（FILL/PARTIAL/CANCELED/REJECTED）
+        receipt_type: 回执类型（FILL/PARTIAL/CANCELED/REJECTED/NONE）
         timestamp: 事件发生的交易所时间
         fill_qty: 成交数量（默认0）
         fill_price: 成交价格（默认0.0）
         remaining_qty: 剩余数量（默认0）
+        pos: 订单在该时刻的队列位置（由 Simulator 维护）
         recv_time: 策略接收到该回执的时间（可选）
     """
     order_id: str
@@ -283,6 +284,7 @@ class OrderReceipt:
     fill_qty: Qty = 0
     fill_price: Price = 0.0
     remaining_qty: Qty = 0
+    pos: int = 0
     recv_time: Optional[int] = None
 
 
@@ -471,20 +473,6 @@ class ShadowOrder:
     now_vol: int
 
 
-@dataclass
-class Result:
-    """执行结果契约。"""
-
-    consumed_vol: int = 0
-    pos: int = 0
-    receipts: List[OrderReceipt] = field(default_factory=list)
-
-    def first_receipt_time(self) -> Optional[int]:
-        if not self.receipts:
-            return None
-        return int(self.receipts[0].timestamp)
-
-
 _event_seq_counter = 0
 
 
@@ -562,14 +550,6 @@ class EventSpecRegistry:
         self._priorities[kind] = priority
         if validator is not None:
             self._validators[kind] = validator
-
-
-@dataclass(frozen=True)
-class StepOutcome:
-    """执行场所 step 结果。"""
-
-    next_time: int
-    receipts_generated: List[OrderReceipt]
 
 
 @dataclass

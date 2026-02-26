@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from ...core.data_structure import (
     NormalizedSnapshot,
     OrderReceipt,
-    Result,
     ShadowOrder,
     Side,
     TapeSegment,
 )
-from ...core.port import IIntervalModel, IMarketDataFeed, IMatchAlgorithm
+from ...core.port import IIntervalModel, IMarketDataQuery, IMatchAlgorithm
 
-
-logger = logging.getLogger(__name__)
 
 EPSILON = 1e-12
 
@@ -34,11 +30,11 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self,
         cancel_bias_k: float = 0.0,
         tape_builder: Optional[IIntervalModel] = None,
-        market_data_feed: Optional[IMarketDataFeed] = None,
+        market_data_query: Optional[IMarketDataQuery] = None,
     ) -> None:
         self.cancel_bias_k = float(cancel_bias_k)
         self._tape_builder = tape_builder
-        self._market_data_feed = market_data_feed
+        self._market_data_query = market_data_query
         self._segment_buffer: List[TapeSegment] = []
         self._window_start: Optional[NormalizedSnapshot] = None
         self._window_end: Optional[NormalizedSnapshot] = None
@@ -46,10 +42,10 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._t_start = 0
         self._t_end = 0
 
-    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
-        self._market_data_feed = market_data_feed
+    def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
+        self._market_data_query = market_data_query
 
-    def start_session(self) -> None:
+    def start_run(self) -> None:
         self._segment_buffer = []
         self._window_start = None
         self._window_end = None
@@ -57,7 +53,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._t_start = 0
         self._t_end = 0
 
-    def prepare_context(self, t_start: int, t_end: int) -> None:
+    def start_session(self, t_start: int, t_end: int) -> None:
         self._segment_buffer = []
         self._window_start = None
         self._window_end = None
@@ -67,12 +63,12 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
 
         if self._t_end <= self._t_start:
             return
-        if self._market_data_feed is None:
-            raise RuntimeError("SegmentBaseAlgorithm requires market_data_feed for prepare_context().")
+        if self._market_data_query is None:
+            raise RuntimeError("SegmentBaseAlgorithm requires market_data_query for start_session().")
         if self._tape_builder is None:
-            raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for prepare_context().")
+            raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for start_session().")
 
-        raw_list = self._market_data_feed.query_data(self._t_start, self._t_end) or []
+        raw_list = self._market_data_query.query_data(self._t_start, self._t_end) or []
         snapshots = [self._decode_raw_md(raw) for raw in raw_list]
         snapshots = [snap for snap in snapshots if snap is not None]
         if not snapshots:
@@ -86,56 +82,50 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._segment_buffer = self._tape_builder.build(self._window_start, self._window_end)
         self._base_depth = self._build_base_depth(self._window_start)
 
-    def on_order_action_impl(self, order: ShadowOrder, current_time: int) -> Result:
+    def on_order_action_impl(self, order: ShadowOrder, current_time: int) -> List[OrderReceipt]:
         t = int(current_time)
         market_pos = self._estimate_market_position(order.side, order.price, t)
         consumed, fill_price = self._compute_immediate_fill(order, t)
 
         if consumed <= 0:
-            return Result(
-                consumed_vol=0,
-                pos=market_pos,
-                receipts=[
-                    OrderReceipt(
-                        order_id=order.order_id,
-                        receipt_type="NONE",
-                        timestamp=t,
-                        fill_qty=0,
-                        fill_price=float(order.price),
-                        remaining_qty=int(max(0, order.now_vol)),
-                    )
-                ],
-            )
-
-        remain = max(0, int(order.now_vol) - consumed)
-        receipt_type = "FILLED" if remain == 0 else "PARTIAL"
-        return Result(
-            consumed_vol=consumed,
-            pos=market_pos,
-            receipts=[
+            return [
                 OrderReceipt(
                     order_id=order.order_id,
-                    receipt_type=receipt_type,
+                    receipt_type="NONE",
                     timestamp=t,
-                    fill_qty=consumed,
-                    fill_price=float(fill_price),
-                    remaining_qty=remain,
+                    fill_qty=0,
+                    fill_price=float(order.price),
+                    remaining_qty=int(max(0, order.now_vol)),
+                    pos=market_pos,
                 )
-            ],
-        )
+            ]
+
+        remain = max(0, int(order.now_vol) - consumed)
+        receipt_type = "FILL" if remain == 0 else "PARTIAL"
+        return [
+            OrderReceipt(
+                order_id=order.order_id,
+                receipt_type=receipt_type,
+                timestamp=t,
+                fill_qty=consumed,
+                fill_price=float(fill_price),
+                remaining_qty=remain,
+                pos=market_pos,
+            )
+        ]
 
     def on_step(
         self,
         active_orders: Mapping[str, ShadowOrder],
         start_time: int,
         until_time: int,
-    ) -> Result:
+    ) -> List[OrderReceipt]:
         t_from = int(start_time)
         t_to = int(until_time)
         if t_to <= t_from:
-            return self._none_result(t_from)
+            return [self._none_receipt(t_from)]
 
-        best_result: Optional[Result] = None
+        best_receipt: Optional[OrderReceipt] = None
         best_time = t_to + 1
         best_order_id = ""
 
@@ -143,15 +133,15 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             projected = self._project_order_event(order, t_from, t_to)
             if projected is None:
                 continue
-            evt_time = projected.first_receipt_time() or t_to
+            evt_time = int(projected.timestamp)
             if evt_time < best_time or (evt_time == best_time and order_id < best_order_id):
-                best_result = projected
+                best_receipt = projected
                 best_time = evt_time
                 best_order_id = order_id
 
-        if best_result is None:
-            return self._none_result(t_to)
-        return best_result
+        if best_receipt is None:
+            return [self._none_receipt(t_to)]
+        return [best_receipt]
 
     def flush_window(self) -> object:
         return {
@@ -344,7 +334,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
 
         return int(t_to)
 
-    def _project_order_event(self, order: ShadowOrder, start_time: int, until_time: int) -> Optional[Result]:
+    def _project_order_event(self, order: ShadowOrder, start_time: int, until_time: int) -> Optional[OrderReceipt]:
         if int(order.now_vol) <= 0:
             return None
 
@@ -370,41 +360,31 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             return None
 
         remain = max(0, int(order.now_vol) - fill_delta)
-        receipt_type = "FILLED" if remain == 0 else "PARTIAL"
+        receipt_type = "FILL" if remain == 0 else "PARTIAL"
         bid, ask = self._best_prices_at(t_hit)
         if order.side == Side.BUY:
             fill_price = ask if ask is not None else float(order.price)
         else:
             fill_price = bid if bid is not None else float(order.price)
 
-        return Result(
-            consumed_vol=fill_delta,
+        return OrderReceipt(
+            order_id=order.order_id,
+            receipt_type=receipt_type,
+            timestamp=int(t_hit),
+            fill_qty=int(fill_delta),
+            fill_price=float(fill_price),
+            remaining_qty=int(remain),
             pos=int(order.pos),
-            receipts=[
-                OrderReceipt(
-                    order_id=order.order_id,
-                    receipt_type=receipt_type,
-                    timestamp=int(t_hit),
-                    fill_qty=int(fill_delta),
-                    fill_price=float(fill_price),
-                    remaining_qty=int(remain),
-                )
-            ],
         )
 
     @staticmethod
-    def _none_result(timestamp: int) -> Result:
-        return Result(
-            consumed_vol=0,
+    def _none_receipt(timestamp: int) -> OrderReceipt:
+        return OrderReceipt(
+            order_id="",
+            receipt_type="NONE",
+            timestamp=int(timestamp),
+            fill_qty=0,
+            fill_price=0.0,
+            remaining_qty=0,
             pos=0,
-            receipts=[
-                OrderReceipt(
-                    order_id="",
-                    receipt_type="NONE",
-                    timestamp=int(timestamp),
-                    fill_qty=0,
-                    fill_price=0.0,
-                    remaining_qty=0,
-                )
-            ],
         )

@@ -3,7 +3,7 @@
 import logging
 from bisect import bisect_left, bisect_right
 from typing import List, Optional
-from ...core.port import IMarketDataFeed
+from ...core.port import IMarketDataQuery, IMarketDataStream
 from ...core.data_structure import NormalizedSnapshot
 from ...utils.trading_hours import TradingHoursHelper
 
@@ -11,7 +11,7 @@ from ...utils.trading_hours import TradingHoursHelper
 logger = logging.getLogger(__name__)
 
 
-class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
+class SnapshotDuplicatingFeed_Impl(IMarketDataStream, IMarketDataQuery):
     """包装feed，实现快照复制逻辑。
     
     当两个快照之间的间隔超过500ms(SNAPSHOT_MIN_INTERVAL_TICK) + tolerance时，
@@ -34,7 +34,7 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataFeed):
     时间单位：tick（每tick=100ns）。500ms = 5_000_000 ticks。
     """
     
-    def __init__(self, inner_feed: IMarketDataFeed, tolerance_tick: int = None, 
+    def __init__(self, inner_feed: IMarketDataStream, tolerance_tick: int = None, 
                  trading_hours: List = None):
         """初始化包装feed。
         

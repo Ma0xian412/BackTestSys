@@ -5,14 +5,14 @@ import math
 import logging
 from bisect import bisect_left, bisect_right
 from typing import List, Any, Optional, Tuple
-from ...core.port import IMarketDataFeed
+from ...core.port import IMarketDataQuery, IMarketDataStream
 from ...core.data_structure import NormalizedSnapshot, Level
 
 # 设置模块级logger
 logger = logging.getLogger(__name__)
 
 
-class PickleMarketDataFeed_Impl(IMarketDataFeed):
+class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
     _UNSET = object()
 
     def __init__(self, file_path: str):

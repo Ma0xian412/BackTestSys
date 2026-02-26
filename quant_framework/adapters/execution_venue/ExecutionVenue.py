@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from ...core.data_structure import Action, Result
-from ...core.port import IExecutionVenue, IMarketDataFeed, ISimulator
+from typing import List
+
+from ...core.data_structure import Action, OrderReceipt
+from ...core.port import IExecutionVenue, IMarketDataQuery, IMarketDataStream, ISimulator
 
 
 class ExecutionVenue_Impl(IExecutionVenue):
@@ -12,19 +14,22 @@ class ExecutionVenue_Impl(IExecutionVenue):
     def __init__(self, simulator: ISimulator) -> None:
         self._simulator = simulator
 
-    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
-        self._simulator.set_market_data_feed(market_data_feed)
+    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
+        self._simulator.set_market_data_stream(market_data_stream)
 
-    def start_session(self) -> None:
-        self._simulator.start_session()
+    def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
+        self._simulator.set_market_data_query(market_data_query)
 
-    def set_time_window(self, t_start: int, t_end: int) -> None:
-        self._simulator.set_time_window(t_start, t_end)
+    def start_run(self) -> None:
+        self._simulator.start_run()
 
-    def on_action(self, action: Action) -> Result:
+    def start_session(self, t_start: int, t_end: int) -> None:
+        self._simulator.start_session(t_start, t_end)
+
+    def on_action(self, action: Action) -> List[OrderReceipt]:
         return self._simulator.on_action(action)
 
-    def step(self, until_time: int) -> Result:
+    def step(self, until_time: int) -> List[OrderReceipt]:
         return self._simulator.step(until_time)
 
     def flush_window(self) -> object:

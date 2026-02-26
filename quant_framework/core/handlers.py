@@ -68,8 +68,7 @@ class ActionArrivalHandler(IEventHandler):
     def handle(self, e: Event, ctx: RuntimeContext) -> List[Event]:
         action: Action = e.payload
         action.create_time = int(e.time)
-        result = ctx.venue.on_action(action)
-        receipts = list((result.receipts if result is not None else []) or [])
+        receipts = list(ctx.venue.on_action(action) or [])
 
         emitted: List[Event] = []
         for receipt in receipts:

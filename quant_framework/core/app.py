@@ -49,7 +49,8 @@ class CompositionRoot:
         - RuntimeBuildConfig: 直接注入组件（测试/高级路径）
         """
         runtime_cfg = self._to_runtime_build_config(config)
-        runtime_cfg.venue.set_market_data_feed(runtime_cfg.feed)
+        runtime_cfg.venue.set_market_data_stream(runtime_cfg.feed)
+        runtime_cfg.venue.set_market_data_query(runtime_cfg.feed)
 
         event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()
         dispatcher = runtime_cfg.dispatcher or Dispatcher(event_spec)
@@ -129,7 +130,7 @@ class CompositionRoot:
         match_algo = SegmentBaseAlgorithm(
             cancel_bias_k=config.exchange.cancel_bias_k,
             tape_builder=tape_builder,
-            market_data_feed=feed,
+            market_data_query=feed,
         )
         simulator = Simulator_Impl(match_algo=match_algo)
         return ExecutionVenue_Impl(simulator=simulator)

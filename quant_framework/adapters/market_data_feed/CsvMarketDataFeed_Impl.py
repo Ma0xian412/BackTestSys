@@ -6,14 +6,14 @@ import math
 import logging
 from bisect import bisect_left, bisect_right
 from typing import List, Any, Optional, Tuple
-from ...core.port import IMarketDataFeed
+from ...core.port import IMarketDataQuery, IMarketDataStream
 from ...core.data_structure import NormalizedSnapshot, Level
 
 # 设置模块级logger
 logger = logging.getLogger(__name__)
 
 
-class CsvMarketDataFeed_Impl(IMarketDataFeed):
+class CsvMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
     """CSV格式的行情数据源。
     
     读取CSV文件，按RecvTick排序后提供快照数据。
