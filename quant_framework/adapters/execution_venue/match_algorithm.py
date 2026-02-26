@@ -147,8 +147,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         if qty <= 0:
             return [self._none_receipt(t, order.order_id)]
 
-        seg = self._segment_at_time(t)
-        seg_idx = self._segment_index_at_time(t)
+        seg_idx, seg = self._segment_at_time(t)
 
         opposite_best = self._get_opposite_best_price(order.side, seg)
         is_crossing = self._check_crossing(order.side, float(order.price), opposite_best)
@@ -223,8 +222,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         if t_to <= t_from:
             return [self._none_receipt(t_from)]
 
-        seg = self._segment_at_time(t_from)
-        seg_idx = self._segment_index_at_time(t_from)
+        seg_idx, seg = self._segment_at_time(t_from)
         if seg is None:
             return [self._none_receipt(t_to)]
 
@@ -429,21 +427,15 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         active = seg.activation_bid if side == Side.BUY else seg.activation_ask
         return any(abs(float(a) - p) <= 1e-8 for a in active)
 
-    def _segment_at_time(self, t: int) -> Optional[TapeSegment]:
+    def _segment_at_time(self, t: int) -> Tuple[int, Optional[TapeSegment]]:
         if not self._segment_buffer:
-            return None
-        for seg in self._segment_buffer:
-            if int(seg.t_start) <= t < int(seg.t_end):
-                return seg
-        if t >= int(self._segment_buffer[-1].t_end):
-            return self._segment_buffer[-1]
-        return self._segment_buffer[0]
-
-    def _segment_index_at_time(self, t: int) -> int:
+            return -1, None
         for i, seg in enumerate(self._segment_buffer):
             if int(seg.t_start) <= t < int(seg.t_end):
-                return i
-        return -1
+                return i, seg
+        if t >= int(self._segment_buffer[-1].t_end):
+            return len(self._segment_buffer) - 1, self._segment_buffer[-1]
+        return 0, self._segment_buffer[0]
 
     def _decode_raw_md(self, raw: Any) -> Optional[NormalizedSnapshot]:
         if isinstance(raw, NormalizedSnapshot):
