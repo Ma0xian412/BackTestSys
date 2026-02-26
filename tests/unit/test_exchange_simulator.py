@@ -48,7 +48,7 @@ class _StaticBuilder:
         return list(self._mapping.get((int(prev.ts_recv), int(curr.ts_recv)), []))
 
 
-def _segment(t0: int, t1: int, *, bid: float = 100.0, ask: float = 101.0, trades=None, net_flow=None) -> TapeSegment:
+def _segment(t0: int, t1: int, *, bid: float = 100.0, ask: float = 101.0, trades=None, net_flow=None, cancels=None) -> TapeSegment:
     return TapeSegment(
         index=1,
         t_start=t0,
@@ -56,7 +56,7 @@ def _segment(t0: int, t1: int, *, bid: float = 100.0, ask: float = 101.0, trades
         bid_price=bid,
         ask_price=ask,
         trades=dict(trades or {}),
-        cancels={},
+        cancels=dict(cancels or {}),
         net_flow=dict(net_flow or {}),
         activation_bid={bid},
         activation_ask={ask},

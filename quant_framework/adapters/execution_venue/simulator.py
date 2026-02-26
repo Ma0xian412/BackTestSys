@@ -30,6 +30,7 @@ class Simulator_Impl(ISimulator):
         self._active_orders: Dict[str, ShadowOrder] = {}
         self._market_data_stream: Optional[IMarketDataStream] = None
         self._market_data_query: Optional[IMarketDataQuery] = None
+        self._filled_order_ids: set = set()
 
     def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
         self._market_data_stream = market_data_stream
@@ -44,6 +45,7 @@ class Simulator_Impl(ISimulator):
         self._interval_start = 0
         self._interval_end = 0
         self._active_orders.clear()
+        self._filled_order_ids.clear()
         if self._market_data_query is not None:
             head = list(self._market_data_query.query_data(1) or [])
             if head:
@@ -115,8 +117,9 @@ class Simulator_Impl(ISimulator):
             now_vol=int(order.qty),
         )
 
-        # 新语义：先计算到达结果，再决定是否入 Active Orders。
-        receipts = list(self._match_algo.on_order_action_impl(shadow) or [])
+        receipts = list(
+            self._match_algo.on_order_action_impl(shadow, self._active_orders) or []
+        )
         if not receipts:
             receipts = [self._none_receipt(timestamp=t_arrive, order_id=shadow.order_id, pos=0)]
 
@@ -132,12 +135,14 @@ class Simulator_Impl(ISimulator):
         if should_queue:
             shadow.now_vol = int(final_remain)
             if immediate_filled:
-                # 发生即时成交后仍需入簿的剩余量，交易所位置定义为 0。
+                shadow.init_vol = int(final_remain)
                 shadow.pos = 0
             else:
                 shadow.pos = self._allocate_order_pos(shadow, market_pos=market_pos)
             queued_pos = int(shadow.pos)
             self._active_orders[shadow.order_id] = shadow
+        elif immediate_filled and final_remain == 0:
+            self._filled_order_ids.add(order.order_id)
 
         self._rewrite_order_pos(receipts, order_id=shadow.order_id, queued_pos=queued_pos, market_pos=market_pos)
         self._apply_receipts_to_shadow_orders(receipts)
@@ -145,6 +150,21 @@ class Simulator_Impl(ISimulator):
 
     def _on_cancel_action(self, action: Action, t_arrive: int) -> List[OrderReceipt]:
         request = self._extract_cancel_from_action(action)
+
+        if request.order_id in self._filled_order_ids:
+            self._filled_order_ids.discard(request.order_id)
+            return [
+                OrderReceipt(
+                    order_id=request.order_id,
+                    receipt_type="REJECTED",
+                    timestamp=t_arrive,
+                    fill_qty=0,
+                    fill_price=0.0,
+                    remaining_qty=0,
+                    pos=0,
+                )
+            ]
+
         shadow = self._active_orders.pop(request.order_id, None)
         if shadow is None:
             return [
@@ -180,9 +200,6 @@ class Simulator_Impl(ISimulator):
             shadow = self._active_orders.get(receipt.order_id)
             if shadow is None:
                 continue
-
-            if receipt.pos >= 0:
-                shadow.pos = int(receipt.pos)
 
             if receipt.receipt_type == "PARTIAL":
                 remain = int(receipt.remaining_qty)

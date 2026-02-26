@@ -54,6 +54,7 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, net_flow: int
         create_test_snapshot(t0, 100.0, 101.0, bid_qty=20, ask_qty=200),
         create_test_snapshot(t1, 100.0, 101.0, bid_qty=20, ask_qty=200),
     ]
+    cancels_dict = {(Side.BUY, 100.0): abs(net_flow)} if net_flow < 0 else {}
     seg = TapeSegment(
         index=1,
         t_start=t0,
@@ -61,7 +62,7 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, net_flow: int
         bid_price=100.0,
         ask_price=101.0,
         trades={(Side.BUY, 100.0): trades} if trades > 0 else {},
-        cancels={},
+        cancels=cancels_dict,
         net_flow={(Side.BUY, 100.0): net_flow},
         activation_bid={100.0},
         activation_ask={101.0},
@@ -136,7 +137,7 @@ def test_multi_segment_cumulative():
             bid_price=100.0,
             ask_price=101.0,
             trades={},
-            cancels={},
+            cancels={(Side.BUY, 100.0): 40},
             net_flow={(Side.BUY, 100.0): -40},
             activation_bid={100.0},
             activation_ask={101.0},
@@ -148,7 +149,7 @@ def test_multi_segment_cumulative():
             bid_price=100.0,
             ask_price=101.0,
             trades={},
-            cancels={},
+            cancels={(Side.BUY, 100.0): 40},
             net_flow={(Side.BUY, 100.0): -40},
             activation_bid={100.0},
             activation_ask={101.0},
@@ -160,7 +161,7 @@ def test_multi_segment_cumulative():
             bid_price=100.0,
             ask_price=101.0,
             trades={(Side.BUY, 100.0): 1},
-            cancels={},
+            cancels={(Side.BUY, 100.0): 20},
             net_flow={(Side.BUY, 100.0): -20},
             activation_bid={100.0},
             activation_ask={101.0},
