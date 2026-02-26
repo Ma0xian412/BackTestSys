@@ -116,18 +116,26 @@ class Simulator_Impl(ISimulator):
         )
 
         # 新语义：先计算到达结果，再决定是否入 Active Orders。
-        receipts = list(self._match_algo.on_order_action_impl(shadow, t_arrive) or [])
+        receipts = list(self._match_algo.on_order_action_impl(shadow) or [])
         if not receipts:
             receipts = [self._none_receipt(timestamp=t_arrive, order_id=shadow.order_id, pos=0)]
 
-        market_pos = self._extract_market_pos(receipts)
+        immediate_filled = any(
+            receipt.order_id == shadow.order_id and int(receipt.fill_qty) > 0
+            for receipt in receipts
+        )
+        market_pos = 0 if immediate_filled else self._extract_market_pos(receipts)
         final_remain = self._extract_remaining_qty(shadow, receipts)
         should_queue = final_remain > 0 and not self._is_terminal_receipt(receipts)
         queued_pos = 0
 
         if should_queue:
             shadow.now_vol = int(final_remain)
-            shadow.pos = self._allocate_order_pos(shadow, market_pos=market_pos)
+            if immediate_filled:
+                # 发生即时成交后仍需入簿的剩余量，交易所位置定义为 0。
+                shadow.pos = 0
+            else:
+                shadow.pos = self._allocate_order_pos(shadow, market_pos=market_pos)
             queued_pos = int(shadow.pos)
             self._active_orders[shadow.order_id] = shadow
 

@@ -128,7 +128,6 @@ class IMatchAlgorithm(ABC):
     def on_order_action_impl(
         self,
         order: ShadowOrder,
-        current_time: int,
     ) -> List[OrderReceipt]:
         raise NotImplementedError
 

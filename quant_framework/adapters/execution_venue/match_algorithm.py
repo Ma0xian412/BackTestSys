@@ -98,12 +98,12 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._base_depth = self._build_base_depth(self._window_start)
         self._pending_prev_snapshot = curr_snapshot
 
-    def on_order_action_impl(self, order: ShadowOrder, current_time: int) -> List[OrderReceipt]:
-        t = int(current_time)
-        market_pos = self._estimate_market_position(order.side, order.price, t)
+    def on_order_action_impl(self, order: ShadowOrder) -> List[OrderReceipt]:
+        t = int(order.create_time)
         consumed, fill_price = self._compute_immediate_fill(order, t)
 
         if consumed <= 0:
+            market_pos = self._estimate_market_position(order.side, order.price, t)
             return [
                 OrderReceipt(
                     order_id=order.order_id,
@@ -126,7 +126,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
                 fill_qty=consumed,
                 fill_price=float(fill_price),
                 remaining_qty=remain,
-                pos=market_pos,
+                pos=0,
             )
         ]
 
