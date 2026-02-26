@@ -357,12 +357,12 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
                 ))
             else:
                 exec_best = state["exec_best"]
+                x_from = self._get_x_coord(side, exec_best, t_from, shadow, active_orders)
                 x_to = self._get_x_coord(side, exec_best, t_stop, shadow, active_orders)
-                current_fill = max(0, int(x_to) - int(shadow.pos))
-                if current_fill > int(shadow.init_vol):
-                    current_fill = int(shadow.init_vol)
-                already_reported = int(shadow.init_vol) - int(shadow.now_vol)
-                new_fill = current_fill - already_reported
+                queue_iv = int(shadow.now_vol) + max(0, int(x_from) - int(shadow.pos))
+                fill_at_start = max(0, min(queue_iv, int(x_from) - int(shadow.pos)))
+                fill_at_end = max(0, min(queue_iv, int(x_to) - int(shadow.pos)))
+                new_fill = fill_at_end - fill_at_start
                 if new_fill <= 0:
                     continue
                 if new_fill > int(shadow.now_vol):
@@ -831,6 +831,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         ref_shadow: ShadowOrder,
         active_orders: Mapping[str, ShadowOrder],
     ) -> float:
+        """Zone-aware X 坐标计算，在 shadow 到达时间点拆分以保证 zone 结构正确。"""
         level = self._get_level(side, price)
         if not self._segment_buffer or t <= self._t_start:
             return level.x_coord
@@ -853,19 +854,39 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             total_cancels = self._seg_value(seg.cancels, side, price)
             total_trades = self._seg_value(seg.trades, side, price)
             q_mkt = self._get_q_mkt(side, price, int(seg.t_start))
-
-            dt = seg_end - seg_start
             trade_rate_base = total_trades / seg_duration
-            trade_active = self._get_trade_active_duration(side, seg_start, seg_end)
-            effective_trade_rate = (
-                trade_rate_base * trade_active / dt if dt > 0 else 0.0
-            )
 
-            zones = self._build_queue_zones(side, price, x, q_mkt, active_orders)
-            cancel_dist = self._distribute_cancels_to_zones(zones, total_cancels, q_mkt)
-            x, _ = self._traverse_zones_for_x(
-                x, zones, cancel_dist, effective_trade_rate, seg_duration, float(dt),
-            )
+            arrivals = sorted(set(
+                int(s.create_time) for s in active_orders.values()
+                if s.side == side
+                and abs(float(s.price) - price) < EPSILON
+                and int(s.now_vol) > 0
+                and seg_start < int(s.create_time) < seg_end
+            ))
+            checkpoints = [seg_start] + arrivals + [seg_end]
+
+            for ci in range(len(checkpoints) - 1):
+                cp_start = checkpoints[ci]
+                cp_end = checkpoints[ci + 1]
+                if cp_end <= cp_start:
+                    continue
+
+                dt = cp_end - cp_start
+                trade_active = self._get_trade_active_duration(side, cp_start, cp_end)
+                eff_trade = (
+                    trade_rate_base * trade_active / dt if dt > 0 else 0.0
+                )
+
+                filtered = {
+                    oid: s for oid, s in active_orders.items()
+                    if int(s.create_time) <= cp_start
+                }
+
+                zones = self._build_queue_zones(side, price, x, q_mkt, filtered)
+                cancel_dist = self._distribute_cancels_to_zones(zones, total_cancels, q_mkt)
+                x, _ = self._traverse_zones_for_x(
+                    x, zones, cancel_dist, eff_trade, seg_duration, float(dt),
+                )
 
             if t <= int(seg.t_end):
                 break
@@ -894,7 +915,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             return None
 
         x_start = self._get_x_coord(side, price, t_from, shadow, active_orders)
-        threshold = shadow.pos + shadow.init_vol
+        threshold = max(int(shadow.pos), int(x_start)) + int(shadow.now_vol)
         if x_start >= threshold - EPSILON:
             return t_from
 

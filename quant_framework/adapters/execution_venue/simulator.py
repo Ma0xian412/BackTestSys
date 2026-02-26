@@ -135,7 +135,6 @@ class Simulator_Impl(ISimulator):
         if should_queue:
             shadow.now_vol = int(final_remain)
             if immediate_filled:
-                shadow.init_vol = int(final_remain)
                 shadow.pos = 0
             else:
                 shadow.pos = self._allocate_order_pos(shadow, market_pos=market_pos)
