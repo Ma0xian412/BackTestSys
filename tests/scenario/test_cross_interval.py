@@ -102,7 +102,6 @@ def test_cancel_across_interval():
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
-    sim.set_market_data_stream(feed)
     sim.set_market_data_query(feed)
     sim.start_run()
     feed.next()
@@ -157,7 +156,6 @@ def test_fill_across_interval():
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
-    sim.set_market_data_stream(feed)
     sim.set_market_data_query(feed)
     sim.start_run()
     feed.next()

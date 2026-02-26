@@ -49,10 +49,6 @@ class IExecutionVenue(ABC):
     """执行场所端口。"""
 
     @abstractmethod
-    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
     def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
         raise NotImplementedError
 
@@ -79,10 +75,6 @@ class IExecutionVenue(ABC):
 
 class ISimulator(ABC):
     """模拟交易所框架端口。"""
-
-    @abstractmethod
-    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
-        raise NotImplementedError
 
     @abstractmethod
     def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:

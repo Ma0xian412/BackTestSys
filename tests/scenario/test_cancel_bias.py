@@ -84,7 +84,6 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, cancels: int,
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
-    sim.set_market_data_stream(feed)
     sim.set_market_data_query(feed)
     sim.start_run()
     feed.next()
@@ -182,7 +181,6 @@ def test_multi_segment_cumulative():
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
-    sim.set_market_data_stream(feed)
     sim.set_market_data_query(feed)
     sim.start_run()
     feed.next()

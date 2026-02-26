@@ -60,7 +60,6 @@ def _make_sim(
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
-    sim.set_market_data_stream(feed)
     sim.set_market_data_query(feed)
     sim.start_run()
     feed.next()  # 模拟 kernel 先消费 prev 快照
