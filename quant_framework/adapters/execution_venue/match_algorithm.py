@@ -31,12 +31,10 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         cancel_bias_k: float = 0.0,
         tape_builder: Optional[IIntervalModel] = None,
         market_data_query: Optional[IMarketDataQuery] = None,
-        session_peek_n: int = 16,
     ) -> None:
         self.cancel_bias_k = float(cancel_bias_k)
         self._tape_builder = tape_builder
         self._market_data_query = market_data_query
-        self._session_peek_n = max(1, int(session_peek_n))
         self._segment_buffer: List[TapeSegment] = []
         self._window_start: Optional[NormalizedSnapshot] = None
         self._window_end: Optional[NormalizedSnapshot] = None
@@ -79,25 +77,15 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         if self._tape_builder is None:
             raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for start_session().")
 
-        raw_list = self._market_data_query.query_data(self._session_peek_n) or []
-        peeked = [self._decode_raw_md(raw) for raw in raw_list]
-        snapshots = [snap for snap in peeked if snap is not None]
-        if not snapshots:
+        raw_list = self._market_data_query.query_data(1) or []
+        if raw_list is None:
             return
+        curr_snapshot = self._decode_raw_md(raw_list[0])
+        if not curr_snapshot:
+            raise ValueError("Decode Error")
 
         if self._prev_snapshot is None:
-            self._prev_snapshot = snapshots[0]
-            return
-
-        curr_snapshot = self._select_curr_snapshot(snapshots, self._prev_snapshot)
-        if curr_snapshot is None:
-            extra_n = max(self._session_peek_n * 4, self._session_peek_n + 8)
-            extra_raw = self._market_data_query.query_data(extra_n) or []
-            extra_decoded = [self._decode_raw_md(raw) for raw in extra_raw]
-            extra_snapshots = [snap for snap in extra_decoded if snap is not None]
-            curr_snapshot = self._select_curr_snapshot(extra_snapshots, self._prev_snapshot)
-        if curr_snapshot is None:
-            return
+            raise ValueError("SegmentbaseAlgo require prev_snapshot for start_session()")
 
         self._window_start = self._prev_snapshot
         self._window_end = curr_snapshot
