@@ -357,9 +357,12 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
                 ))
             else:
                 exec_best = state["exec_best"]
-                x_from = self._get_x_coord(side, exec_best, t_from, shadow, active_orders)
                 x_to = self._get_x_coord(side, exec_best, t_stop, shadow, active_orders)
-                new_fill = int(x_to - x_from)
+                current_fill = max(0, int(x_to) - int(shadow.pos))
+                if current_fill > int(shadow.init_vol):
+                    current_fill = int(shadow.init_vol)
+                already_reported = int(shadow.init_vol) - int(shadow.now_vol)
+                new_fill = current_fill - already_reported
                 if new_fill <= 0:
                     continue
                 if new_fill > int(shadow.now_vol):
@@ -891,7 +894,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             return None
 
         x_start = self._get_x_coord(side, price, t_from, shadow, active_orders)
-        threshold = x_start + shadow.now_vol
+        threshold = shadow.pos + shadow.init_vol
         if x_start >= threshold - EPSILON:
             return t_from
 
