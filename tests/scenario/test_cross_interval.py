@@ -21,8 +21,9 @@ class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
 
-    def query_data(self, t_start: int, t_end: int):
-        return [s for s in self._snapshots if int(t_start) <= int(s.ts_recv) <= int(t_end)]
+    def query_data(self, n: int):
+        n = max(0, int(n))
+        return self._snapshots[:n]
 
 
 class _BuilderByWindow:
@@ -88,10 +89,10 @@ def test_cancel_across_interval():
     sim = Simulator_Impl(match_algo=algo)
     sim.start_run()
 
-    sim.start_session(t0, t1)
+    sim.start_session()
     sim.on_action(_place("cancel-1", Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))
 
-    sim.start_session(t1, t2)
+    sim.start_session()
     canceled = sim.on_action(_cancel("cancel-1", t1 + 10 * TICK_PER_MS))[0]
     rejected = sim.on_action(_cancel("non-existent", t1 + 20 * TICK_PER_MS))[0]
 
@@ -138,11 +139,11 @@ def test_fill_across_interval():
     sim = Simulator_Impl(match_algo=algo)
     sim.start_run()
 
-    sim.start_session(t0, t1)
+    sim.start_session()
     sim.on_action(_place("cross-fill", Side.BUY, 100.0, 5, t0 + TICK_PER_MS))
     assert sim.step(t1)[0].receipt_type == "NONE"
 
-    sim.start_session(t1, t2)
+    sim.start_session()
     seen_fill = False
     for _ in range(32):
         receipts = sim.step(t2)

@@ -28,8 +28,14 @@ class Simulator_Impl(ISimulator):
         self._interval_start = 0
         self._interval_end = 0
         self._active_orders: Dict[str, ShadowOrder] = {}
+        self._market_data_stream: Optional[IMarketDataStream] = None
+        self._market_data_query: Optional[IMarketDataQuery] = None
+
+    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
+        self._market_data_stream = market_data_stream
 
     def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
+        self._market_data_query = market_data_query
         self._match_algo.set_market_data_query(market_data_query)
 
     def start_run(self) -> None:
@@ -38,12 +44,15 @@ class Simulator_Impl(ISimulator):
         self._interval_start = 0
         self._interval_end = 0
         self._active_orders.clear()
+        if self._market_data_query is not None:
+            head = list(self._market_data_query.query_data(1) or [])
+            if head:
+                ts = getattr(head[0], "ts_recv", None)
+                if ts is not None:
+                    self._current_time = int(ts)
 
-    def start_session(self, t_start: int, t_end: int) -> None:
-        self._interval_start = int(t_start)
-        self._interval_end = int(t_end)
-        self._current_time = int(t_start)
-        self._match_algo.start_session(self._interval_start, self._interval_end)
+    def start_session(self) -> None:
+        self._match_algo.start_session()
 
     def on_action(self, action: Action) -> List[OrderReceipt]:
         raw_arrive = int(action.create_time) if int(action.create_time) > 0 else int(self._current_time)

@@ -20,8 +20,9 @@ class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
 
-    def query_data(self, t_start: int, t_end: int):
-        return [s for s in self._snapshots if int(t_start) <= int(s.ts_recv) <= int(t_end)]
+    def query_data(self, n: int):
+        n = max(0, int(n))
+        return self._snapshots[:n]
 
 
 class _WindowBuilder:
@@ -76,7 +77,7 @@ def test_immediate_execution():
     s0 = create_test_snapshot(t0, 100.0, 101.0, bid_qty=50, ask_qty=60)
     s1 = create_test_snapshot(t1, 100.0, 101.0, bid_qty=50, ask_qty=60)
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 100.0, 101.0)]})
-    sim.start_session(t0, t1)
+    sim.start_session()
 
     buy_cross = sim.on_action(_place("buy-cross", Side.BUY, 101.0, 10, t0 + 10 * TICK_PER_MS))[0]
     sell_cross = sim.on_action(_place("sell-cross", Side.SELL, 100.0, 15, t0 + 20 * TICK_PER_MS))[0]
@@ -92,7 +93,7 @@ def test_partial_fill_position_zero():
     s0 = create_test_snapshot(t0, 100.0, 101.0, bid_qty=50, ask_qty=100)
     s1 = create_test_snapshot(t1, 100.0, 101.0, bid_qty=50, ask_qty=100)
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 100.0, 101.0)]})
-    sim.start_session(t0, t1)
+    sim.start_session()
 
     receipt = sim.on_action(_place("after-crossing", Side.BUY, 101.0, 150, t0 + 10 * TICK_PER_MS))[0]
     assert receipt.receipt_type == "PARTIAL"
@@ -107,7 +108,7 @@ def test_blocked_by_existing_shadow():
     s0 = create_test_snapshot(t0, 100.0, 101.0, bid_qty=20, ask_qty=100)
     s1 = create_test_snapshot(t1, 100.0, 101.0, bid_qty=20, ask_qty=100)
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 100.0, 101.0)]})
-    sim.start_session(t0, t1)
+    sim.start_session()
 
     r1 = sim.on_action(_place("buy-1", Side.BUY, 100.0, 30, t0 + 10 * TICK_PER_MS))[0]
     r2 = sim.on_action(_place("buy-2", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))[0]
@@ -122,7 +123,7 @@ def test_blocked_by_queue_depth():
     s0 = create_test_snapshot(t0, 101.0, 102.0, bid_qty=20, ask_qty=60)
     s1 = create_test_snapshot(t1, 101.0, 102.0, bid_qty=20, ask_qty=60)
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 101.0, 102.0)]})
-    sim.start_session(t0, t1)
+    sim.start_session()
 
     receipt = sim.on_action(_place("buy-q-depth", Side.BUY, 101.0, 10, t0 + 10 * TICK_PER_MS))[0]
     assert receipt.receipt_type == "NONE"
@@ -141,13 +142,13 @@ def test_post_crossing_pos_uses_x_coord():
     }
     sim = _make_sim([s0, s1, s2], mapping)
 
-    sim.start_session(t0, t1)
+    sim.start_session()
     r1 = sim.on_action(_place("post-cross", Side.BUY, 101.0, 150, t0 + 10 * TICK_PER_MS))[0]
     assert r1.receipt_type == "PARTIAL"
     assert r1.pos == 0
     assert r1.remaining_qty == 50
 
-    sim.start_session(t1, t2)
+    sim.start_session()
     r2 = sim.on_action(_place("subsequent", Side.BUY, 101.0, 10, t1 + 10 * TICK_PER_MS))[0]
     assert r2.receipt_type == "NONE"
     assert r2.pos >= 50

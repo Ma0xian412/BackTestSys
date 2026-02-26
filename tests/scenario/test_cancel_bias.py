@@ -13,8 +13,9 @@ class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
 
-    def query_data(self, t_start: int, t_end: int):
-        return [s for s in self._snapshots if int(t_start) <= int(s.ts_recv) <= int(t_end)]
+    def query_data(self, n: int):
+        n = max(0, int(n))
+        return self._snapshots[:n]
 
 
 class _BuilderByWindow:
@@ -59,7 +60,7 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, net_flow: int
     )
     sim = Simulator_Impl(match_algo=algo)
     sim.start_run()
-    sim.start_session(t0, t1)
+    sim.start_session()
     sim.on_action(_place(f"bias-{cancel_bias_k}", 100.0, qty, t0 + TICK_PER_MS))
 
     total_fill = 0
@@ -154,7 +155,7 @@ def test_multi_segment_cumulative():
     )
     sim = Simulator_Impl(match_algo=algo)
     sim.start_run()
-    sim.start_session(t0, t3)
+    sim.start_session()
     sim.on_action(_place("multi-seg", 100.0, 5, t0 + TICK_PER_MS))
 
     receipts_all = []

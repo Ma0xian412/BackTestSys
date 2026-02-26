@@ -31,13 +31,17 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         cancel_bias_k: float = 0.0,
         tape_builder: Optional[IIntervalModel] = None,
         market_data_query: Optional[IMarketDataQuery] = None,
+        session_peek_n: int = 2,
     ) -> None:
         self.cancel_bias_k = float(cancel_bias_k)
         self._tape_builder = tape_builder
         self._market_data_query = market_data_query
+        self._session_peek_n = max(1, int(session_peek_n))
         self._segment_buffer: List[TapeSegment] = []
         self._window_start: Optional[NormalizedSnapshot] = None
         self._window_end: Optional[NormalizedSnapshot] = None
+        self._prev_snapshot: Optional[NormalizedSnapshot] = None
+        self._pending_prev_snapshot: Optional[NormalizedSnapshot] = None
         self._base_depth: Dict[Tuple[Side, float], float] = {}
         self._t_start = 0
         self._t_end = 0
@@ -49,38 +53,56 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._segment_buffer = []
         self._window_start = None
         self._window_end = None
+        self._prev_snapshot = None
+        self._pending_prev_snapshot = None
         self._base_depth = {}
         self._t_start = 0
         self._t_end = 0
+        if self._market_data_query is not None:
+            head = [self._decode_raw_md(raw) for raw in (self._market_data_query.query_data(1) or [])]
+            head = [snap for snap in head if snap is not None]
+            if head:
+                self._prev_snapshot = head[0]
 
-    def start_session(self, t_start: int, t_end: int) -> None:
+    def start_session(self) -> None:
+        if self._pending_prev_snapshot is not None:
+            self._prev_snapshot = self._pending_prev_snapshot
+        self._pending_prev_snapshot = None
         self._segment_buffer = []
         self._window_start = None
         self._window_end = None
         self._base_depth = {}
-        self._t_start = int(t_start)
-        self._t_end = int(t_end)
-
-        if self._t_end <= self._t_start:
-            return
+        self._t_start = 0
+        self._t_end = 0
         if self._market_data_query is None:
             raise RuntimeError("SegmentBaseAlgorithm requires market_data_query for start_session().")
         if self._tape_builder is None:
             raise RuntimeError("SegmentBaseAlgorithm requires tape_builder for start_session().")
 
-        raw_list = self._market_data_query.query_data(self._t_start, self._t_end) or []
-        snapshots = [self._decode_raw_md(raw) for raw in raw_list]
-        snapshots = [snap for snap in snapshots if snap is not None]
+        raw_list = self._market_data_query.query_data(self._session_peek_n) or []
+        peeked = [self._decode_raw_md(raw) for raw in raw_list]
+        snapshots = [snap for snap in peeked if snap is not None]
         if not snapshots:
             return
 
-        self._window_start = snapshots[0]
-        self._window_end = snapshots[-1]
-        if int(self._window_end.ts_recv) <= int(self._window_start.ts_recv):
+        if self._prev_snapshot is None:
+            self._prev_snapshot = snapshots[0]
+            return
+
+        curr_snapshot = self._select_curr_snapshot(snapshots, self._prev_snapshot)
+        if curr_snapshot is None:
+            return
+
+        self._window_start = self._prev_snapshot
+        self._window_end = curr_snapshot
+        self._t_start = int(self._window_start.ts_recv)
+        self._t_end = int(self._window_end.ts_recv)
+        if self._t_end <= self._t_start:
             return
 
         self._segment_buffer = self._tape_builder.build(self._window_start, self._window_end)
         self._base_depth = self._build_base_depth(self._window_start)
+        self._pending_prev_snapshot = curr_snapshot
 
     def on_order_action_impl(self, order: ShadowOrder, current_time: int) -> List[OrderReceipt]:
         t = int(current_time)
@@ -144,11 +166,25 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         return [best_receipt]
 
     def flush_window(self) -> object:
+        if self._pending_prev_snapshot is not None:
+            self._prev_snapshot = self._pending_prev_snapshot
+        self._pending_prev_snapshot = None
         return {
             "interval_start": self._t_start,
             "interval_end": self._t_end,
             "segment_count": len(self._segment_buffer),
         }
+
+    @staticmethod
+    def _select_curr_snapshot(
+        snapshots: List[NormalizedSnapshot],
+        prev_snapshot: NormalizedSnapshot,
+    ) -> Optional[NormalizedSnapshot]:
+        prev_t = int(prev_snapshot.ts_recv)
+        for snap in snapshots:
+            if int(snap.ts_recv) > prev_t:
+                return snap
+        return None
 
     def _decode_raw_md(self, raw: Any) -> Optional[NormalizedSnapshot]:
         if isinstance(raw, NormalizedSnapshot):

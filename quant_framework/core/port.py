@@ -33,7 +33,7 @@ class IMarketDataQuery(ABC):
     """行情查询端口：负责窗口查询。"""
 
     @abstractmethod
-    def query_data(self, t_start: int, t_end: int) -> List[Any]:
+    def query_data(self, n: int) -> List[Any]:
         raise NotImplementedError
 
 
@@ -61,7 +61,7 @@ class IExecutionVenue(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def start_session(self, t_start: int, t_end: int) -> None:
+    def start_session(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -93,7 +93,7 @@ class ISimulator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def start_session(self, t_start: int, t_end: int) -> None:
+    def start_session(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -121,7 +121,7 @@ class IMatchAlgorithm(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def start_session(self, t_start: int, t_end: int) -> None:
+    def start_session(self) -> None:
         raise NotImplementedError
 
     @abstractmethod

@@ -1,7 +1,6 @@
 """快照复制数据源包装器实现。"""
 
 import logging
-from bisect import bisect_left, bisect_right
 from typing import List, Optional
 from ...core.port import IMarketDataQuery, IMarketDataStream
 from ...core.data_structure import NormalizedSnapshot
@@ -184,50 +183,93 @@ class SnapshotDuplicatingFeed_Impl(IMarketDataStream, IMarketDataQuery):
         self._query_hint = 0
         self._initialized = False
 
-    def query_data(self, t_start: int, t_end: int) -> List[NormalizedSnapshot]:
-        """按时间窗口查询已经通过 next() 发出的数据。"""
-        t_start = int(t_start)
-        t_end = int(t_end)
-        if t_end < t_start or not self._emitted_ticks:
+    def query_data(self, n: int) -> List[NormalizedSnapshot]:
+        """从 next 游标位置开始，peek 头部 n 条（不推进游标）。"""
+        n = int(n)
+        if n <= 0:
             return []
 
-        left = self._find_left_index(t_start)
-        right = bisect_right(self._emitted_ticks, t_end, lo=left)
-        self._query_hint = left
-        return [self._emitted_data[i] for i in range(left, right)]
+        out: List[NormalizedSnapshot] = []
+        if self._buffer_idx < len(self._buffer):
+            right = min(len(self._buffer), self._buffer_idx + n)
+            out.extend(self._buffer[self._buffer_idx:right])
+        if len(out) >= n:
+            return out[:n]
+
+        need = n - len(out)
+        if not hasattr(self.inner_feed, "query_data"):
+            return out
+
+        raw_peek_n = max(need * 8, need + 8)
+        try:
+            raw_peek_n = max(raw_peek_n, int(len(self.inner_feed)))
+        except Exception:
+            pass
+
+        raw_future = list(self.inner_feed.query_data(raw_peek_n) or [])
+        sim_prev = self._prev_snapshot
+        sim_buffer: List[NormalizedSnapshot] = []
+        raw_idx = 0
+
+        while len(out) < n:
+            if sim_buffer:
+                out.append(sim_buffer.pop(0))
+                continue
+            if raw_idx >= len(raw_future):
+                break
+            curr = raw_future[raw_idx]
+            raw_idx += 1
+            emitted, sim_prev = self._simulate_emit_with_gap(sim_prev, curr)
+            sim_buffer.extend(emitted)
+
+        return out[:n]
 
     def _record_emitted(self, snap: NormalizedSnapshot) -> None:
         self._emitted_data.append(snap)
         self._emitted_ticks.append(int(snap.ts_recv))
 
-    def _find_left_index(self, t_start: int) -> int:
-        n = len(self._emitted_ticks)
-        if n == 0:
-            return 0
+    def _simulate_emit_with_gap(
+        self,
+        prev: Optional[NormalizedSnapshot],
+        curr: NormalizedSnapshot,
+    ) -> tuple[List[NormalizedSnapshot], Optional[NormalizedSnapshot]]:
+        if prev is None:
+            return [curr], curr
 
-        hint_candidates = [n - 1, self._query_hint]
-        for hint in hint_candidates:
-            if hint < 0 or hint >= n:
+        t_prev = int(prev.ts_recv)
+        t_curr = int(curr.ts_recv)
+        gap = t_curr - t_prev
+        threshold = self.min_interval + self.tolerance
+        if gap <= threshold:
+            return [curr], curr
+        if self._trading_hours_helper.spans_trading_session_gap(t_prev, t_curr):
+            return [curr], curr
+
+        out: List[NormalizedSnapshot] = []
+        num_copies = int((gap - self.tolerance - 1) // self.min_interval)
+        num_copies = max(0, num_copies)
+        for i in range(num_copies):
+            copy_time = t_prev + (i + 1) * self.min_interval
+            if copy_time >= t_curr:
+                break
+            copy_seconds = self._trading_hours_helper.tick_to_day_seconds(copy_time)
+            if not self._trading_hours_helper.is_in_any_trading_session(copy_seconds):
                 continue
-
-            if self._emitted_ticks[hint] <= t_start:
-                i = hint
-                steps = 0
-                while i < n and self._emitted_ticks[i] < t_start and steps < 64:
-                    i += 1
-                    steps += 1
-                if i < n and (i == 0 or self._emitted_ticks[i - 1] < t_start):
-                    return i
-            else:
-                i = hint
-                steps = 0
-                while i > 0 and self._emitted_ticks[i - 1] >= t_start and steps < 64:
-                    i -= 1
-                    steps += 1
-                if i == 0 or self._emitted_ticks[i - 1] < t_start:
-                    return i
-
-        return bisect_left(self._emitted_ticks, t_start)
+            out.append(
+                NormalizedSnapshot(
+                    ts_recv=copy_time,
+                    bids=list(prev.bids),
+                    asks=list(prev.asks),
+                    last_vol_split=[],
+                    ts_exch=prev.ts_exch,
+                    last=prev.last,
+                    volume=prev.volume,
+                    turnover=prev.turnover,
+                    average_price=prev.average_price,
+                )
+            )
+        out.append(curr)
+        return out, curr
     
     def __len__(self) -> int:
         """返回内部feed的长度（用于进度条初始化）。

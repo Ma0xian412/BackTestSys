@@ -23,8 +23,8 @@ class ExecutionVenue_Impl(IExecutionVenue):
     def start_run(self) -> None:
         self._simulator.start_run()
 
-    def start_session(self, t_start: int, t_end: int) -> None:
-        self._simulator.start_session(t_start, t_end)
+    def start_session(self) -> None:
+        self._simulator.start_session()
 
     def on_action(self, action: Action) -> List[OrderReceipt]:
         return self._simulator.on_action(action)

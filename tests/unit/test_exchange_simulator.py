@@ -21,8 +21,9 @@ class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
 
-    def query_data(self, t_start: int, t_end: int):
-        return [s for s in self._snapshots if int(t_start) <= int(s.ts_recv) <= int(t_end)]
+    def query_data(self, n: int):
+        n = max(0, int(n))
+        return self._snapshots[:n]
 
 
 class _StaticBuilder:
@@ -72,7 +73,7 @@ def _make_simulator(
     )
     sim = Simulator_Impl(match_algo=algo)
     sim.start_run()
-    sim.start_session(t0, t1)
+    sim.start_session()
     return sim
 
 

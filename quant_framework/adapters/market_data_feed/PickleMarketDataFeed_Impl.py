@@ -51,14 +51,12 @@ class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
         self.idx = 0
         self._query_hint = 0
 
-    def query_data(self, t_start: int, t_end: int) -> List[NormalizedSnapshot]:
-        t_start = int(t_start)
-        t_end = int(t_end)
-        if t_end < t_start or not self._recv_ticks:
+    def query_data(self, n: int) -> List[NormalizedSnapshot]:
+        n = int(n)
+        if n <= 0 or not self._recv_ticks:
             return []
-
-        left = self._find_left_index(t_start)
-        right = bisect_right(self._recv_ticks, t_end, lo=left)
+        left = min(max(int(self.idx), 0), len(self.data))
+        right = min(len(self.data), left + n)
         self._query_hint = left
 
         result: List[NormalizedSnapshot] = []
@@ -66,9 +64,7 @@ class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
             snap = self._get_snapshot_by_idx(i)
             if snap is None:
                 continue
-            ts = int(snap.ts_recv)
-            if t_start <= ts <= t_end:
-                result.append(snap)
+            result.append(snap)
         return result
 
     def __len__(self) -> int:

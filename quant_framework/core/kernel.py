@@ -52,6 +52,7 @@ class EventLoopKernel:
         prev_time = first_t
 
         while True:
+            ctx.venue.start_session()
             curr_data = ctx.feed.next()
             if curr_data is None:
                 break
@@ -82,8 +83,6 @@ class EventLoopKernel:
         t_b = int(curr_time)
         if t_b <= t_a:
             return
-
-        ctx.venue.start_session(t_a, t_b)
 
         t_cur = t_a
         while t_cur < t_b:
