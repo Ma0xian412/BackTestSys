@@ -59,10 +59,10 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         self._t_start = 0
         self._t_end = 0
         if self._market_data_query is not None:
-            head = [self._decode_raw_md(raw) for raw in (self._market_data_query.query_data(1) or [])]
-            head = [snap for snap in head if snap is not None]
-            if head:
-                self._prev_snapshot = head[0]
+            raw = self._market_data_query.query_data(1) or []
+            first = self._decode_raw_md(raw[0]) if raw else None
+            if first is not None:
+                self._prev_snapshot = first
 
     def start_session(self) -> None:
         if self._pending_prev_snapshot is not None:
