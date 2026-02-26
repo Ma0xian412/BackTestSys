@@ -49,7 +49,6 @@ class CompositionRoot:
         - RuntimeBuildConfig: 直接注入组件（测试/高级路径）
         """
         runtime_cfg = self._to_runtime_build_config(config)
-        runtime_cfg.venue.set_market_data_stream(runtime_cfg.feed)
         runtime_cfg.venue.set_market_data_query(runtime_cfg.feed)
 
         event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()

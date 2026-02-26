@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List
 
 from ...core.data_structure import Action, OrderReceipt
-from ...core.port import IExecutionVenue, IMarketDataQuery, IMarketDataStream, ISimulator
+from ...core.port import IExecutionVenue, IMarketDataQuery, ISimulator
 
 
 class ExecutionVenue_Impl(IExecutionVenue):
@@ -13,9 +13,6 @@ class ExecutionVenue_Impl(IExecutionVenue):
 
     def __init__(self, simulator: ISimulator) -> None:
         self._simulator = simulator
-
-    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
-        self._simulator.set_market_data_stream(market_data_stream)
 
     def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
         self._simulator.set_market_data_query(market_data_query)

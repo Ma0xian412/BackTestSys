@@ -1,4 +1,10 @@
-"""Cancel bias 场景测试（新架构）。"""
+"""Cancel bias 场景测试（zone-aware 模型）。
+
+Zone-aware 模型中：
+- cancel 只分配到 public zone（cap 在 zone 大小内）
+- 清空 public zone 后，仅 trades 推进 shadow zone
+- 因此需要足够的 trades 来产生 shadow fills
+"""
 
 from __future__ import annotations
 
@@ -48,21 +54,25 @@ def _place(order_id: str, price: float, qty: int, t: int) -> Action:
     )
 
 
-def _single_segment_scenario(cancel_bias_k: float, *, trades: int, net_flow: int, qty: int = 5) -> int:
+def _single_segment_scenario(cancel_bias_k: float, *, trades: int, cancels: int, qty: int = 5, bid_qty: int = 20) -> int:
     t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
     snapshots = [
-        create_test_snapshot(t0, 100.0, 101.0, bid_qty=20, ask_qty=200),
-        create_test_snapshot(t1, 100.0, 101.0, bid_qty=20, ask_qty=200),
+        create_test_snapshot(t0, 100.0, 101.0, bid_qty=bid_qty, ask_qty=200),
+        create_test_snapshot(t1, 100.0, 101.0, bid_qty=bid_qty, ask_qty=200),
     ]
+    trades_dict = {(Side.BUY, 100.0): trades} if trades > 0 else {}
+    cancels_dict = {(Side.BUY, 100.0): cancels} if cancels > 0 else {}
+    net_flow_val = -cancels
+    net_flow_dict = {(Side.BUY, 100.0): net_flow_val} if net_flow_val != 0 else {}
     seg = TapeSegment(
         index=1,
         t_start=t0,
         t_end=t1,
         bid_price=100.0,
         ask_price=101.0,
-        trades={(Side.BUY, 100.0): trades} if trades > 0 else {},
-        cancels={},
-        net_flow={(Side.BUY, 100.0): net_flow},
+        trades=trades_dict,
+        cancels=cancels_dict,
+        net_flow=net_flow_dict,
         activation_bid={100.0},
         activation_ask={101.0},
     )
@@ -74,7 +84,6 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, net_flow: int
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
-    sim.set_market_data_stream(feed)
     sim.set_market_data_query(feed)
     sim.start_run()
     feed.next()
@@ -93,30 +102,29 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, net_flow: int
 
 
 def test_negative_bias_overfill():
-    fill_neg = _single_segment_scenario(-0.8, trades=1, net_flow=-80, qty=5)
+    fill_neg = _single_segment_scenario(-0.8, trades=10, cancels=80, qty=5)
     assert fill_neg >= 1
     assert fill_neg <= 5
 
 
 def test_zero_trades_no_fill():
-    fill_zero = _single_segment_scenario(-0.8, trades=0, net_flow=0, qty=5)
+    fill_zero = _single_segment_scenario(-0.8, trades=0, cancels=0, qty=5)
     assert fill_zero == 0
 
 
 def test_uniform_bias_control():
-    fill_neg = _single_segment_scenario(-0.8, trades=1, net_flow=-80, qty=5)
-    fill_uniform = _single_segment_scenario(0.0, trades=1, net_flow=-80, qty=5)
+    fill_neg = _single_segment_scenario(-0.8, trades=10, cancels=80, qty=5)
+    fill_uniform = _single_segment_scenario(0.0, trades=10, cancels=80, qty=5)
     assert fill_neg >= fill_uniform
     assert fill_uniform <= 5
 
 
 def test_positive_bias_behavior():
-    fill_uniform = _single_segment_scenario(0.0, trades=1, net_flow=-80, qty=5)
-    fill_pos = _single_segment_scenario(0.8, trades=1, net_flow=-80, qty=5)
+    fill_uniform = _single_segment_scenario(0.0, trades=10, cancels=80, qty=5)
+    fill_pos = _single_segment_scenario(0.8, trades=10, cancels=80, qty=5)
     assert fill_pos <= fill_uniform
 
-    # 零成交时，正偏置也应保持稳定且不超订单量
-    fill_pos_zero = _single_segment_scenario(0.8, trades=0, net_flow=0, qty=5)
+    fill_pos_zero = _single_segment_scenario(0.8, trades=0, cancels=0, qty=5)
     assert 0 <= fill_pos_zero <= 5
 
 
@@ -135,8 +143,8 @@ def test_multi_segment_cumulative():
             t_end=t1,
             bid_price=100.0,
             ask_price=101.0,
-            trades={},
-            cancels={},
+            trades={(Side.BUY, 100.0): 10},
+            cancels={(Side.BUY, 100.0): 40},
             net_flow={(Side.BUY, 100.0): -40},
             activation_bid={100.0},
             activation_ask={101.0},
@@ -147,8 +155,8 @@ def test_multi_segment_cumulative():
             t_end=t2,
             bid_price=100.0,
             ask_price=101.0,
-            trades={},
-            cancels={},
+            trades={(Side.BUY, 100.0): 10},
+            cancels={(Side.BUY, 100.0): 40},
             net_flow={(Side.BUY, 100.0): -40},
             activation_bid={100.0},
             activation_ask={101.0},
@@ -159,8 +167,8 @@ def test_multi_segment_cumulative():
             t_end=t3,
             bid_price=100.0,
             ask_price=101.0,
-            trades={(Side.BUY, 100.0): 1},
-            cancels={},
+            trades={(Side.BUY, 100.0): 10},
+            cancels={(Side.BUY, 100.0): 20},
             net_flow={(Side.BUY, 100.0): -20},
             activation_bid={100.0},
             activation_ask={101.0},
@@ -173,7 +181,6 @@ def test_multi_segment_cumulative():
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
-    sim.set_market_data_stream(feed)
     sim.set_market_data_query(feed)
     sim.start_run()
     feed.next()
