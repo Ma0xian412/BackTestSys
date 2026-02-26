@@ -9,7 +9,6 @@
 
 import logging
 import sys
-from bisect import bisect_left, bisect_right
 
 import pytest
 
@@ -33,6 +32,7 @@ def _setup_debug_logging():
     logging.basicConfig(level=log_level, handlers=[handler], force=True)
     for name in (
         'quant_framework.adapters.execution_venue.simulator',
+        'quant_framework.adapters.execution_venue.match_algorithm',
         'quant_framework.core.kernel',
         'quant_framework.core.handlers',
         'quant_framework.adapters.observability.ReceiptLogger_Impl',
@@ -106,8 +106,6 @@ class MockFeed:
     def __init__(self, snapshots):
         self.snapshots = snapshots
         self.idx = 0
-        self._ticks = [int(s.ts_recv) for s in snapshots]
-        self._query_hint = 0
 
     def next(self):
         if self.idx < len(self.snapshots):
@@ -118,26 +116,11 @@ class MockFeed:
 
     def reset(self):
         self.idx = 0
-        self._query_hint = 0
 
-    def query_data(self, t_start: int, t_end: int):
-        t_start = int(t_start)
-        t_end = int(t_end)
-        if t_end < t_start or not self._ticks:
+    def query_data(self, n: int):
+        n = int(n)
+        if n <= 0 or self.idx >= len(self.snapshots):
             return []
-
-        hint = min(max(self.idx - 1, 0), len(self._ticks) - 1)
-        if self._ticks[hint] <= t_start:
-            i = hint
-            steps = 0
-            while i < len(self._ticks) and self._ticks[i] < t_start and steps < 32:
-                i += 1
-                steps += 1
-            left = i if i < len(self._ticks) and (i == 0 or self._ticks[i - 1] < t_start) else bisect_left(self._ticks, t_start)
-        else:
-            left = bisect_left(self._ticks, t_start)
-
-        right = bisect_right(self._ticks, t_end, lo=left)
-        self._query_hint = left
-        return self.snapshots[left:right]
+        right = min(len(self.snapshots), self.idx + n)
+        return self.snapshots[self.idx:right]
 

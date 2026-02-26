@@ -31,7 +31,7 @@ class EventLoopKernel:
         reset_event_seq()
 
         ctx.feed.reset()
-        ctx.venue.start_session()
+        ctx.venue.start_run()
         self._scheduler.clear()
 
         prev_data = ctx.feed.next()
@@ -52,6 +52,7 @@ class EventLoopKernel:
         prev_time = first_t
 
         while True:
+            ctx.venue.start_session()
             curr_data = ctx.feed.next()
             if curr_data is None:
                 break
@@ -83,8 +84,6 @@ class EventLoopKernel:
         if t_b <= t_a:
             return
 
-        ctx.venue.set_time_window(t_a, t_b)
-
         t_cur = t_a
         while t_cur < t_b:
             # 先耗尽当前刻度事件（包含同刻新增事件）
@@ -104,10 +103,13 @@ class EventLoopKernel:
                 if t_limit <= t_cur:
                     break
 
-            outcome = ctx.venue.step(t_limit)
-            next_time = self._clampTime(int(outcome.next_time), t_cur, t_limit)
+            receipts = list(ctx.venue.step(t_limit) or [])
+            receipt_time = int(receipts[0].timestamp) if receipts else int(t_limit)
+            next_time = self._clampTime(receipt_time, t_cur, t_limit)
 
-            for receipt in outcome.receipts_generated:
+            for receipt in receipts:
+                if receipt.receipt_type == "NONE":
+                    continue
                 ctx.obs.on_receipt_generated(receipt)
                 t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
                 self._scheduler.push(

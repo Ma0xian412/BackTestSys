@@ -8,12 +8,12 @@ from .data_structure import (
     TapeSegment, OrderReceipt, FillDetail, OrderDiagnostics,
     OrderSnapshot, PortfolioSnapshot, ReadOnlyOMSView,
     EventKind, EVENT_KIND_MDARRIVE, EVENT_KIND_ACTION_ARRIVAL, EVENT_KIND_RECEIPT_DELIVERY,
-    ActionType, Action, Event, StrategyContext, EventSpecRegistry, RuntimeContext,
-    StepOutcome, reset_event_seq,
+    ActionType, Action, ShadowOrder, Event, StrategyContext, EventSpecRegistry, RuntimeContext,
+    reset_event_seq,
 )
 from .port import (
-    IMarketDataFeed, IIntervalModel,
-    IExecutionVenue, IOMS, ITimeModel, IObservabilitySinks,
+    IMarketDataStream, IMarketDataQuery, IIntervalModel,
+    IExecutionVenue, ISimulator, IMatchAlgorithm, IOMS, ITimeModel, IObservabilitySinks,
     IStrategy,
 )
 from .scheduler import HeapScheduler

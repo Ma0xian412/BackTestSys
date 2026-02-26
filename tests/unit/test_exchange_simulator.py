@@ -1,310 +1,244 @@
-"""交易所模拟器（FIFOExchangeSimulator）单元测试。
+"""Simulator + SegmentBaseAlgorithm（新架构）单元测试。"""
 
-验证内容：
-- 订单到达与队列注册
-- IOC 订单立即取消
-- 坐标轴模型与 FIFO 排序
-- 成交逻辑（单次 / 多次部分成交）
-- 成交优先级
-- 多订单同价位队列
-- 改善价模式
-"""
+from __future__ import annotations
 
+from typing import Dict, List, Tuple
+
+from quant_framework.adapters.execution_venue import SegmentBaseAlgorithm, Simulator_Impl
 from quant_framework.core.data_structure import (
-    Order, Side, TimeInForce, TapeSegment, TICK_PER_MS,
+    Action,
+    ActionType,
+    CancelRequest,
+    Order,
+    Side,
+    TICK_PER_MS,
+    TapeSegment,
 )
-from quant_framework.adapters import ExecutionVenue_Impl, NullObservability_Impl, TimeModel_Impl
-from quant_framework.core.data_structure import Action, ActionType, EVENT_KIND_MDARRIVE
-from quant_framework.core import BacktestApp, RuntimeBuildConfig
-from quant_framework.adapters.interval_model import UnifiedIntervalModel_impl, TapeConfig
-from quant_framework.adapters.execution_venue import FIFOExchangeSimulator
-
-from tests.conftest import create_test_snapshot, create_multi_level_snapshot, print_tape_path, MockFeed
-
-from quant_framework.adapters.IOMS.oms import OMS_Impl
+from tests.conftest import create_test_snapshot
 
 
-# ---------------------------------------------------------------------------
-# 基本功能
-# ---------------------------------------------------------------------------
+class _StaticQueryFeed:
+    def __init__(self, snapshots):
+        self._snapshots = list(snapshots)
+        self._idx = 0
+
+    def next(self):
+        if self._idx >= len(self._snapshots):
+            return None
+        out = self._snapshots[self._idx]
+        self._idx += 1
+        return out
+
+    def reset(self):
+        self._idx = 0
+
+    def query_data(self, n: int):
+        n = int(n)
+        if n <= 0 or self._idx >= len(self._snapshots):
+            return []
+        right = min(len(self._snapshots), self._idx + n)
+        return self._snapshots[self._idx:right]
+
+
+class _StaticBuilder:
+    def __init__(self, mapping: Dict[Tuple[int, int], List[TapeSegment]]):
+        self._mapping = dict(mapping)
+
+    def build(self, prev, curr):
+        return list(self._mapping.get((int(prev.ts_recv), int(curr.ts_recv)), []))
+
+
+def _segment(t0: int, t1: int, *, bid: float = 100.0, ask: float = 101.0, trades=None, net_flow=None) -> TapeSegment:
+    return TapeSegment(
+        index=1,
+        t_start=t0,
+        t_end=t1,
+        bid_price=bid,
+        ask_price=ask,
+        trades=dict(trades or {}),
+        cancels={},
+        net_flow=dict(net_flow or {}),
+        activation_bid={bid},
+        activation_ask={ask},
+    )
+
+
+def _make_simulator(
+    *,
+    t0: int,
+    t1: int,
+    bid: float = 100.0,
+    ask: float = 101.0,
+    bid_qty: int = 30,
+    ask_qty: int = 40,
+    segment: TapeSegment | None = None,
+    cancel_bias_k: float = 0.0,
+) -> Simulator_Impl:
+    snap_a = create_test_snapshot(t0, bid, ask, bid_qty=bid_qty, ask_qty=ask_qty)
+    snap_b = create_test_snapshot(t1, bid, ask, bid_qty=bid_qty, ask_qty=ask_qty)
+    feed = _StaticQueryFeed([snap_a, snap_b])
+    seg = segment or _segment(t0, t1, bid=bid, ask=ask)
+    builder = _StaticBuilder({(t0, t1): [seg]})
+
+    algo = SegmentBaseAlgorithm(
+        cancel_bias_k=cancel_bias_k,
+        tape_builder=builder,
+        market_data_query=feed,
+    )
+    sim = Simulator_Impl(match_algo=algo)
+    sim.set_market_data_stream(feed)
+    sim.set_market_data_query(feed)
+    sim.start_run()
+    feed.next()  # 模拟 kernel 先消费首个 prev 快照
+    sim.start_session()
+    return sim
+
+
+def _place(order_id: str, side: Side, price: float, qty: int, t: int) -> Action:
+    return Action(
+        action_type=ActionType.PLACE_ORDER,
+        create_time=t,
+        payload=Order(order_id=order_id, side=side, price=price, qty=qty),
+    )
+
+
+def _cancel(order_id: str, t: int) -> Action:
+    return Action(
+        action_type=ActionType.CANCEL_ORDER,
+        create_time=t,
+        payload=CancelRequest(order_id=order_id, create_time=t),
+    )
+
 
 def test_basic_order_arrival():
-    """订单到达：GTC 订单被接受入队，队列深度和 shadow 记录正确。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    sim = _make_simulator(t0=t0, t1=t1, bid_qty=30, ask_qty=40)
 
-    order = Order(order_id="test-1", side=Side.BUY, price=100.0, qty=10)
-    receipt = exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=50)
-
-    assert receipt is None, "GTC 订单应被接受（无立即成交/拒绝）"
-    assert exchange.get_queue_depth(Side.BUY, 100.0) >= 10, "队列应包含 shadow 订单"
-
-    shadows = exchange.get_shadow_orders()
-    assert len(shadows) == 1, "应有一个 shadow 订单"
-    assert shadows[0].pos >= 0, "shadow 订单位置应 ≥ 0"
+    receipts = sim.on_action(_place("test-1", Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))
+    assert len(receipts) == 1
+    assert receipts[0].receipt_type == "NONE"
+    assert receipts[0].pos >= 30
 
 
 def test_ioc_order():
-    """IOC 订单：无法立即成交时应收到 CANCELED 回执。"""
-    exchange = FIFOExchangeSimulator()
+    """新架构中以撤单路径验证“立即取消”语义。"""
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    sim = _make_simulator(t0=t0, t1=t1, bid_qty=20, ask_qty=20)
 
-    order = Order(
-        order_id="ioc-1", side=Side.BUY, price=100.0, qty=10,
-        tif=TimeInForce.IOC,
-    )
-    receipt = exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=50)
+    sim.on_action(_place("ioc-like", Side.BUY, 99.0, 10, t0 + 10 * TICK_PER_MS))
+    receipts = sim.on_action(_cancel("ioc-like", t0 + 20 * TICK_PER_MS))
 
-    assert receipt is not None, "IOC 订单应收到立即回执"
-    assert receipt.receipt_type == "CANCELED", "IOC 应被取消（无法立即成交）"
+    assert receipts[0].receipt_type == "CANCELED"
+    assert receipts[0].order_id == "ioc-like"
 
-
-# ---------------------------------------------------------------------------
-# 坐标轴模型
-# ---------------------------------------------------------------------------
 
 def test_coordinate_axis():
-    """坐标轴模型：先到订单的 pos 小于后到订单（FIFO）。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    sim = _make_simulator(t0=t0, t1=t1, bid_qty=30, ask_qty=30)
 
-    prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30, ask_qty=30)
-    curr = create_test_snapshot(
-        1500 * TICK_PER_MS, 100.0, 101.0, bid_qty=20, ask_qty=20,
-        last_vol_split=[(100.0, 50)],
-    )
-    tape = builder.build(prev, curr)
-    print_tape_path(tape)
+    r1 = sim.on_action(_place("o1", Side.BUY, 100.0, 20, t0 + 10 * TICK_PER_MS))
+    r2 = sim.on_action(_place("o2", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))
 
-    exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    assert r1[0].receipt_type == "NONE"
+    assert r2[0].receipt_type == "NONE"
+    assert r1[0].pos < r2[0].pos
 
-    order1 = Order(order_id="o1", side=Side.BUY, price=100.0, qty=20)
-    exchange.on_order_arrival(order1, 1100 * TICK_PER_MS, market_qty=30)
-
-    order2 = Order(order_id="o2", side=Side.BUY, price=100.0, qty=10)
-    exchange.on_order_arrival(order2, 1200 * TICK_PER_MS, market_qty=30)
-
-    shadows = exchange.get_shadow_orders()
-    o1 = next(s for s in shadows if s.order_id == "o1")
-    o2 = next(s for s in shadows if s.order_id == "o2")
-
-    assert o1.pos < o2.pos, "先到订单 pos 应小于后到订单"
-
-
-# ---------------------------------------------------------------------------
-# 成交逻辑
-# ---------------------------------------------------------------------------
 
 def test_fill():
-    """成交逻辑：当 trades > market_queue + order_qty 时订单应被成交。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
-
-    prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30)
-    curr = create_test_snapshot(
-        1500 * TICK_PER_MS, 100.0, 101.0, bid_qty=10,
-        last_vol_split=[(100.0, 50)],
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    seg = _segment(
+        t0,
+        t1,
+        trades={(Side.BUY, 100.0): 80},
+        net_flow={(Side.BUY, 100.0): 0},
     )
-    tape = builder.build(prev, curr)
-    print_tape_path(tape)
+    sim = _make_simulator(t0=t0, t1=t1, bid_qty=0, ask_qty=50, segment=seg)
+    sim.on_action(_place("fill-test", Side.BUY, 100.0, 5, t0 + TICK_PER_MS))
 
-    exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    total_fill = 0
+    for _ in range(16):
+        receipts = sim.step(t1)
+        total_fill += sum(r.fill_qty for r in receipts if r.receipt_type in {"PARTIAL", "FILL"})
+        if any(r.receipt_type == "FILL" for r in receipts):
+            break
+        if receipts and receipts[0].receipt_type == "NONE":
+            break
 
-    order = Order(order_id="fill-test", side=Side.BUY, price=100.0, qty=15)
-    exchange.on_order_arrival(order, 1050 * TICK_PER_MS, market_qty=30)
-
-    all_receipts = []
-    t_global = 1050 * TICK_PER_MS
-    for seg in tape:
-        t_cur = max(seg.t_start, t_global)
-        while t_cur < seg.t_end:
-            receipts, t_stop = exchange.advance(t_cur, seg.t_end, seg)
-            all_receipts.extend(receipts)
-            if t_stop <= t_cur:
-                break
-            t_cur = t_stop
-        t_global = seg.t_end
-
-    filled = any(r.receipt_type in ["FILL", "PARTIAL"] for r in all_receipts)
-    assert filled, "订单应被成交"
+    assert total_fill > 0
 
 
 def test_multi_partial_to_fill():
-    """多次部分成交：最终应返回 FILL 回执，总成交量等于订单量。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-
-    seg = TapeSegment(
-        index=1,
-        t_start=1000 * TICK_PER_MS, t_end=1304 * TICK_PER_MS,
-        bid_price=100.0, ask_price=101.0,
-        trades={(Side.BUY, 100.0): 4},
-        cancels={}, net_flow={(Side.BUY, 100.0): 0},
-        activation_bid={100.0}, activation_ask={101.0},
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    seg = _segment(
+        t0,
+        t1,
+        trades={(Side.BUY, 100.0): 120},
+        net_flow={(Side.BUY, 100.0): 0},
     )
-    exchange.set_tape([seg], 1000 * TICK_PER_MS, 1304 * TICK_PER_MS)
+    sim = _make_simulator(t0=t0, t1=t1, bid_qty=0, ask_qty=50, segment=seg)
+    sim.on_action(_place("multi-fill", Side.BUY, 100.0, 3, t0 + TICK_PER_MS))
 
-    order = Order(order_id="multi-fill", side=Side.BUY, price=100.0, qty=4)
-    exchange.on_order_arrival(order, 1000 * TICK_PER_MS, market_qty=0)
+    total_fill = 0
+    saw_fill = False
+    for _ in range(32):
+        receipts = sim.step(t1)
+        total_fill += sum(r.fill_qty for r in receipts if r.receipt_type in {"PARTIAL", "FILL"})
+        if any(r.receipt_type == "FILL" for r in receipts):
+            saw_fill = True
+            break
+        if receipts and receipts[0].receipt_type == "NONE":
+            break
 
-    r1, _ = exchange.advance(1000 * TICK_PER_MS, 1101 * TICK_PER_MS, seg)
-    r2, _ = exchange.advance(1101 * TICK_PER_MS, 1202 * TICK_PER_MS, seg)
-    r3, _ = exchange.advance(1202 * TICK_PER_MS, 1304 * TICK_PER_MS, seg)
+    assert saw_fill
+    assert total_fill == 3
 
-    receipts = r1 + r2 + r3
-    assert receipts, "应产生回执"
-    assert receipts[-1].receipt_type == "FILL", f"最后应为 FILL，实际 {receipts[-1].receipt_type}"
-    assert sum(r.fill_qty for r in receipts) == 4, "总成交量应为 4"
-
-
-# ---------------------------------------------------------------------------
-# 成交优先级
-# ---------------------------------------------------------------------------
 
 def test_fill_priority_fifo():
-    """FIFO 优先级：先到订单应先成交。"""
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
-
-    prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=30)
-    curr = create_test_snapshot(
-        1500 * TICK_PER_MS, 100.0, 101.0, bid_qty=10,
-        last_vol_split=[(100.0, 48)],
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    seg = _segment(
+        t0,
+        t1,
+        trades={(Side.BUY, 100.0): 200},
+        net_flow={(Side.BUY, 100.0): 0},
     )
-    tape = builder.build(prev, curr)
-    print_tape_path(tape)
+    sim = _make_simulator(t0=t0, t1=t1, bid_qty=0, ask_qty=50, segment=seg)
 
-    exchange.set_tape(tape, 1000 * TICK_PER_MS, 1500 * TICK_PER_MS)
+    sim.on_action(_place("order1", Side.BUY, 100.0, 2, t0 + 10 * TICK_PER_MS))
+    sim.on_action(_place("order2", Side.BUY, 100.0, 2, t0 + 20 * TICK_PER_MS))
 
-    exchange.advance(0, 1010 * TICK_PER_MS, tape[0])
-    exchange.advance(1010 * TICK_PER_MS, 1100 * TICK_PER_MS, tape[1])
+    fill_order = []
+    for _ in range(16):
+        receipts = sim.step(t1)
+        fill_order.extend([r.order_id for r in receipts if r.receipt_type in {"PARTIAL", "FILL"}])
+        if len(fill_order) >= 2:
+            break
+        if receipts and receipts[0].receipt_type == "NONE":
+            break
 
-    order1 = Order(order_id="order1", side=Side.BUY, price=100.0, qty=20)
-    exchange.on_order_arrival(order1, 1100 * TICK_PER_MS, market_qty=30)
-    exchange.advance(1100 * TICK_PER_MS, 1300 * TICK_PER_MS, tape[1])
-
-    order2 = Order(order_id="order2", side=Side.BUY, price=100.0, qty=10)
-    exchange.on_order_arrival(order2, 1300 * TICK_PER_MS, market_qty=30)
-
-    all_receipts = []
-    last_t = 1300 * TICK_PER_MS
-    for seg in [tape[1], tape[2]]:
-        t_cur = last_t
-        while t_cur < seg.t_end:
-            receipts, t_stop = exchange.advance(t_cur, seg.t_end, seg)
-            all_receipts.extend(receipts)
-            if t_stop <= t_cur:
-                break
-            t_cur = t_stop
-        last_t = seg.t_end
-
-    fill_order = [r.order_id for r in all_receipts if r.receipt_type in ["FILL", "PARTIAL"]]
-    if len(fill_order) >= 2:
-        assert fill_order.index("order1") < fill_order.index("order2"), (
-            "order1 应先于 order2 成交"
-        )
+    assert fill_order
+    assert fill_order[0] == "order1"
+    if "order2" in fill_order:
+        assert fill_order.index("order1") < fill_order.index("order2")
 
 
 def test_multiple_orders_same_price():
-    """多订单同价位：订单位置按到达时间递增（FIFO）。"""
-    import random
-    random.seed(42)
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    sim = _make_simulator(t0=t0, t1=t1, bid_qty=10, ask_qty=100)
 
-    bid_levels = [(3318.0, 100)]
-    for p in sorted(random.sample([3314.0, 3315.0, 3316.0, 3317.0], 4), reverse=True):
-        bid_levels.append((p, random.randint(50, 150)))
-    ask_levels = [(3319.0, 100)]
-    for p in sorted(random.sample([3320.0, 3321.0, 3322.0, 3323.0], 4)):
-        ask_levels.append((p, random.randint(50, 150)))
+    r1 = sim.on_action(_place("buy-1", Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))[0]
+    r2 = sim.on_action(_place("buy-2", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))[0]
+    r3 = sim.on_action(_place("buy-3", Side.BUY, 100.0, 10, t0 + 30 * TICK_PER_MS))[0]
 
-    prev = create_multi_level_snapshot(
-        1000 * TICK_PER_MS, bids=bid_levels, asks=ask_levels, last_vol_split=[],
-    )
-    curr = create_multi_level_snapshot(
-        1500 * TICK_PER_MS, bids=bid_levels, asks=ask_levels,
-        last_vol_split=[(3316.0, 10), (3317.0, 10), (3318.0, 10), (3319.0, 10), (3320.0, 10)],
-    )
+    assert r1.pos < r2.pos < r3.pos
 
-    builder = UnifiedIntervalModel_impl(config=TapeConfig(epsilon=1.0), tick_size=1.0)
-    tape = builder.build(prev, curr)
-    print_tape_path(tape)
-
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    oms = OMS_Impl()
-
-    class MultiOrderStrategy:
-        def __init__(self):
-            self.created = False
-
-        def on_event(self, e, ctx):
-            if e.kind != EVENT_KIND_MDARRIVE:
-                return []
-            if self.created:
-                return []
-            self.created = True
-            orders = []
-            for i in range(3):
-                o = Order(order_id=f"buy-3318-{i+1}", side=Side.BUY,
-                          price=3318.0, qty=100, tif=TimeInForce.GTC)
-                o.create_time = (1000 + i * 167) * TICK_PER_MS
-                orders.append(Action(action_type=ActionType.PLACE_ORDER, create_time=o.create_time, payload=o))
-            return orders
-
-    app = BacktestApp(
-        RuntimeBuildConfig(
-            feed=MockFeed([prev, curr]),
-            venue=ExecutionVenue_Impl(simulator=exchange, tape_builder=builder),
-            strategy=MultiOrderStrategy(),
-            oms=oms,
-            timeModel=TimeModel_Impl(
-                delay_out=10 * TICK_PER_MS,
-                delay_in=10 * TICK_PER_MS,
-            ),
-            obs=NullObservability_Impl(),
-        ),
-    )
-    results = app.run()
-
-    assert results['diagnostics']['orders_submitted'] == 3, "应提交 3 个订单"
-
-    orders_at_3318 = [s for s in exchange.get_shadow_orders() if abs(s.price - 3318.0) < 0.01]
-    if len(orders_at_3318) >= 2:
-        sorted_orders = sorted(orders_at_3318, key=lambda x: x.arrival_time)
-        for i in range(1, len(sorted_orders)):
-            assert sorted_orders[i].pos >= sorted_orders[i - 1].pos, (
-                "订单位置应按到达时间递增"
-            )
-
-
-# ---------------------------------------------------------------------------
-# 改善价模式
-# ---------------------------------------------------------------------------
 
 def test_improvement_mode_fill():
-    """改善价模式：改善价订单应先于同侧更差价订单成交。"""
-    seg = TapeSegment(
-        index=1,
-        t_start=1000 * TICK_PER_MS, t_end=1100 * TICK_PER_MS,
-        bid_price=100.0, ask_price=101.0,
-        trades={(Side.BUY, 100.0): 10},
-        cancels={}, net_flow={(Side.BUY, 100.0): 0},
-        activation_bid={100.0}, activation_ask={101.0},
-    )
+    t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
+    sim = _make_simulator(t0=t0, t1=t1, bid=100.0, ask=100.5, bid_qty=0, ask_qty=6)
 
-    exchange = FIFOExchangeSimulator(cancel_bias_k=0.0)
-    exchange.set_tape([seg], seg.t_start, seg.t_end)
+    r1 = sim.on_action(_place("buy-improve", Side.BUY, 100.5, 6, t0 + 10 * TICK_PER_MS))
+    r2 = sim.on_action(_place("buy-base", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))
 
-    # 改善价订单 100.5 > bid=100 但 < ask=101
-    improving = Order(order_id="buy-improve", side=Side.BUY, price=100.5, qty=6, tif=TimeInForce.GTC)
-    exchange.on_order_arrival(improving, seg.t_start, market_qty=0)
-
-    base = Order(order_id="buy-base", side=Side.BUY, price=100.0, qty=10, tif=TimeInForce.GTC)
-    exchange.on_order_arrival(base, seg.t_start, market_qty=0)
-
-    r1, t_stop = exchange.advance(seg.t_start, seg.t_end, seg)
-    assert len(r1) == 1, "改善价订单应先成交"
-    assert r1[0].order_id == "buy-improve"
     assert r1[0].receipt_type == "FILL"
-
-    r2, _ = exchange.advance(t_stop, seg.t_end, seg)
-    base_receipts = [r for r in r2 if r.order_id == "buy-base"]
-    assert base_receipts, "基础价订单应有部分成交"
-    assert base_receipts[0].receipt_type == "PARTIAL"
-    assert base_receipts[0].fill_qty == 4, f"期望 4，实际 {base_receipts[0].fill_qty}"
+    assert r1[0].fill_qty == 6
+    assert r2[0].receipt_type == "NONE"

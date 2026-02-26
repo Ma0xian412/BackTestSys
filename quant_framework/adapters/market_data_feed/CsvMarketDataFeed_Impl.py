@@ -6,14 +6,14 @@ import math
 import logging
 from bisect import bisect_left, bisect_right
 from typing import List, Any, Optional, Tuple
-from ...core.port import IMarketDataFeed
+from ...core.port import IMarketDataQuery, IMarketDataStream
 from ...core.data_structure import NormalizedSnapshot, Level
 
 # 设置模块级logger
 logger = logging.getLogger(__name__)
 
 
-class CsvMarketDataFeed_Impl(IMarketDataFeed):
+class CsvMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
     """CSV格式的行情数据源。
     
     读取CSV文件，按RecvTick排序后提供快照数据。
@@ -72,25 +72,22 @@ class CsvMarketDataFeed_Impl(IMarketDataFeed):
         self.idx = 0
         self._query_hint = 0
 
-    def query_data(self, t_start: int, t_end: int) -> List[NormalizedSnapshot]:
-        """按时间窗口查询数据（含边界），并优先利用 next() 游标附近的局部性。"""
-        t_start = int(t_start)
-        t_end = int(t_end)
-        if t_end < t_start or not self._recv_ticks:
+    def query_data(self, n: int) -> List[NormalizedSnapshot]:
+        """从 next 游标位置开始，peek 头部 n 条（不推进游标）。"""
+        n = int(n)
+        if n <= 0 or not self._recv_ticks:
             return []
-
-        left = self._find_left_index(t_start)
-        right = bisect_right(self._recv_ticks, t_end, lo=left)
+        if int(self.idx) >= len(self.data):
+            return []
+        left = min(max(int(self.idx), 0), len(self.data) - 1)
+        right = min(len(self.data), left + n)
         self._query_hint = left
-
         result: List[NormalizedSnapshot] = []
         for i in range(left, right):
             snap = self._get_snapshot_by_idx(i)
             if snap is None:
                 continue
-            ts = int(snap.ts_recv)
-            if t_start <= ts <= t_end:
-                result.append(snap)
+            result.append(snap)
         return result
 
     def __len__(self) -> int:

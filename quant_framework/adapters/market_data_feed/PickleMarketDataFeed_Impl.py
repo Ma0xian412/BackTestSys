@@ -5,14 +5,14 @@ import math
 import logging
 from bisect import bisect_left, bisect_right
 from typing import List, Any, Optional, Tuple
-from ...core.port import IMarketDataFeed
+from ...core.port import IMarketDataQuery, IMarketDataStream
 from ...core.data_structure import NormalizedSnapshot, Level
 
 # 设置模块级logger
 logger = logging.getLogger(__name__)
 
 
-class PickleMarketDataFeed_Impl(IMarketDataFeed):
+class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
     _UNSET = object()
 
     def __init__(self, file_path: str):
@@ -51,24 +51,21 @@ class PickleMarketDataFeed_Impl(IMarketDataFeed):
         self.idx = 0
         self._query_hint = 0
 
-    def query_data(self, t_start: int, t_end: int) -> List[NormalizedSnapshot]:
-        t_start = int(t_start)
-        t_end = int(t_end)
-        if t_end < t_start or not self._recv_ticks:
+    def query_data(self, n: int) -> List[NormalizedSnapshot]:
+        n = int(n)
+        if n <= 0 or not self._recv_ticks:
             return []
-
-        left = self._find_left_index(t_start)
-        right = bisect_right(self._recv_ticks, t_end, lo=left)
+        if int(self.idx) >= len(self.data):
+            return []
+        left = min(max(int(self.idx), 0), len(self.data) - 1)
+        right = min(len(self.data), left + n)
         self._query_hint = left
-
         result: List[NormalizedSnapshot] = []
         for i in range(left, right):
             snap = self._get_snapshot_by_idx(i)
             if snap is None:
                 continue
-            ts = int(snap.ts_recv)
-            if t_start <= ts <= t_end:
-                result.append(snap)
+            result.append(snap)
         return result
 
     def __len__(self) -> int:

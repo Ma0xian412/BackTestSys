@@ -1,16 +1,24 @@
 """核心端口定义。"""
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, List, Mapping, Optional, TYPE_CHECKING
 
-from .data_structure import Action, CancelRequest, NormalizedSnapshot, Order, OrderReceipt, StepOutcome, TapeSegment
+from .data_structure import (
+    Action,
+    CancelRequest,
+    NormalizedSnapshot,
+    Order,
+    OrderReceipt,
+    ShadowOrder,
+    TapeSegment,
+)
 
 if TYPE_CHECKING:
     from .data_structure import ReadOnlyOMSView
 
 
-class IMarketDataFeed(ABC):
-    """行情数据源端口。"""
+class IMarketDataStream(ABC):
+    """行情流端口：负责 next/reset。"""
 
     @abstractmethod
     def next(self) -> Optional[Any]:
@@ -20,8 +28,12 @@ class IMarketDataFeed(ABC):
     def reset(self) -> None:
         raise NotImplementedError
 
+
+class IMarketDataQuery(ABC):
+    """行情查询端口：负责窗口查询。"""
+
     @abstractmethod
-    def query_data(self, t_start: int, t_end: int) -> List[Any]:
+    def query_data(self, n: int) -> List[Any]:
         raise NotImplementedError
 
 
@@ -37,7 +49,15 @@ class IExecutionVenue(ABC):
     """执行场所端口。"""
 
     @abstractmethod
-    def set_market_data_feed(self, market_data_feed: IMarketDataFeed) -> None:
+    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_run(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -45,7 +65,35 @@ class IExecutionVenue(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def set_time_window(self, t_start: int, t_end: int) -> None:
+    def on_action(self, action: Action) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def step(self, until_time: int) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def flush_window(self) -> object:
+        raise NotImplementedError
+
+
+class ISimulator(ABC):
+    """模拟交易所框架端口。"""
+
+    @abstractmethod
+    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_run(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_session(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -53,7 +101,43 @@ class IExecutionVenue(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def step(self, until_time: int) -> StepOutcome:
+    def step(self, until_time: int) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def flush_window(self) -> object:
+        raise NotImplementedError
+
+
+class IMatchAlgorithm(ABC):
+    """撮合算法端口。"""
+
+    @abstractmethod
+    def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_run(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def start_session(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_order_action_impl(
+        self,
+        order: ShadowOrder,
+    ) -> List[OrderReceipt]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_step(
+        self,
+        active_orders: Mapping[str, ShadowOrder],
+        start_time: int,
+        until_time: int,
+    ) -> List[OrderReceipt]:
         raise NotImplementedError
 
     @abstractmethod
