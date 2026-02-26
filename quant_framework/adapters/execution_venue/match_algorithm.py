@@ -31,7 +31,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         cancel_bias_k: float = 0.0,
         tape_builder: Optional[IIntervalModel] = None,
         market_data_query: Optional[IMarketDataQuery] = None,
-        session_peek_n: int = 2,
+        session_peek_n: int = 16,
     ) -> None:
         self.cancel_bias_k = float(cancel_bias_k)
         self._tape_builder = tape_builder
@@ -90,6 +90,12 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             return
 
         curr_snapshot = self._select_curr_snapshot(snapshots, self._prev_snapshot)
+        if curr_snapshot is None:
+            extra_n = max(self._session_peek_n * 4, self._session_peek_n + 8)
+            extra_raw = self._market_data_query.query_data(extra_n) or []
+            extra_decoded = [self._decode_raw_md(raw) for raw in extra_raw]
+            extra_snapshots = [snap for snap in extra_decoded if snap is not None]
+            curr_snapshot = self._select_curr_snapshot(extra_snapshots, self._prev_snapshot)
         if curr_snapshot is None:
             return
 
