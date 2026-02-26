@@ -28,10 +28,6 @@ class Simulator_Impl(ISimulator):
         self._interval_start = 0
         self._interval_end = 0
         self._active_orders: Dict[str, ShadowOrder] = {}
-        self._market_data_stream: Optional[IMarketDataStream] = None
-
-    def set_market_data_stream(self, market_data_stream: IMarketDataStream) -> None:
-        self._market_data_stream = market_data_stream
 
     def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
         self._match_algo.set_market_data_query(market_data_query)
