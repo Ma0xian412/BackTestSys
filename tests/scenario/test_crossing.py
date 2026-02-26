@@ -19,10 +19,22 @@ from tests.conftest import create_test_snapshot
 class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
+        self._idx = 0
 
-    def query_data(self, n: int):
-        n = max(0, int(n))
-        return self._snapshots[:n]
+    def next(self):
+        if self._idx >= len(self._snapshots):
+            return None
+        out = self._snapshots[self._idx]
+        self._idx += 1
+        return out
+
+    def reset(self):
+        self._idx = 0
+
+    def query_data(self):
+        if self._idx >= len(self._snapshots):
+            return []
+        return [self._snapshots[self._idx]]
 
 
 class _WindowBuilder:
@@ -39,13 +51,18 @@ def _make_sim(
     *,
     cancel_bias_k: float = 0.0,
 ) -> Simulator_Impl:
+    feed = _StaticQueryFeed(snapshots)
     algo = SegmentBaseAlgorithm(
         cancel_bias_k=cancel_bias_k,
         tape_builder=_WindowBuilder(window_segments),
-        market_data_query=_StaticQueryFeed(snapshots),
+        market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
+    sim.set_market_data_stream(feed)
+    sim.set_market_data_query(feed)
     sim.start_run()
+    feed.next()  # 模拟 kernel 先消费 prev 快照
+    sim._test_feed = feed  # type: ignore[attr-defined]
     return sim
 
 
@@ -148,6 +165,7 @@ def test_post_crossing_pos_uses_x_coord():
     assert r1.pos == 0
     assert r1.remaining_qty == 50
 
+    sim._test_feed.next()  # type: ignore[attr-defined]
     sim.start_session()
     r2 = sim.on_action(_place("subsequent", Side.BUY, 101.0, 10, t1 + 10 * TICK_PER_MS))[0]
     assert r2.receipt_type == "NONE"

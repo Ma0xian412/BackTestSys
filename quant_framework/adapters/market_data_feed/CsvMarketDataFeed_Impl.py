@@ -72,22 +72,18 @@ class CsvMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
         self.idx = 0
         self._query_hint = 0
 
-    def query_data(self, n: int) -> List[NormalizedSnapshot]:
-        """从 next 游标位置开始，peek 头部 n 条（不推进游标）。"""
-        n = int(n)
-        if n <= 0 or not self._recv_ticks:
+    def query_data(self) -> List[NormalizedSnapshot]:
+        """从 next 游标位置开始，peek 下一条（不推进游标）。"""
+        if not self._recv_ticks:
             return []
-        left = min(max(int(self.idx), 0), len(self.data))
-        right = min(len(self.data), left + n)
-        self._query_hint = left
-
-        result: List[NormalizedSnapshot] = []
-        for i in range(left, right):
-            snap = self._get_snapshot_by_idx(i)
-            if snap is None:
-                continue
-            result.append(snap)
-        return result
+        if int(self.idx) >= len(self.data):
+            return []
+        i = min(max(int(self.idx), 0), len(self.data) - 1)
+        self._query_hint = i
+        snap = self._get_snapshot_by_idx(i)
+        if snap is None:
+            return []
+        return [snap]
 
     def __len__(self) -> int:
         """快照条数（用于进度条等场景）。"""

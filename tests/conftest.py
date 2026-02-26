@@ -106,8 +106,6 @@ class MockFeed:
     def __init__(self, snapshots):
         self.snapshots = snapshots
         self.idx = 0
-        self._ticks = [int(s.ts_recv) for s in snapshots]
-        self._query_hint = 0
 
     def next(self):
         if self.idx < len(self.snapshots):
@@ -118,14 +116,9 @@ class MockFeed:
 
     def reset(self):
         self.idx = 0
-        self._query_hint = 0
 
-    def query_data(self, n: int):
-        n = int(n)
-        if n <= 0 or not self._ticks:
+    def query_data(self):
+        if self.idx >= len(self.snapshots):
             return []
-        left = min(max(int(self.idx), 0), len(self.snapshots))
-        right = min(len(self.snapshots), left + n)
-        self._query_hint = left
-        return self.snapshots[left:right]
+        return [self.snapshots[self.idx]]
 

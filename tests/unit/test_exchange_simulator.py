@@ -20,10 +20,22 @@ from tests.conftest import create_test_snapshot
 class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
+        self._idx = 0
 
-    def query_data(self, n: int):
-        n = max(0, int(n))
-        return self._snapshots[:n]
+    def next(self):
+        if self._idx >= len(self._snapshots):
+            return None
+        out = self._snapshots[self._idx]
+        self._idx += 1
+        return out
+
+    def reset(self):
+        self._idx = 0
+
+    def query_data(self):
+        if self._idx >= len(self._snapshots):
+            return []
+        return [self._snapshots[self._idx]]
 
 
 class _StaticBuilder:
@@ -72,7 +84,10 @@ def _make_simulator(
         market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
+    sim.set_market_data_stream(feed)
+    sim.set_market_data_query(feed)
     sim.start_run()
+    feed.next()  # 模拟 kernel 先消费首个 prev 快照
     sim.start_session()
     return sim
 

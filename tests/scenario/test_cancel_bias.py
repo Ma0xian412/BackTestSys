@@ -12,10 +12,22 @@ from tests.conftest import create_test_snapshot
 class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
+        self._idx = 0
 
-    def query_data(self, n: int):
-        n = max(0, int(n))
-        return self._snapshots[:n]
+    def next(self):
+        if self._idx >= len(self._snapshots):
+            return None
+        out = self._snapshots[self._idx]
+        self._idx += 1
+        return out
+
+    def reset(self):
+        self._idx = 0
+
+    def query_data(self):
+        if self._idx >= len(self._snapshots):
+            return []
+        return [self._snapshots[self._idx]]
 
 
 class _BuilderByWindow:
@@ -53,13 +65,17 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, net_flow: int
         activation_ask={101.0},
     )
 
+    feed = _StaticQueryFeed(snapshots)
     algo = SegmentBaseAlgorithm(
         cancel_bias_k=cancel_bias_k,
         tape_builder=_BuilderByWindow({(t0, t1): [seg]}),
-        market_data_query=_StaticQueryFeed(snapshots),
+        market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
+    sim.set_market_data_stream(feed)
+    sim.set_market_data_query(feed)
     sim.start_run()
+    feed.next()
     sim.start_session()
     sim.on_action(_place(f"bias-{cancel_bias_k}", 100.0, qty, t0 + TICK_PER_MS))
 
@@ -148,13 +164,17 @@ def test_multi_segment_cumulative():
             activation_ask={101.0},
         ),
     ]
+    feed = _StaticQueryFeed([snapshots[0], snapshots[-1]])
     algo = SegmentBaseAlgorithm(
         cancel_bias_k=-0.8,
         tape_builder=_BuilderByWindow({(t0, t3): segs}),
-        market_data_query=_StaticQueryFeed([snapshots[0], snapshots[-1]]),
+        market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
+    sim.set_market_data_stream(feed)
+    sim.set_market_data_query(feed)
     sim.start_run()
+    feed.next()
     sim.start_session()
     sim.on_action(_place("multi-seg", 100.0, 5, t0 + TICK_PER_MS))
 

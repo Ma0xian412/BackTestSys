@@ -20,10 +20,22 @@ from tests.conftest import create_test_snapshot
 class _StaticQueryFeed:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
+        self._idx = 0
 
-    def query_data(self, n: int):
-        n = max(0, int(n))
-        return self._snapshots[:n]
+    def next(self):
+        if self._idx >= len(self._snapshots):
+            return None
+        out = self._snapshots[self._idx]
+        self._idx += 1
+        return out
+
+    def reset(self):
+        self._idx = 0
+
+    def query_data(self):
+        if self._idx >= len(self._snapshots):
+            return []
+        return [self._snapshots[self._idx]]
 
 
 class _BuilderByWindow:
@@ -81,17 +93,22 @@ def test_cancel_across_interval():
         activation_bid={100.0},
         activation_ask={101.0},
     )
+    feed = _StaticQueryFeed(snapshots)
     algo = SegmentBaseAlgorithm(
         cancel_bias_k=0.0,
         tape_builder=_BuilderByWindow({(t0, t1): [seg01], (t1, t2): [seg12]}),
-        market_data_query=_StaticQueryFeed(snapshots),
+        market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
+    sim.set_market_data_stream(feed)
+    sim.set_market_data_query(feed)
     sim.start_run()
+    feed.next()
 
     sim.start_session()
     sim.on_action(_place("cancel-1", Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))
 
+    feed.next()
     sim.start_session()
     canceled = sim.on_action(_cancel("cancel-1", t1 + 10 * TICK_PER_MS))[0]
     rejected = sim.on_action(_cancel("non-existent", t1 + 20 * TICK_PER_MS))[0]
@@ -131,18 +148,23 @@ def test_fill_across_interval():
         activation_bid={100.0},
         activation_ask={101.0},
     )
+    feed = _StaticQueryFeed(snapshots)
     algo = SegmentBaseAlgorithm(
         cancel_bias_k=0.0,
         tape_builder=_BuilderByWindow({(t0, t1): [seg01], (t1, t2): [seg12]}),
-        market_data_query=_StaticQueryFeed(snapshots),
+        market_data_query=feed,
     )
     sim = Simulator_Impl(match_algo=algo)
+    sim.set_market_data_stream(feed)
+    sim.set_market_data_query(feed)
     sim.start_run()
+    feed.next()
 
     sim.start_session()
     sim.on_action(_place("cross-fill", Side.BUY, 100.0, 5, t0 + TICK_PER_MS))
     assert sim.step(t1)[0].receipt_type == "NONE"
 
+    feed.next()
     sim.start_session()
     seen_fill = False
     for _ in range(32):
