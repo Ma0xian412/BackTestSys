@@ -3,7 +3,7 @@
 from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
 
 
-def test_observability_sink_not_oms_like_interface():
+def test_observability_sink_excludes_oms_interface():
     """IObservabilitySinks 实现不应暴露 OMS 状态机/查询接口。"""
     sink = ReceiptLogger_Impl()
 
