@@ -99,23 +99,21 @@ class OMS_Impl(IOMS):
         request.create_time = int(send_time)
 
     def apply_receipt(self, receipt: OrderReceipt) -> None:
-        """应用回执并推进订单状态。"""
+        """应用回执并推进订单状态，始终触发 receipt callback。"""
         order = self.orders.get(receipt.order_id)
-        if not order:
-            return
+        if order:
+            if receipt.receipt_type == "FILL":
+                order.filled_qty = min(order.qty, order.filled_qty + max(0, int(receipt.fill_qty)))
+                order.status = OrderStatus.FILLED if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED
+            elif receipt.receipt_type == "PARTIAL":
+                order.filled_qty = min(order.qty, order.filled_qty + max(0, int(receipt.fill_qty)))
+                order.status = OrderStatus.PARTIALLY_FILLED
+            elif receipt.receipt_type == "CANCELED":
+                order.status = OrderStatus.CANCELED
+            elif receipt.receipt_type == "REJECTED":
+                order.status = OrderStatus.REJECTED
 
-        if receipt.receipt_type == "FILL":
-            order.filled_qty = min(order.qty, order.filled_qty + max(0, int(receipt.fill_qty)))
-            order.status = OrderStatus.FILLED if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED
-        elif receipt.receipt_type == "PARTIAL":
-            order.filled_qty = min(order.qty, order.filled_qty + max(0, int(receipt.fill_qty)))
-            order.status = OrderStatus.PARTIALLY_FILLED
-        elif receipt.receipt_type == "CANCELED":
-            order.status = OrderStatus.CANCELED
-        elif receipt.receipt_type == "REJECTED":
-            order.status = OrderStatus.REJECTED
-
-        self.portfolio.update_from_receipt(receipt, order)
+            self.portfolio.update_from_receipt(receipt, order)
 
         for cb in self.receipt_cb:
             cb(receipt)
