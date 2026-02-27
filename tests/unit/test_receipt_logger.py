@@ -10,7 +10,7 @@
 import os
 import tempfile
 
-from quant_framework.core.data_structure import OrderReceipt
+from quant_framework.core.data_structure import Order, OrderReceipt, Side
 from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
 
 
@@ -87,3 +87,15 @@ def test_receipt_logger():
         with open(output_file) as f:
             lines = f.readlines()
         assert len(lines) == 6, "1 行表头 + 5 行记录"
+
+
+def test_receipt_logger_tracks_internal_oms_for_run_result():
+    logger = ReceiptLogger_Impl()
+    logger.on_order_submitted(Order(order_id="o1", side=Side.BUY, price=10.0, qty=2))
+    logger.on_receipt_delivered(
+        OrderReceipt(order_id="o1", receipt_type="PARTIAL", timestamp=100, fill_qty=1, fill_price=10.0, remaining_qty=1)
+    )
+    logger.on_run_end(final_time=100)
+
+    result = logger.get_run_result()
+    assert result["portfolio"]["position"] == 1
