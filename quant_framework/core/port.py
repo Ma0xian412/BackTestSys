@@ -171,7 +171,13 @@ class ITimeModel(ABC):
 
 
 class IObservabilitySinks(ABC):
-    """可观测性端口。"""
+    """可观测性端口（事件消费 + 运行报告）。
+
+    设计边界：
+    - 只消费框架产出的生命周期事件，不承担订单状态机职责。
+    - 不应等价于 IOMS；IOMS 负责订单状态推进与持仓更新。
+    - 查询能力仅限于可观测结果/诊断摘要，而非订单簿查询接口。
+    """
 
     @abstractmethod
     def on_order_submitted(self, order: Order) -> None:
