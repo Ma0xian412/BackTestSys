@@ -194,7 +194,12 @@ class IObservabilitySinks(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def on_run_end(self, final_time: int, error: str | None = None) -> None:
+    def on_run_end(
+        self,
+        final_time: int,
+        final_oms_view: object | None = None,
+        error: str | None = None,
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod

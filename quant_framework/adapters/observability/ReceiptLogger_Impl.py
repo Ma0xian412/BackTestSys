@@ -12,10 +12,11 @@ import csv
 import logging
 import os
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Callable, Set
+from typing import Any, List, Dict, Optional, Callable, Set
 
 from ...core.port import IObservabilitySinks
-from ...core.data_structure import CancelRequest, Order, OrderReceipt, ReceiptType
+from ...core.data_structure import CancelRequest, Order, OrderReceipt, ReadOnlyOMSView, ReceiptType
+from ..IOMS.oms import OMS_Impl, Portfolio
 
 
 # 设置模块级logger
@@ -96,6 +97,7 @@ class ReceiptLogger_Impl(IObservabilitySinks):
         # 诊断计数（来自原 ObservabilityImpl）
         self._final_time = 0
         self._error: str | None = None
+        self._final_oms_view: ReadOnlyOMSView | None = None
         self._diagnostics = {
             "intervals_processed": 0,
             "orders_submitted": 0,
@@ -112,6 +114,7 @@ class ReceiptLogger_Impl(IObservabilitySinks):
         self._cancel_counts: Dict[str, int] = {}  # 撤单次数
         self._reject_counts: Dict[str, int] = {}  # 拒绝次数
         self._canceled_orders: Set[str] = set()  # Track canceled order IDs to exclude from full-fill stats
+        self._oms = OMS_Impl(portfolio=Portfolio())
 
     # -----------------------------------------------------------------------
     # IObservabilitySinks 接口实现
@@ -120,23 +123,52 @@ class ReceiptLogger_Impl(IObservabilitySinks):
     def on_order_submitted(self, order: Order) -> None:
         self._diagnostics["orders_submitted"] += 1
         self.register_order(order.order_id, order.qty)
+        self._oms.submit_order(
+            Order(
+                order_id=order.order_id,
+                side=order.side,
+                price=order.price,
+                qty=order.qty,
+                type=order.type,
+                tif=order.tif,
+                filled_qty=order.filled_qty,
+                status=order.status,
+                create_time=order.create_time,
+                arrival_time=order.arrival_time,
+            ),
+            int(order.create_time),
+        )
 
     def on_cancel_submitted(self, request: CancelRequest) -> None:
         self._diagnostics["cancels_submitted"] += 1
+        self._oms.submit_cancel(
+            CancelRequest(order_id=request.order_id, create_time=request.create_time),
+            int(request.create_time),
+        )
 
     def on_receipt_generated(self, receipt: OrderReceipt) -> None:
         self._diagnostics["receipts_generated"] += 1
 
     def on_receipt_delivered(self, receipt: OrderReceipt) -> None:
         self.log_receipt(receipt)
+        self._oms.apply_receipt(receipt)
         if receipt.receipt_type in {"FILL", "PARTIAL"}:
             self._diagnostics["orders_filled"] += 1
 
     def on_interval_end(self, stats: object) -> None:
         self._diagnostics["intervals_processed"] += 1
 
-    def on_run_end(self, final_time: int, error: str | None = None) -> None:
+    def on_run_end(
+        self,
+        final_time: int,
+        final_oms_view: object | None = None,
+        error: str | None = None,
+    ) -> None:
         self._final_time = int(final_time)
+        if isinstance(final_oms_view, ReadOnlyOMSView):
+            self._final_oms_view = final_oms_view
+        else:
+            self._final_oms_view = self._oms.view()
         self._error = error
 
     def get_diagnostics(self) -> dict:
@@ -147,10 +179,22 @@ class ReceiptLogger_Impl(IObservabilitySinks):
             "intervals": self._diagnostics["intervals_processed"],
             "final_time": self._final_time,
             "diagnostics": self.get_diagnostics(),
+            "portfolio": self._portfolio_snapshot_to_dict(self._final_oms_view),
         }
         if self._error is not None:
             result["error"] = self._error
         return result
+
+    @staticmethod
+    def _portfolio_snapshot_to_dict(oms_view: ReadOnlyOMSView | None) -> dict[str, Any]:
+        if oms_view is None:
+            return {"cash": 0.0, "position": 0, "realized_pnl": 0.0}
+        portfolio = oms_view.get_portfolio()
+        return {
+            "cash": portfolio.cash,
+            "position": portfolio.position,
+            "realized_pnl": portfolio.realized_pnl,
+        }
 
     # -----------------------------------------------------------------------
     # 自身属性（兼容 main.py 中 receipt_logger 属性访问）
