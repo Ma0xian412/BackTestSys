@@ -43,7 +43,6 @@ class MDArriveHandler(IEventHandler):
             if action.action_type == ActionType.PLACE_ORDER:
                 order: Order = action.payload
                 ctx.oms.submit_order(order, send_time)
-                ctx.obs.on_order_submitted(order)
             elif action.action_type == ActionType.CANCEL_ORDER:
                 request: CancelRequest = action.payload
                 ctx.oms.submit_cancel(request, send_time)
@@ -94,7 +93,6 @@ class ReceiptDeliveryHandler(IEventHandler):
         receipt: OrderReceipt = e.payload
         receipt.recv_time = e.time
 
-        ctx.obs.on_receipt_delivered(receipt)
         ctx.oms.apply_receipt(receipt)
 
         oms_view = ctx.oms.view()
@@ -112,7 +110,6 @@ class ReceiptDeliveryHandler(IEventHandler):
             if action.action_type == ActionType.PLACE_ORDER:
                 order: Order = action.payload
                 ctx.oms.submit_order(order, send_time)
-                ctx.obs.on_order_submitted(order)
             elif action.action_type == ActionType.CANCEL_ORDER:
                 request: CancelRequest = action.payload
                 ctx.oms.submit_cancel(request, send_time)

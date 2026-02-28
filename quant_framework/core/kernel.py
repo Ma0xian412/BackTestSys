@@ -36,7 +36,7 @@ class EventLoopKernel:
 
         prev_data = ctx.feed.next()
         if prev_data is None:
-            ctx.obs.on_run_end(final_time=0, error="No data")
+            ctx.obs.on_run_end({"final_time": 0, "error": "No data"})
             return ctx.obs.get_run_result()
 
         first_t = self._extract_tick(prev_data)
@@ -70,7 +70,10 @@ class EventLoopKernel:
             self._run_interval(ctx, prev_time=prev_time, curr_time=curr_time)
             prev_time = curr_time
 
-        ctx.obs.on_run_end(final_time=self._t_cur, error=None)
+        ctx.obs.on_run_end({
+            "final_time": self._t_cur,
+            "oms_view": ctx.oms.view(),
+        })
         return ctx.obs.get_run_result()
 
     def _run_interval(

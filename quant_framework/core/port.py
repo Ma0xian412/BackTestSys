@@ -171,7 +171,11 @@ class ITimeModel(ABC):
 
 
 class IObservabilitySinks(ABC):
-    """可观测性端口。"""
+    """可观测性端口。
+
+    纯观察者角色：记录事件 + 生成报表。
+    不维护订单状态。
+    """
 
     @abstractmethod
     def on_order_submitted(self, order: Order) -> None:
@@ -194,7 +198,7 @@ class IObservabilitySinks(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def on_run_end(self, final_time: int, error: str | None = None) -> None:
+    def on_run_end(self, context: dict) -> None:
         raise NotImplementedError
 
     @abstractmethod

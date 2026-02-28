@@ -51,6 +51,10 @@ class CompositionRoot:
         runtime_cfg = self._to_runtime_build_config(config)
         runtime_cfg.venue.set_market_data_query(runtime_cfg.feed)
 
+        runtime_cfg.obs.set_oms(runtime_cfg.oms)
+        runtime_cfg.oms.subscribe_new(runtime_cfg.obs.on_order_submitted)
+        runtime_cfg.oms.subscribe_receipt(runtime_cfg.obs.on_receipt_delivered)
+
         event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()
         dispatcher = runtime_cfg.dispatcher or Dispatcher(event_spec)
 
