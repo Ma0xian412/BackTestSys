@@ -174,12 +174,8 @@ class IObservabilitySinks(ABC):
     """可观测性端口。
 
     纯观察者角色：记录事件 + 生成报表。
-    不维护订单状态，统计数据通过 set_oms 注入的 OMS 引用查询。
+    不维护订单状态。
     """
-
-    @abstractmethod
-    def set_oms(self, oms: IOMS) -> None:
-        raise NotImplementedError
 
     @abstractmethod
     def on_order_submitted(self, order: Order) -> None:
