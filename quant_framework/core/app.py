@@ -1,17 +1,14 @@
-"""应用装配层：CompositionRoot 与 BacktestApp。"""
+"""应用装配层：CompositionRoot 与 BacktestApp。
+
+CompositionRoot 只负责通用 wiring（连接接口间的 callback、注册 handler）。
+具体 adapter 实例由外部创建并通过 RuntimeBuildConfig 传入。
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
-from ..adapters import ExecutionVenue_Impl, ReceiptLogger_Impl, TimeModel_Impl
-from ..adapters.interval_model import TapeConfig as BuilderTapeConfig, UnifiedIntervalModel_impl
-from ..adapters.market_data_feed import CsvMarketDataFeed_Impl, PickleMarketDataFeed_Impl, SnapshotDuplicatingFeed_Impl
-from ..adapters.IOMS import OMS_Impl, Portfolio
-from ..adapters.IStrategy import SimpleStrategy_Impl
-from ..adapters.execution_venue import SegmentBaseAlgorithm, Simulator_Impl
-from ..config import BacktestConfig
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
 from .kernel import EventLoopKernel
@@ -26,7 +23,7 @@ from .data_structure import (
 
 @dataclass
 class RuntimeBuildConfig:
-    """RuntimeContext 直接组装参数（测试/高级用法）。"""
+    """RuntimeContext 直接组装参数。"""
 
     feed: Any
     venue: Any
@@ -40,135 +37,39 @@ class RuntimeBuildConfig:
 
 
 class CompositionRoot:
-    """统一组装入口。"""
+    """通用框架 wiring：从已创建的组件构建 RuntimeContext。"""
 
-    def build(self, config: Union[RuntimeBuildConfig, BacktestConfig]) -> RuntimeContext:
-        """构建 RuntimeContext。
+    def build(self, config: RuntimeBuildConfig) -> RuntimeContext:
+        config.venue.set_market_data_query(config.feed)
+        config.oms.subscribe_new(config.obs.on_order_submitted)
+        config.oms.subscribe_receipt(config.obs.on_receipt_delivered)
 
-        - BacktestConfig: 标准应用入口（生产路径）
-        - RuntimeBuildConfig: 直接注入组件（测试/高级路径）
-        """
-        runtime_cfg = self._to_runtime_build_config(config)
-        runtime_cfg.venue.set_market_data_query(runtime_cfg.feed)
-
-        runtime_cfg.obs.set_oms(runtime_cfg.oms)
-        runtime_cfg.oms.subscribe_new(runtime_cfg.obs.on_order_submitted)
-        runtime_cfg.oms.subscribe_receipt(runtime_cfg.obs.on_receipt_delivered)
-
-        event_spec = runtime_cfg.eventSpec or EventSpecRegistry.default()
-        dispatcher = runtime_cfg.dispatcher or Dispatcher(event_spec)
+        event_spec = config.eventSpec or EventSpecRegistry.default()
+        dispatcher = config.dispatcher or Dispatcher(event_spec)
 
         dispatcher.register(EVENT_KIND_MDARRIVE, MDArriveHandler())
         dispatcher.register(EVENT_KIND_ACTION_ARRIVAL, ActionArrivalHandler())
         dispatcher.register(EVENT_KIND_RECEIPT_DELIVERY, ReceiptDeliveryHandler())
 
         return RuntimeContext(
-            feed=runtime_cfg.feed,
-            venue=runtime_cfg.venue,
-            strategy=runtime_cfg.strategy,
-            oms=runtime_cfg.oms,
-            timeModel=runtime_cfg.timeModel,
-            obs=runtime_cfg.obs,
+            feed=config.feed,
+            venue=config.venue,
+            strategy=config.strategy,
+            oms=config.oms,
+            timeModel=config.timeModel,
+            obs=config.obs,
             dispatcher=dispatcher,
             eventSpec=event_spec,
-            metadata=dict(runtime_cfg.metadata or {}),
-        )
-
-    def _to_runtime_build_config(self, config: Union[RuntimeBuildConfig, BacktestConfig]) -> RuntimeBuildConfig:
-        if isinstance(config, RuntimeBuildConfig):
-            return config
-        if isinstance(config, BacktestConfig):
-            return self._build_from_backtest_config(config)
-        raise TypeError(f"Unsupported config type for CompositionRoot.build: {type(config)!r}")
-
-    def _build_from_backtest_config(self, config: BacktestConfig) -> RuntimeBuildConfig:
-        feed = self._create_feed(config)
-        tape_builder = self._create_tape_builder(config)
-        venue = self._create_venue(config, tape_builder, feed)
-        strategy = self._create_strategy(config)
-        oms = self._create_oms(config)
-        time_model = self._create_time_model(config)
-        obs = self._create_observability(config)
-        return RuntimeBuildConfig(
-            feed=feed,
-            venue=venue,
-            strategy=strategy,
-            oms=oms,
-            timeModel=time_model,
-            obs=obs,
-        )
-
-    @staticmethod
-    def _create_feed(config: BacktestConfig):
-        if config.data.format == "csv":
-            inner_feed = CsvMarketDataFeed_Impl(config.data.path)
-        else:
-            inner_feed = PickleMarketDataFeed_Impl(config.data.path)
-
-        trading_hours = None
-        if config.contract.contract_info and config.contract.contract_info.trading_hours:
-            trading_hours = config.contract.contract_info.trading_hours
-
-        return SnapshotDuplicatingFeed_Impl(
-            inner_feed=inner_feed,
-            tolerance_tick=config.snapshot.tolerance_tick,
-            trading_hours=trading_hours,
-        )
-
-    @staticmethod
-    def _create_tape_builder(config: BacktestConfig) -> UnifiedIntervalModel_impl:
-        tape_cfg = BuilderTapeConfig(
-            epsilon=config.tape.epsilon,
-            time_scale_lambda=config.tape.time_scale_lambda,
-            top_k=config.tape.top_k,
-        )
-        return UnifiedIntervalModel_impl(config=tape_cfg, tick_size=config.tape.tick_size)
-
-    @staticmethod
-    def _create_venue(
-        config: BacktestConfig,
-        tape_builder: UnifiedIntervalModel_impl,
-        feed: Any,
-    ) -> ExecutionVenue_Impl:
-        match_algo = SegmentBaseAlgorithm(
-            cancel_bias_k=config.exchange.cancel_bias_k,
-            tape_builder=tape_builder,
-            market_data_query=feed,
-        )
-        simulator = Simulator_Impl(match_algo=match_algo)
-        return ExecutionVenue_Impl(simulator=simulator)
-
-    @staticmethod
-    def _create_strategy(config: BacktestConfig):
-        # 当前默认策略实现；后续可扩展 registry/factory
-        return SimpleStrategy_Impl(name=config.strategy.name)
-
-    @staticmethod
-    def _create_oms(config: BacktestConfig) -> OMS_Impl:
-        portfolio = Portfolio(cash=config.portfolio.initial_cash)
-        return OMS_Impl(portfolio=portfolio)
-
-    @staticmethod
-    def _create_time_model(config: BacktestConfig) -> TimeModel_Impl:
-        return TimeModel_Impl(
-            delay_out=config.runner.delay_out,
-            delay_in=config.runner.delay_in,
-        )
-
-    @staticmethod
-    def _create_observability(config: BacktestConfig) -> ReceiptLogger_Impl:
-        return ReceiptLogger_Impl(
-            output_file=config.receipt_logger.output_file or None,
-            verbose=config.receipt_logger.verbose,
+            metadata=dict(config.metadata or {}),
         )
 
 
 class BacktestApp:
-    """应用入口（按配置构建 context 并运行 kernel）。"""
+    """应用入口。"""
 
     def __init__(
         self,
-        config: Union[RuntimeBuildConfig, BacktestConfig],
+        config: RuntimeBuildConfig,
         composition_root: Optional[CompositionRoot] = None,
         kernel: Optional[EventLoopKernel] = None,
     ) -> None:

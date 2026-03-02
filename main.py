@@ -25,6 +25,7 @@ import sys
 from datetime import datetime
 
 from quant_framework.core import BacktestApp
+from quant_framework.adapters.factory import BacktestConfigFactory
 from quant_framework.config import load_config, print_config, BacktestConfig
 
 
@@ -188,7 +189,8 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     if receipt_output_file:
         config.receipt_logger.output_file = receipt_output_file
 
-    app = BacktestApp(config)
+    runtime_cfg = BacktestConfigFactory().create(config)
+    app = BacktestApp(runtime_cfg)
     
     # Run backtest
     print("Starting backtest...")

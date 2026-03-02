@@ -5,8 +5,10 @@ from .observability import ReceiptLogger_Impl, NullObservability_Impl
 from .time_model import TimeModel_Impl
 from .IOMS import OMS_Impl, Portfolio
 from .IStrategy import SimpleStrategy_Impl, ReplayStrategy_Impl
+from .factory import BacktestConfigFactory
 
 __all__ = [
+    "BacktestConfigFactory",
     "ExecutionVenue_Impl",
     "SegmentBaseAlgorithm",
     "Simulator_Impl",
