@@ -50,8 +50,6 @@ class CompositionRoot:
         """
         runtime_cfg = self._to_runtime_build_config(config)
         runtime_cfg.venue.set_market_data_query(runtime_cfg.feed)
-
-        runtime_cfg.obs.set_oms(runtime_cfg.oms)
         runtime_cfg.oms.subscribe_new(runtime_cfg.obs.on_order_submitted)
         runtime_cfg.oms.subscribe_receipt(runtime_cfg.obs.on_receipt_delivered)
 
@@ -88,7 +86,7 @@ class CompositionRoot:
         strategy = self._create_strategy(config)
         oms = self._create_oms(config)
         time_model = self._create_time_model(config)
-        obs = self._create_observability(config)
+        obs = self._create_observability(config, oms)
         return RuntimeBuildConfig(
             feed=feed,
             venue=venue,
@@ -156,11 +154,13 @@ class CompositionRoot:
         )
 
     @staticmethod
-    def _create_observability(config: BacktestConfig) -> ReceiptLogger_Impl:
-        return ReceiptLogger_Impl(
+    def _create_observability(config: BacktestConfig, oms: OMS_Impl) -> ReceiptLogger_Impl:
+        obs = ReceiptLogger_Impl(
             output_file=config.receipt_logger.output_file or None,
             verbose=config.receipt_logger.verbose,
         )
+        obs.set_oms(oms)
+        return obs
 
 
 class BacktestApp:
