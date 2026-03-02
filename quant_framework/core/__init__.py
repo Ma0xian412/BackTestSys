@@ -20,4 +20,5 @@ from .scheduler import HeapScheduler
 from .dispatcher import Dispatcher, IEventHandler
 from .handlers import MDArriveHandler, ActionArrivalHandler, ReceiptDeliveryHandler
 from .kernel import EventLoopKernel
+from .run_control import RunControl
 from .app import RuntimeBuildConfig, CompositionRoot, BacktestApp

@@ -59,6 +59,9 @@ class ReceiptLogger_Impl(IObservabilitySinks):
         self._oms: Optional[IOMS] = None
         self._final_time = 0
         self._error: Optional[str] = None
+        self._status = "completed"
+        self._interrupted = False
+        self._interrupt_reason: Optional[str] = None
         self._diagnostics = {
             "intervals_processed": 0,
             "orders_submitted": 0,
@@ -92,6 +95,9 @@ class ReceiptLogger_Impl(IObservabilitySinks):
     def on_run_end(self, context: dict) -> None:
         self._final_time = int(context.get("final_time", 0))
         self._error = context.get("error")
+        self._status = str(context.get("status", "completed"))
+        self._interrupted = bool(context.get("interrupted", self._status == "interrupted"))
+        self._interrupt_reason = context.get("interrupt_reason")
 
     def get_diagnostics(self) -> dict:
         return dict(self._diagnostics)
@@ -100,6 +106,9 @@ class ReceiptLogger_Impl(IObservabilitySinks):
         result: dict = {
             "intervals": self._diagnostics["intervals_processed"],
             "final_time": self._final_time,
+            "status": self._status,
+            "interrupted": self._interrupted,
+            "interrupt_reason": self._interrupt_reason,
             "diagnostics": self.get_diagnostics(),
         }
         if self._error is not None:

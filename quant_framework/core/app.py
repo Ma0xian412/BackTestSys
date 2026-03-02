@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
 from .kernel import EventLoopKernel
+from .run_control import RunControl
 from .data_structure import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
@@ -77,11 +78,18 @@ class BacktestApp:
         self._composition_root = composition_root or CompositionRoot()
         self._kernel = kernel or EventLoopKernel()
         self._last_context: Optional[RuntimeContext] = None
+        self._run_control = RunControl()
 
     def run(self) -> Dict[str, Any]:
         ctx = self._composition_root.build(self._config)
         self._last_context = ctx
-        return self._kernel.run(ctx)
+        try:
+            return self._kernel.run(ctx, run_control=self._run_control)
+        finally:
+            self._run_control = RunControl()
+
+    def request_stop(self, reason: str = "external_request") -> None:
+        self._run_control.request_stop(reason)
 
     @property
     def last_context(self) -> Optional[RuntimeContext]:
