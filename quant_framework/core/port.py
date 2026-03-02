@@ -209,6 +209,18 @@ class IObservabilitySinks(ABC):
     def get_run_result(self) -> dict:
         raise NotImplementedError
 
+    @abstractmethod
+    def subscribe_updates(self) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def unsubscribe_updates(self, subscriber_id: int) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def pull_updates(self, subscriber_id: int) -> List[dict]:
+        raise NotImplementedError
+
 
 class IStrategy(ABC):
     """策略端口。"""

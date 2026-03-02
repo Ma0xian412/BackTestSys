@@ -9,7 +9,7 @@
 import os
 import tempfile
 
-from quant_framework.core.data_structure import Order, OrderReceipt, OrderStatus, Side
+from quant_framework.core.data_structure import CancelRequest, Order, OrderReceipt, OrderStatus, Side
 from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 
@@ -88,3 +88,36 @@ def test_receipt_logger():
         with open(output_file) as f:
             lines = f.readlines()
         assert len(lines) == 6, "1 行表头 + 5 行记录"
+
+
+def test_receipt_logger_update_subscription_queue():
+    obs = ReceiptLogger_Impl()
+    subscriber_id = obs.subscribe_updates()
+
+    order = Order(order_id="order-sub", side=Side.BUY, price=101.0, qty=10)
+    receipt = OrderReceipt(
+        order_id="order-sub",
+        receipt_type="FILL",
+        timestamp=123,
+        fill_qty=10,
+        fill_price=101.0,
+        remaining_qty=0,
+    )
+    cancel = CancelRequest(order_id="order-sub", create_time=456)
+
+    obs.on_order_submitted(order)
+    obs.on_receipt_generated(receipt)
+    obs.on_cancel_submitted(cancel)
+
+    updates = obs.pull_updates(subscriber_id)
+    assert [update["event_type"] for update in updates] == [
+        "order_submitted",
+        "receipt_generated",
+        "cancel_submitted",
+    ]
+    assert updates[0]["payload"]["order_id"] == "order-sub"
+    assert obs.pull_updates(subscriber_id) == []
+
+    obs.unsubscribe_updates(subscriber_id)
+    obs.on_interval_end({"done": True})
+    assert obs.pull_updates(subscriber_id) == []

@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import logging
 import os
+from collections import deque
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Callable, TYPE_CHECKING
 
@@ -31,6 +32,12 @@ class ReceiptRecord:
     fill_qty: int
     fill_price: float
     remaining_qty: int
+
+
+@dataclass(frozen=True)
+class ObservabilityUpdate:
+    event_type: str
+    payload: dict
 
 
 ReceiptCallback = Callable[[OrderReceipt], None]
@@ -69,6 +76,8 @@ class ReceiptLogger_Impl(IObservabilitySinks):
             "receipts_generated": 0,
             "cancels_submitted": 0,
         }
+        self._next_subscriber_id = 1
+        self._subscriber_queues: Dict[int, deque[ObservabilityUpdate]] = {}
 
     # ── IObservabilitySinks 接口 ────────────────────────────────
 
@@ -77,20 +86,28 @@ class ReceiptLogger_Impl(IObservabilitySinks):
 
     def on_order_submitted(self, order: Order) -> None:
         self._diagnostics["orders_submitted"] += 1
+        self._push_update(
+            "order_submitted",
+            {"order_id": order.order_id, "qty": order.qty, "price": order.price, "side": order.side.value},
+        )
 
     def on_cancel_submitted(self, request: CancelRequest) -> None:
         self._diagnostics["cancels_submitted"] += 1
+        self._push_update("cancel_submitted", {"order_id": request.order_id, "create_time": request.create_time})
 
     def on_receipt_generated(self, receipt: OrderReceipt) -> None:
         self._diagnostics["receipts_generated"] += 1
+        self._push_update("receipt_generated", self._receipt_payload(receipt))
 
     def on_receipt_delivered(self, receipt: OrderReceipt) -> None:
         self._log_receipt(receipt)
         if receipt.receipt_type in {"FILL", "PARTIAL"}:
             self._diagnostics["orders_filled"] += 1
+        self._push_update("receipt_delivered", self._receipt_payload(receipt))
 
     def on_interval_end(self, stats: object) -> None:
         self._diagnostics["intervals_processed"] += 1
+        self._push_update("interval_end", {"stats": stats})
 
     def on_run_end(self, context: dict) -> None:
         self._final_time = int(context.get("final_time", 0))
@@ -98,6 +115,7 @@ class ReceiptLogger_Impl(IObservabilitySinks):
         self._status = str(context.get("status", "completed"))
         self._interrupted = bool(context.get("interrupted", self._status == "interrupted"))
         self._interrupt_reason = context.get("interrupt_reason")
+        self._push_update("run_end", {"context": dict(context)})
 
     def get_diagnostics(self) -> dict:
         return dict(self._diagnostics)
@@ -114,6 +132,23 @@ class ReceiptLogger_Impl(IObservabilitySinks):
         if self._error is not None:
             result["error"] = self._error
         return result
+
+    def subscribe_updates(self) -> int:
+        subscriber_id = self._next_subscriber_id
+        self._next_subscriber_id += 1
+        self._subscriber_queues[subscriber_id] = deque()
+        return subscriber_id
+
+    def unsubscribe_updates(self, subscriber_id: int) -> None:
+        self._subscriber_queues.pop(subscriber_id, None)
+
+    def pull_updates(self, subscriber_id: int) -> List[dict]:
+        queue = self._subscriber_queues.get(subscriber_id)
+        if queue is None:
+            return []
+        updates = list(queue)
+        queue.clear()
+        return [{"event_type": update.event_type, "payload": update.payload} for update in updates]
 
     # ── 兼容属性 ────────────────────────────────────────────────
 
@@ -142,6 +177,23 @@ class ReceiptLogger_Impl(IObservabilitySinks):
                 self.callback(receipt)
             except Exception as e:
                 logger.warning(f"Receipt callback raised exception: {e}")
+
+    def _push_update(self, event_type: str, payload: dict) -> None:
+        update = ObservabilityUpdate(event_type=event_type, payload=payload)
+        for subscriber_queue in self._subscriber_queues.values():
+            subscriber_queue.append(update)
+
+    @staticmethod
+    def _receipt_payload(receipt: OrderReceipt) -> dict:
+        return {
+            "order_id": receipt.order_id,
+            "receipt_type": receipt.receipt_type,
+            "timestamp": receipt.timestamp,
+            "recv_time": receipt.recv_time,
+            "fill_qty": receipt.fill_qty,
+            "fill_price": receipt.fill_price,
+            "remaining_qty": receipt.remaining_qty,
+        }
 
     @staticmethod
     def _print_receipt(receipt: OrderReceipt) -> None:
