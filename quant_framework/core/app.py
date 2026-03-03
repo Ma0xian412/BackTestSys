@@ -7,7 +7,7 @@ CompositionRoot 只负责通用 wiring（连接接口间的 callback、注册 ha
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
@@ -21,6 +21,9 @@ from .data_structure import (
     RuntimeContext,
 )
 
+if TYPE_CHECKING:
+    from .port import IObservability
+
 
 @dataclass
 class RuntimeBuildConfig:
@@ -31,7 +34,7 @@ class RuntimeBuildConfig:
     strategy: Any
     oms: Any
     timeModel: Any
-    obs: Any
+    obs: "IObservability"
     eventSpec: Optional[EventSpecRegistry] = None
     dispatcher: Optional[Dispatcher] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -44,6 +47,7 @@ class CompositionRoot:
         config.venue.set_market_data_query(config.feed)
         config.oms.subscribe_new(config.obs.on_order_submitted)
         config.oms.subscribe_receipt(config.obs.on_receipt_delivered)
+        config.oms.subscribe_order_change(config.obs.on_oms_order_changed)
 
         event_spec = config.eventSpec or EventSpecRegistry.default()
         dispatcher = config.dispatcher or Dispatcher(event_spec)

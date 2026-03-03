@@ -100,6 +100,11 @@ class BacktestConfigFactory:
         obs = ReceiptLogger_Impl(
             output_file=config.receipt_logger.output_file or None,
             verbose=config.receipt_logger.verbose,
+            history_dir=config.observability_stream.history_dir,
+            keep_history_files=bool(config.logging.debug),
+            default_subscriber_memory_bytes=int(
+                max(1, config.observability_stream.subscriber_max_memory_mb) * 1024 * 1024
+            ),
         )
         obs.set_oms(oms)
         return obs

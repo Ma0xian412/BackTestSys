@@ -3,6 +3,7 @@
 from typing import Dict, List, Callable, Optional
 
 from ...core.data_structure import ReadOnlyOMSView
+from ...core.observability import OMSOrderChange
 from ...core.port import IOMS
 from ...core.data_structure import CancelRequest, Fill, Order, OrderId, OrderReceipt, OrderStatus
 
@@ -73,6 +74,7 @@ class OMS_Impl(IOMS):
         self.fill_cb: List[Callable] = []
         self.new_cb: List[Callable] = []
         self.receipt_cb: List[Callable] = []
+        self.order_change_cb: List[Callable[[OMSOrderChange], None]] = []
         
     def subscribe_fill(self, cb):
         """订阅成交事件。"""
@@ -85,6 +87,10 @@ class OMS_Impl(IOMS):
     def subscribe_receipt(self, cb):
         """订阅回执事件。"""
         self.receipt_cb.append(cb)
+
+    def subscribe_order_change(self, cb: Callable[[OMSOrderChange], None]) -> None:
+        """订阅订单状态变化事件。"""
+        self.order_change_cb.append(cb)
 
     def submit_order(self, order: Order, send_time: int) -> None:
         """登记订单动作。"""
@@ -102,6 +108,10 @@ class OMS_Impl(IOMS):
         """应用回执并推进订单状态，始终触发 receipt callback。"""
         order = self.orders.get(receipt.order_id)
         if order:
+            prev_status = str(order.status.value)
+            prev_filled_qty = int(order.filled_qty)
+            prev_remaining_qty = int(order.remaining_qty)
+
             if receipt.receipt_type == "FILL":
                 order.filled_qty = min(order.qty, order.filled_qty + max(0, int(receipt.fill_qty)))
                 order.status = OrderStatus.FILLED if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED
@@ -114,6 +124,13 @@ class OMS_Impl(IOMS):
                 order.status = OrderStatus.REJECTED
 
             self.portfolio.update_from_receipt(receipt, order)
+            self._notify_order_change(
+                order=order,
+                prev_status=prev_status,
+                prev_filled_qty=prev_filled_qty,
+                prev_remaining_qty=prev_remaining_qty,
+                timestamp=int(receipt.timestamp),
+            )
 
         for cb in self.receipt_cb:
             cb(receipt)
@@ -139,3 +156,34 @@ class OMS_Impl(IOMS):
             订单（如果存在），否则返回None
         """
         return self.orders.get(order_id)
+
+    def _notify_order_change(
+        self,
+        order: Order,
+        prev_status: str,
+        prev_filled_qty: int,
+        prev_remaining_qty: int,
+        timestamp: int,
+    ) -> None:
+        new_status = str(order.status.value)
+        new_filled_qty = int(order.filled_qty)
+        new_remaining_qty = int(order.remaining_qty)
+        changed = (
+            prev_status != new_status
+            or prev_filled_qty != new_filled_qty
+            or prev_remaining_qty != new_remaining_qty
+        )
+        if not changed:
+            return
+        event = OMSOrderChange(
+            order_id=str(order.order_id),
+            prev_status=prev_status,
+            new_status=new_status,
+            prev_filled_qty=prev_filled_qty,
+            new_filled_qty=new_filled_qty,
+            prev_remaining_qty=prev_remaining_qty,
+            new_remaining_qty=new_remaining_qty,
+            timestamp=int(timestamp),
+        )
+        for cb in self.order_change_cb:
+            cb(event)

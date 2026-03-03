@@ -145,6 +145,14 @@ class ReceiptLoggerConfig:
 
 
 @dataclass
+class ObservabilityStreamConfig:
+    """流式可观测配置。"""
+
+    history_dir: str = ".obs_history"
+    subscriber_max_memory_mb: int = 8
+
+
+@dataclass
 class LoggingConfig:
     """日志配置。"""
     debug: bool = False
@@ -181,6 +189,7 @@ class BacktestConfig:
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     receipt_logger: ReceiptLoggerConfig = field(default_factory=ReceiptLoggerConfig)
+    observability_stream: ObservabilityStreamConfig = field(default_factory=ObservabilityStreamConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     snapshot: SnapshotConfig = field(default_factory=SnapshotConfig)
     contract: ContractConfig = field(default_factory=ContractConfig)
@@ -566,6 +575,10 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
     runner_config = _dict_to_dataclass(RunnerConfig, raw_config.get("runner"))
     portfolio_config = _dict_to_dataclass(PortfolioConfig, raw_config.get("portfolio"))
     receipt_logger_config = _dict_to_dataclass(ReceiptLoggerConfig, raw_config.get("receipt_logger"))
+    observability_stream_config = _dict_to_dataclass(
+        ObservabilityStreamConfig,
+        raw_config.get("observability_stream"),
+    )
     logging_config = _dict_to_dataclass(LoggingConfig, raw_config.get("logging"))
     snapshot_config = _dict_to_dataclass(SnapshotConfig, raw_config.get("snapshot"))
     
@@ -604,6 +617,7 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
         portfolio=portfolio_config,
         strategy=strategy_config,
         receipt_logger=receipt_logger_config,
+        observability_stream=observability_stream_config,
         logging=logging_config,
         snapshot=snapshot_config,
         contract=contract_config,
@@ -761,6 +775,10 @@ def print_config(config: BacktestConfig) -> None:
     print("\n[Receipt Logger]")
     print(f"  verbose: {config.receipt_logger.verbose}")
     print(f"  output_file: {config.receipt_logger.output_file or '(not set)'}")
+
+    print("\n[Observability Stream]")
+    print(f"  history_dir: {config.observability_stream.history_dir}")
+    print(f"  subscriber_max_memory_mb: {config.observability_stream.subscriber_max_memory_mb}")
     
     print("\n[Logging]")
     print(f"  debug: {config.logging.debug}")

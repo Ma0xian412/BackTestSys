@@ -32,6 +32,7 @@ class EventLoopKernel:
         reset_event_seq()
         self._t_cur = 0
         self._scheduler.clear()
+        ctx.obs.on_run_started({})
 
         if self._should_stop(run_control):
             return self._finish_run(ctx, run_control=run_control, interrupted=True)

@@ -1,7 +1,7 @@
 """核心类型定义模块。"""
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from enum import Enum
 
 # 基本类型别名
@@ -561,8 +561,12 @@ class RuntimeContext:
     strategy: Any
     oms: Any
     timeModel: Any
-    obs: Any
+    obs: "IObservability"
     dispatcher: Any
     eventSpec: EventSpecRegistry
     last_snapshot: Optional[NormalizedSnapshot] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+if TYPE_CHECKING:
+    from .port import IObservability

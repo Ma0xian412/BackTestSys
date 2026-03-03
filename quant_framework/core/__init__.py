@@ -11,9 +11,27 @@ from .data_structure import (
     ActionType, Action, ShadowOrder, Event, StrategyContext, EventSpecRegistry, RuntimeContext,
     reset_event_seq,
 )
+from .observability import (
+    EVENT_TYPE_RUN_STARTED,
+    EVENT_TYPE_RUN_ENDED,
+    EVENT_TYPE_ORDER_SUBMITTED,
+    EVENT_TYPE_CANCEL_SUBMITTED,
+    EVENT_TYPE_RECEIPT_GENERATED,
+    EVENT_TYPE_RECEIPT_DELIVERED,
+    EVENT_TYPE_INTERVAL_ENDED,
+    EVENT_TYPE_OMS_ORDER_CHANGED,
+    EVENT_TYPE_SUBSCRIBER_ERRORED,
+    ObsStartPosition,
+    ObsSubscriptionState,
+    ObsEventEnvelope,
+    ObsSubscriptionOptions,
+    ObsSubscriptionStatus,
+    OMSOrderChange,
+)
 from .port import (
     IMarketDataStream, IMarketDataQuery, IIntervalModel,
-    IExecutionVenue, ISimulator, IMatchAlgorithm, IOMS, ITimeModel, IObservabilitySinks,
+    IExecutionVenue, ISimulator, IMatchAlgorithm, IOMS, ITimeModel,
+    IObservabilityIn, IObservabilityOut, IObservability,
     IStrategy,
 )
 from .scheduler import HeapScheduler

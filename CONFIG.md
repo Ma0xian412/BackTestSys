@@ -14,6 +14,7 @@
   - [投资组合配置 (portfolio)](#投资组合配置-portfolio)
   - [策略配置 (strategy)](#策略配置-strategy)
   - [回执记录器配置 (receipt_logger)](#回执记录器配置-receipt_logger)
+  - [可观测流配置 (observability_stream)](#可观测流配置-observability_stream)
   - [日志配置 (logging)](#日志配置-logging)
   - [快照处理配置 (snapshot)](#快照处理配置-snapshot)
 - [命令行覆盖](#命令行覆盖)
@@ -222,6 +223,29 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
     <!-- 方式2：提供文件夹路径，程序自动生成文件名（如 receipts_20240101_120000.csv） -->
     <!-- <output_file>output/</output_file> -->
 </receipt_logger>
+```
+
+---
+
+### 可观测流配置 (observability_stream)
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `history_dir` | string | `".obs_history"` | 运行中事件历史落盘目录（SQLite） |
+| `subscriber_max_memory_mb` | int | `8` | 单个订阅者缓冲区内存上限（MB） |
+
+行为说明：
+- 订阅默认从 `beginning` 开始读取当前 run 的历史
+- 历史使用 SQLite 文件保存
+- `logging.debug = true` 时历史文件保留
+- `logging.debug = false` 时在 run 结束且订阅者关闭/失效后自动清理
+
+**示例：**
+```xml
+<observability_stream>
+    <history_dir>.obs_history</history_dir>
+    <subscriber_max_memory_mb>8</subscriber_max_memory_mb>
+</observability_stream>
 ```
 
 ---
