@@ -7,7 +7,8 @@ from .data_structure import (
     Level, NormalizedSnapshot, Order, CancelRequest, Fill,
     TapeSegment, OrderReceipt, FillDetail, OrderDiagnostics,
     OrderSnapshot, PortfolioSnapshot, ReadOnlyOMSView,
-    EventKind, EVENT_KIND_MDARRIVE, EVENT_KIND_ACTION_ARRIVAL, EVENT_KIND_RECEIPT_DELIVERY,
+    EVENT_TYPE_MD_ARRIVE, EVENT_TYPE_ACTION_ARRIVAL, EVENT_TYPE_RECEIPT_DELIVERY,
+    EVENT_KIND_MDARRIVE, EVENT_KIND_ACTION_ARRIVAL, EVENT_KIND_RECEIPT_DELIVERY,
     ActionType, Action, ShadowOrder, Event, StrategyContext, EventSpecRegistry, RuntimeContext,
     reset_event_seq,
 )
@@ -21,6 +22,7 @@ from .observability import (
     EVENT_TYPE_INTERVAL_ENDED,
     EVENT_TYPE_OMS_ORDER_CHANGED,
     EVENT_TYPE_SUBSCRIBER_ERRORED,
+    EVENT_TYPE_OBS_EVENT_INVALID,
     ObsStartPosition,
     ObsSubscriptionState,
     ObsEventEnvelope,

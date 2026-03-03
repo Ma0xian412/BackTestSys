@@ -94,10 +94,10 @@ class ObsStreamRuntime:
                 raise RuntimeError("Run is not started")
             self._seq += 1
             event = ObsEventEnvelope(
+                type=str(event_type),
                 run_id=self._run_id,
                 seq=self._seq,
-                event_type=str(event_type),
-                sim_time=int(sim_time),
+                time=int(sim_time),
                 wall_time=float(time.time()),
                 payload=_normalize_payload_value(dict(payload)),
             )
@@ -192,15 +192,12 @@ class ObsStreamRuntime:
         batch_limit = max(max_items * 4, _DEFAULT_FETCH_CHUNK)
         events = self._history.fetch_range(start_seq, end_seq, batch_limit)
         if not events:
-            with sub.condition:
-                if sub.replay_seq <= end_seq:
-                    sub.replay_seq = end_seq + 1
             return []
         out: List[ObsEventEnvelope] = []
         with sub.condition:
             for event in events:
                 sub.replay_seq = int(event.seq) + 1
-                if sub.matches(event.event_type):
+                if sub.matches(event.type):
                     out.append(event)
                     if len(out) >= max_items:
                         break
@@ -239,7 +236,7 @@ class ObsStreamRuntime:
         with sub.condition:
             if sub.state != ObsSubscriptionState.ACTIVE or int(event.seq) < int(sub.live_min_seq):
                 return
-            if not sub.matches(event.event_type):
+            if not sub.matches(event.type):
                 return
             size = estimate_event_size_bytes(event)
             if sub.buffer_bytes + size > sub.max_memory_bytes:

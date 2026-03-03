@@ -12,6 +12,11 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
 from .kernel import EventLoopKernel
+from .obs_event_factory import (
+    make_oms_order_changed_event,
+    make_order_submitted_event,
+    make_receipt_delivered_event,
+)
 from .run_control import RunControl
 from .data_structure import (
     EVENT_KIND_ACTION_ARRIVAL,
@@ -45,9 +50,9 @@ class CompositionRoot:
 
     def build(self, config: RuntimeBuildConfig) -> RuntimeContext:
         config.venue.set_market_data_query(config.feed)
-        config.oms.subscribe_new(config.obs.on_order_submitted)
-        config.oms.subscribe_receipt(config.obs.on_receipt_delivered)
-        config.oms.subscribe_order_change(config.obs.on_oms_order_changed)
+        config.oms.subscribe_new(lambda order: config.obs.ingest(make_order_submitted_event(order)))
+        config.oms.subscribe_receipt(lambda receipt: config.obs.ingest(make_receipt_delivered_event(receipt)))
+        config.oms.subscribe_order_change(lambda change: config.obs.ingest(make_oms_order_changed_event(change)))
 
         event_spec = config.eventSpec or EventSpecRegistry.default()
         dispatcher = config.dispatcher or Dispatcher(event_spec)

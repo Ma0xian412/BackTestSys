@@ -6,6 +6,7 @@ from typing import Any, Callable, List, Mapping, Optional, TYPE_CHECKING
 from .data_structure import (
     Action,
     CancelRequest,
+    Event,
     NormalizedSnapshot,
     Order,
     OrderReceipt,
@@ -184,39 +185,7 @@ class IObservabilityIn(ABC):
     """可观测性对内接口（框架事件输入）。"""
 
     @abstractmethod
-    def on_run_started(self, context: dict) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_order_submitted(self, order: Order) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_cancel_submitted(self, request: CancelRequest) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_receipt_generated(self, receipt: OrderReceipt) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_receipt_delivered(self, receipt: OrderReceipt) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_interval_end(self, stats: object) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_oms_order_changed(self, change: OMSOrderChange) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_run_end(self, context: dict) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def emit_custom(self, event_type: str, sim_time: int, payload: Mapping[str, Any]) -> None:
+    def ingest(self, event: Event) -> None:
         raise NotImplementedError
 
     @abstractmethod

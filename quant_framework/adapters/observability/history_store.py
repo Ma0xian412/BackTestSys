@@ -52,7 +52,7 @@ class SQLiteHistoryStore:
         payload = sqlite3.Binary(pickle.dumps(event, protocol=pickle.HIGHEST_PROTOCOL))
         self._write_conn.execute(
             "INSERT INTO events (seq, event_type, data) VALUES (?, ?, ?)",
-            (int(event.seq), str(event.event_type), payload),
+            (int(event.seq), str(event.type), payload),
         )
         self._write_conn.commit()
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Optional, Tuple
+from typing import Optional, Tuple
+
+from .data_structure import Event
 
 
 EVENT_TYPE_RUN_STARTED = "run.started"
@@ -16,6 +18,7 @@ EVENT_TYPE_RECEIPT_DELIVERED = "receipt.delivered"
 EVENT_TYPE_INTERVAL_ENDED = "interval.ended"
 EVENT_TYPE_OMS_ORDER_CHANGED = "oms.order.changed"
 EVENT_TYPE_SUBSCRIBER_ERRORED = "subscriber.errored"
+EVENT_TYPE_OBS_EVENT_INVALID = "obs.event.invalid"
 
 
 class ObsStartPosition(str, Enum):
@@ -33,17 +36,7 @@ class ObsSubscriptionState(str, Enum):
     CLOSED = "closed"
 
 
-@dataclass(frozen=True)
-class ObsEventEnvelope:
-    """对外发布的可观测事件包。"""
-
-    run_id: str
-    seq: int
-    event_type: str
-    sim_time: int
-    wall_time: float
-    payload: Mapping[str, Any] = field(default_factory=dict)
-    schema_version: int = 1
+ObsEventEnvelope = Event
 
 
 @dataclass(frozen=True)

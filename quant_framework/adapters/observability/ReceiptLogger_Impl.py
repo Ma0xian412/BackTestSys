@@ -1,44 +1,54 @@
-"""回执记录器 + 流式可观测对外接口实现。"""
+"""回执记录器 + 流式可观测实现（ingest 单入口）。"""
 
 from __future__ import annotations
 
 import logging
 from typing import Callable, Dict, List, Mapping, Optional
 
-from ...core.data_structure import CancelRequest, Order, OrderReceipt
+from ...core.data_structure import Event, OrderReceipt
 from ...core.observability import (
     EVENT_TYPE_CANCEL_SUBMITTED,
     EVENT_TYPE_INTERVAL_ENDED,
+    EVENT_TYPE_OBS_EVENT_INVALID,
     EVENT_TYPE_OMS_ORDER_CHANGED,
     EVENT_TYPE_ORDER_SUBMITTED,
     EVENT_TYPE_RECEIPT_DELIVERED,
     EVENT_TYPE_RECEIPT_GENERATED,
     EVENT_TYPE_RUN_ENDED,
     EVENT_TYPE_RUN_STARTED,
-    OMSOrderChange,
     ObsEventEnvelope,
     ObsSubscriptionOptions,
     ObsSubscriptionStatus,
 )
 from ...core.port import IObservability, IOMS
 from .receipt_logger_utils import (
+    ReceiptRecord,
     build_statistics,
     calculate_fill_rate,
     calculate_fill_rate_by_count,
     print_receipt_line,
     print_summary as print_receipt_summary,
-    ReceiptRecord,
     records_as_dicts,
     save_receipts_csv,
 )
+from .receipt_logger_ingest_utils import (
+    payload_for_publish,
+    payload_mapping,
+    receipt_from_payload,
+    validate_cancel_payload,
+    validate_oms_change_payload,
+    validate_order_payload,
+)
 from .stream_runtime import ObsStreamRuntime
+
 logger = logging.getLogger(__name__)
 _DEFAULT_HISTORY_DIR = ".obs_history"
 _DEFAULT_SUBSCRIBER_MEMORY = 8 * 1024 * 1024
 ReceiptCallback = Callable[[OrderReceipt], None]
 
+
 class ReceiptLogger_Impl(IObservability):
-    """可观测性实现：统计 + 流式事件分发。"""
+    """可观测实现：接收框架事件流并发布订阅流。"""
 
     def __init__(
         self,
@@ -81,110 +91,123 @@ class ReceiptLogger_Impl(IObservability):
     def receipt_logger(self) -> "ReceiptLogger_Impl":
         return self
 
-    def on_run_started(self, context: dict) -> None:
+    def ingest(self, event: Event) -> None:
+        if event.type == EVENT_TYPE_RUN_STARTED:
+            self._ingest_run_started(event)
+            return
+        self._ensure_run_started()
+        try:
+            should_publish = self._ingest_known_event(event)
+        except ValueError as exc:
+            self._publish_invalid_event(event, str(exc))
+            return
+        if should_publish:
+            self._publish_event(event)
+
+    def _ingest_run_started(self, event: Event) -> None:
+        payload = payload_mapping(event.payload)
         if self._run_open:
             self._runtime.finish_run()
-        run_id = context.get("run_id")
-        assigned = self._runtime.start_run(run_id if isinstance(run_id, str) and run_id else None)
+        run_id = payload.get("run_id")
+        seed_id = run_id if isinstance(run_id, str) and run_id else (event.run_id or None)
+        assigned = self._runtime.start_run(seed_id)
         self._run_open = True
         self._run_id = assigned
-        payload = dict(context)
-        payload["run_id"] = assigned
-        self._runtime.publish(EVENT_TYPE_RUN_STARTED, sim_time=int(context.get("sim_time", 0)), payload=payload)
+        start_payload = dict(payload)
+        start_payload["run_id"] = assigned
+        self._runtime.publish(EVENT_TYPE_RUN_STARTED, sim_time=int(event.time), payload=start_payload)
 
-    def on_order_submitted(self, order: Order) -> None:
-        self._ensure_run_started()
-        self._diagnostics["orders_submitted"] += 1
-        self._runtime.publish(
-            EVENT_TYPE_ORDER_SUBMITTED,
-            sim_time=int(order.create_time),
-            payload={
-                "order_id": order.order_id,
-                "side": str(order.side.value),
-                "price": float(order.price),
-                "qty": int(order.qty),
-                "status": str(order.status.value),
-            },
-        )
+    def _ingest_known_event(self, event: Event) -> bool:
+        event_type = event.type
+        if event_type == EVENT_TYPE_ORDER_SUBMITTED:
+            validate_order_payload(payload_mapping(event.payload))
+            self._diagnostics["orders_submitted"] += 1
+            return True
+        if event_type == EVENT_TYPE_CANCEL_SUBMITTED:
+            validate_cancel_payload(payload_mapping(event.payload))
+            self._diagnostics["cancels_submitted"] += 1
+            return True
+        if event_type == EVENT_TYPE_RECEIPT_GENERATED:
+            _ = receipt_from_payload(payload_mapping(event.payload))
+            self._diagnostics["receipts_generated"] += 1
+            return True
+        if event_type == EVENT_TYPE_RECEIPT_DELIVERED:
+            receipt = receipt_from_payload(payload_mapping(event.payload))
+            self._log_receipt(receipt)
+            if receipt.receipt_type in {"FILL", "PARTIAL"}:
+                self._diagnostics["orders_filled"] += 1
+            return True
+        if event_type == EVENT_TYPE_INTERVAL_ENDED:
+            payload_mapping(event.payload)
+            self._diagnostics["intervals_processed"] += 1
+            return True
+        if event_type == EVENT_TYPE_OMS_ORDER_CHANGED:
+            validate_oms_change_payload(payload_mapping(event.payload))
+            return True
+        if event_type == EVENT_TYPE_RUN_ENDED:
+            self._ingest_run_ended(event)
+            return False
+        logger.warning("Unknown observability event type: %s", event_type)
+        return True
 
-    def on_cancel_submitted(self, request: CancelRequest) -> None:
-        self._ensure_run_started()
-        self._diagnostics["cancels_submitted"] += 1
-        self._runtime.publish(
-            EVENT_TYPE_CANCEL_SUBMITTED,
-            sim_time=int(request.create_time),
-            payload={"order_id": request.order_id, "create_time": int(request.create_time)},
-        )
-
-    def on_receipt_generated(self, receipt: OrderReceipt) -> None:
-        self._ensure_run_started()
-        self._diagnostics["receipts_generated"] += 1
-        self._runtime.publish(
-            EVENT_TYPE_RECEIPT_GENERATED,
-            sim_time=int(receipt.timestamp),
-            payload=self._receipt_payload(receipt),
-        )
-
-    def on_receipt_delivered(self, receipt: OrderReceipt) -> None:
-        self._ensure_run_started()
-        self._log_receipt(receipt)
-        if receipt.receipt_type in {"FILL", "PARTIAL"}:
-            self._diagnostics["orders_filled"] += 1
-        self._runtime.publish(
-            EVENT_TYPE_RECEIPT_DELIVERED,
-            sim_time=int(receipt.recv_time or receipt.timestamp),
-            payload=self._receipt_payload(receipt),
-        )
-
-    def on_interval_end(self, stats: object) -> None:
-        self._ensure_run_started()
-        self._diagnostics["intervals_processed"] += 1
-        payload = stats if isinstance(stats, Mapping) else {"stats_repr": repr(stats)}
-        sim_time = 0
-        if isinstance(stats, Mapping):
-            sim_time = int(stats.get("interval_end", 0) or 0)
-        self._runtime.publish(EVENT_TYPE_INTERVAL_ENDED, sim_time=sim_time, payload=dict(payload))
-
-    def on_oms_order_changed(self, change: OMSOrderChange) -> None:
-        self._ensure_run_started()
-        self._runtime.publish(
-            EVENT_TYPE_OMS_ORDER_CHANGED,
-            sim_time=int(change.timestamp),
-            payload={
-                "order_id": change.order_id,
-                "prev_status": change.prev_status,
-                "new_status": change.new_status,
-                "prev_filled_qty": change.prev_filled_qty,
-                "new_filled_qty": change.new_filled_qty,
-                "prev_remaining_qty": change.prev_remaining_qty,
-                "new_remaining_qty": change.new_remaining_qty,
-                "timestamp": change.timestamp,
-            },
-        )
-
-    def on_run_end(self, context: dict) -> None:
-        self._ensure_run_started()
-        self._final_time = int(context.get("final_time", 0))
-        self._error = context.get("error")
-        self._status = str(context.get("status", "completed"))
-        self._interrupted = bool(context.get("interrupted", self._status == "interrupted"))
-        self._interrupt_reason = context.get("interrupt_reason")
-        payload = dict(context)
+    def _ingest_run_ended(self, event: Event) -> None:
+        payload = payload_mapping(event.payload)
+        self._final_time = int(payload.get("final_time", event.time))
+        self._error = payload.get("error")
+        self._status = str(payload.get("status", "completed"))
+        self._interrupted = bool(payload.get("interrupted", self._status == "interrupted"))
+        self._interrupt_reason = payload.get("interrupt_reason")
+        end_payload = dict(payload)
         if self._run_id:
-            payload["run_id"] = self._run_id
-        self._runtime.publish(
-            EVENT_TYPE_RUN_ENDED,
-            sim_time=int(context.get("final_time", 0)),
-            payload=payload,
-        )
+            end_payload["run_id"] = self._run_id
+        self._runtime.publish(EVENT_TYPE_RUN_ENDED, sim_time=int(event.time), payload=end_payload)
         self._runtime.finish_run()
         self._run_open = False
 
-    def emit_custom(self, event_type: str, sim_time: int, payload: Mapping[str, object]) -> None:
-        self._ensure_run_started()
-        if not event_type:
-            raise ValueError("event_type must not be empty")
-        self._runtime.publish(event_type=event_type, sim_time=sim_time, payload=payload)
+    def _publish_event(self, event: Event) -> None:
+        payload = payload_for_publish(event.payload)
+        self._runtime.publish(event.type, sim_time=int(event.time), payload=payload)
+
+    def _publish_invalid_event(self, source_event: Event, reason: str) -> None:
+        logger.warning("Invalid event payload for type=%s: %s", source_event.type, reason)
+        payload = {
+            "reason": reason,
+            "source_type": source_event.type,
+            "source_time": int(source_event.time),
+            "source_payload": repr(source_event.payload),
+        }
+        self._runtime.publish(EVENT_TYPE_OBS_EVENT_INVALID, sim_time=int(source_event.time), payload=payload)
+
+    def _ensure_run_started(self) -> None:
+        if self._run_id is not None:
+            return
+        seed = Event(type=EVENT_TYPE_RUN_STARTED, time=0, payload={"auto_started": True})
+        self._ingest_run_started(seed)
+
+    def __del__(self) -> None:
+        if not self._run_open:
+            return
+        try:
+            self._runtime.finish_run()
+        except Exception:
+            return
+
+    def subscribe(self, options: Optional[ObsSubscriptionOptions] = None) -> str:
+        return self._runtime.subscribe(options)
+
+    def poll(self, subscription_id: str, max_items: int = 1, timeout_ms: int = 0) -> List[ObsEventEnvelope]:
+        try:
+            return self._runtime.poll(subscription_id, max_items=max_items, timeout_ms=timeout_ms)
+        except RuntimeError as exc:
+            if "closed" in str(exc):
+                return []
+            raise
+
+    def unsubscribe(self, subscription_id: str) -> None:
+        self._runtime.unsubscribe(subscription_id)
+
+    def get_subscription_status(self, subscription_id: str) -> ObsSubscriptionStatus:
+        return self._runtime.get_subscription_status(subscription_id)
 
     def get_diagnostics(self) -> dict:
         return dict(self._diagnostics)
@@ -203,23 +226,6 @@ class ReceiptLogger_Impl(IObservability):
         if self._run_id is not None:
             result["run_id"] = self._run_id
         return result
-
-    def subscribe(self, options: Optional[ObsSubscriptionOptions] = None) -> str:
-        return self._runtime.subscribe(options)
-
-    def poll(self, subscription_id: str, max_items: int = 1, timeout_ms: int = 0) -> List[ObsEventEnvelope]:
-        try:
-            return self._runtime.poll(subscription_id, max_items=max_items, timeout_ms=timeout_ms)
-        except RuntimeError as exc:
-            if "closed" in str(exc):
-                return []
-            raise
-
-    def unsubscribe(self, subscription_id: str) -> None:
-        self._runtime.unsubscribe(subscription_id)
-
-    def get_subscription_status(self, subscription_id: str) -> ObsSubscriptionStatus:
-        return self._runtime.get_subscription_status(subscription_id)
 
     def _log_receipt(self, receipt: OrderReceipt) -> None:
         self.records.append(
@@ -240,39 +246,6 @@ class ReceiptLogger_Impl(IObservability):
                 self.callback(receipt)
             except Exception as exc:
                 logger.warning("Receipt callback raised exception: %s", exc)
-
-    @staticmethod
-    def _receipt_payload(receipt: OrderReceipt) -> Dict[str, object]:
-        return {
-            "order_id": receipt.order_id,
-            "receipt_type": receipt.receipt_type,
-            "timestamp": int(receipt.timestamp),
-            "fill_qty": int(receipt.fill_qty),
-            "fill_price": float(receipt.fill_price),
-            "remaining_qty": int(receipt.remaining_qty),
-            "pos": int(receipt.pos),
-            "recv_time": int(receipt.recv_time or 0),
-        }
-
-    def _ensure_run_started(self) -> None:
-        if self._run_id is not None:
-            return
-        assigned = self._runtime.start_run(None)
-        self._run_open = True
-        self._run_id = assigned
-        self._runtime.publish(
-            EVENT_TYPE_RUN_STARTED,
-            sim_time=0,
-            payload={"run_id": assigned, "auto_started": True},
-        )
-
-    def __del__(self) -> None:
-        if not self._run_open:
-            return
-        try:
-            self._runtime.finish_run()
-        except Exception:
-            return
 
     def get_statistics(self) -> dict:
         return build_statistics(self.records, self._oms)
@@ -297,4 +270,3 @@ class ReceiptLogger_Impl(IObservability):
 
     def clear(self) -> None:
         self.records.clear()
-

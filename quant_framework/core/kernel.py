@@ -11,6 +11,12 @@ from .data_structure import (
     RuntimeContext,
     reset_event_seq,
 )
+from .obs_event_factory import (
+    make_interval_ended_event,
+    make_receipt_generated_event,
+    make_run_ended_event,
+    make_run_started_event,
+)
 from .run_control import DEFAULT_INTERRUPT_REASON, RunControl
 from .scheduler import HeapScheduler
 
@@ -32,7 +38,7 @@ class EventLoopKernel:
         reset_event_seq()
         self._t_cur = 0
         self._scheduler.clear()
-        ctx.obs.on_run_started({})
+        ctx.obs.ingest(make_run_started_event(sim_time=0, context={}))
 
         if self._should_stop(run_control):
             return self._finish_run(ctx, run_control=run_control, interrupted=True)
@@ -128,12 +134,12 @@ class EventLoopKernel:
         for receipt in receipts:
             if receipt.receipt_type == "NONE":
                 continue
-            ctx.obs.on_receipt_generated(receipt)
+            ctx.obs.ingest(make_receipt_generated_event(receipt))
             t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
             self._scheduler.push(
                 Event(
+                    type=EVENT_KIND_RECEIPT_DELIVERY,
                     time=self._clampTime(int(t_deliver), next_time, t_b),
-                    kind=EVENT_KIND_RECEIPT_DELIVERY,
                     priority=ctx.eventSpec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY),
                     payload=receipt,
                 )
@@ -151,7 +157,7 @@ class EventLoopKernel:
 
     def _close_interval(self, ctx: RuntimeContext, t_b: int) -> None:
         interval_stats = ctx.venue.flush_window()
-        ctx.obs.on_interval_end(interval_stats)
+        ctx.obs.ingest(make_interval_ended_event(interval_stats))
         self._t_cur = t_b
 
     def _finish_run(
@@ -172,7 +178,7 @@ class EventLoopKernel:
         }
         if error is not None:
             run_context["error"] = error
-        ctx.obs.on_run_end(run_context)
+        ctx.obs.ingest(make_run_ended_event(sim_time=self._t_cur, context=run_context))
         return ctx.obs.get_run_result()
 
     @staticmethod
@@ -188,8 +194,8 @@ class EventLoopKernel:
     def _push_market_data_event(self, ctx: RuntimeContext, payload: object, event_time: int) -> None:
         self._scheduler.push(
             Event(
+                type=EVENT_KIND_MDARRIVE,
                 time=event_time,
-                kind=EVENT_KIND_MDARRIVE,
                 priority=ctx.eventSpec.priorityOf(EVENT_KIND_MDARRIVE),
                 payload=payload,
             )

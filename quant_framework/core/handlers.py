@@ -17,6 +17,10 @@ from .data_structure import (
     StrategyContext,
 )
 from .dispatcher import IEventHandler
+from .obs_event_factory import (
+    make_cancel_submitted_event,
+    make_receipt_generated_event,
+)
 
 
 def _clamp_time(t: int, floor: int) -> int:
@@ -46,14 +50,14 @@ class MDArriveHandler(IEventHandler):
             elif action.action_type == ActionType.CANCEL_ORDER:
                 request: CancelRequest = action.payload
                 ctx.oms.submit_cancel(request, send_time)
-                ctx.obs.on_cancel_submitted(request)
+                ctx.obs.ingest(make_cancel_submitted_event(request))
             else:
                 raise ValueError(f"Unsupported action type: {action.action_type!r}")
             t_arrive = ctx.timeModel.delayout(send_time)
             emitted.append(
                 Event(
+                    type=EVENT_KIND_ACTION_ARRIVAL,
                     time=_clamp_time(int(t_arrive), e.time),
-                    kind=EVENT_KIND_ACTION_ARRIVAL,
                     priority=ctx.eventSpec.priorityOf(EVENT_KIND_ACTION_ARRIVAL),
                     payload=action,
                 )
@@ -73,12 +77,12 @@ class ActionArrivalHandler(IEventHandler):
         for receipt in receipts:
             if receipt.receipt_type == "NONE":
                 continue
-            ctx.obs.on_receipt_generated(receipt)
+            ctx.obs.ingest(make_receipt_generated_event(receipt))
             t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
             emitted.append(
                 Event(
+                    type=EVENT_KIND_RECEIPT_DELIVERY,
                     time=_clamp_time(int(t_deliver), e.time),
-                    kind=EVENT_KIND_RECEIPT_DELIVERY,
                     priority=ctx.eventSpec.priorityOf(EVENT_KIND_RECEIPT_DELIVERY),
                     payload=receipt,
                 )
@@ -113,14 +117,14 @@ class ReceiptDeliveryHandler(IEventHandler):
             elif action.action_type == ActionType.CANCEL_ORDER:
                 request: CancelRequest = action.payload
                 ctx.oms.submit_cancel(request, send_time)
-                ctx.obs.on_cancel_submitted(request)
+                ctx.obs.ingest(make_cancel_submitted_event(request))
             else:
                 raise ValueError(f"Unsupported action type: {action.action_type!r}")
             t_arrive = ctx.timeModel.delayout(send_time)
             emitted.append(
                 Event(
+                    type=EVENT_KIND_ACTION_ARRIVAL,
                     time=_clamp_time(int(t_arrive), e.time),
-                    kind=EVENT_KIND_ACTION_ARRIVAL,
                     priority=ctx.eventSpec.priorityOf(EVENT_KIND_ACTION_ARRIVAL),
                     payload=action,
                 )
