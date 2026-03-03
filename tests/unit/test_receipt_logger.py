@@ -10,7 +10,11 @@ import os
 import tempfile
 
 from quant_framework.core.data_structure import Order, OrderReceipt, OrderStatus, Side
-from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
+from quant_framework.core.obs_event_factory import (
+    make_order_submitted_event,
+    make_receipt_delivered_event,
+)
+from quant_framework.adapters.observability.Observability_Impl import Observability_Impl
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 
 
@@ -18,12 +22,12 @@ def test_receipt_logger():
     """完整流程：OMS 登记订单 + 应用回执，Obs 记录 + 统计。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         output_file = os.path.join(tmpdir, "receipts.csv")
-        obs = ReceiptLogger_Impl(output_file=output_file)
+        obs = Observability_Impl(output_file=output_file)
         oms = OMS_Impl(portfolio=Portfolio())
 
         obs.set_oms(oms)
-        oms.subscribe_new(obs.on_order_submitted)
-        oms.subscribe_receipt(obs.on_receipt_delivered)
+        oms.subscribe_new(lambda order: obs.ingest(make_order_submitted_event(order)))
+        oms.subscribe_receipt(lambda receipt: obs.ingest(make_receipt_delivered_event(receipt)))
 
         o1 = Order(order_id="order-1", side=Side.BUY, price=100.5, qty=100)
         o2 = Order(order_id="order-2", side=Side.BUY, price=99.0, qty=50)

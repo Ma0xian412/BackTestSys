@@ -2,8 +2,10 @@
 
 import os
 import tempfile
+import threading
+import time
 
-from quant_framework.adapters import ExecutionVenue_Impl, ReceiptLogger_Impl, TimeModel_Impl
+from quant_framework.adapters import ExecutionVenue_Impl, Observability_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_MDARRIVE,
@@ -19,7 +21,7 @@ from quant_framework.adapters.execution_venue import (
 )
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 from quant_framework.adapters.IStrategy.Replay_Strategy import ReplayStrategy_Impl
-from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
+from quant_framework.adapters.observability.Observability_Impl import Observability_Impl
 
 from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 
@@ -40,7 +42,7 @@ def test_basic_pipeline():
         )
     )
     oms = OMS_Impl()
-    receipt_logger = ReceiptLogger_Impl()
+    receipt_logger = Observability_Impl()
 
     class _OneShot:
         def __init__(self):
@@ -134,7 +136,7 @@ def test_pipeline_with_delays():
                 delay_out=10 * TICK_PER_MS,
                 delay_in=5 * TICK_PER_MS,
             ),
-            obs=ReceiptLogger_Impl(),
+            obs=Observability_Impl(),
         ),
     )
     result = app.run()
@@ -170,7 +172,7 @@ def test_replay_pipeline():
             ),
         ]
 
-        receipt_logger = ReceiptLogger_Impl()
+        receipt_logger = Observability_Impl()
         app = BacktestApp(
             RuntimeBuildConfig(
                 feed=MockFeed(snapshots),
@@ -199,3 +201,79 @@ def test_replay_pipeline():
         assert results['diagnostics']['cancels_submitted'] == 1, (
             f"应有 1 个撤单，实际 {results['diagnostics']['cancels_submitted']}"
         )
+
+
+def _build_interrupt_test_app(snapshots, strategy):
+    venue = ExecutionVenue_Impl(
+        simulator=Simulator_Impl(
+            match_algo=SegmentBaseAlgorithm(
+                cancel_bias_k=0.0,
+                tape_builder=UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0),
+            )
+        ),
+    )
+    return BacktestApp(
+        RuntimeBuildConfig(
+            feed=MockFeed(snapshots),
+            venue=venue,
+            strategy=strategy,
+            oms=OMS_Impl(),
+            timeModel=TimeModel_Impl(delay_out=0, delay_in=0),
+            obs=Observability_Impl(),
+        ),
+    )
+
+
+def test_run_can_interrupt_before_start():
+    snapshots = [
+        create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0),
+        create_test_snapshot(1500 * TICK_PER_MS, 100.1, 101.1),
+    ]
+
+    class _NoOpStrategy:
+        def on_event(self, e, ctx):
+            return []
+
+    app = _build_interrupt_test_app(snapshots, _NoOpStrategy())
+    app.request_stop("external_request")
+    result = app.run()
+
+    assert result["status"] == "interrupted"
+    assert result["interrupted"] is True
+    assert result["interrupt_reason"] == "external_request"
+    assert result["intervals"] == 0
+
+
+def test_run_can_interrupt_during_execution():
+    snapshots = [
+        create_test_snapshot((1000 + i * 500) * TICK_PER_MS, 100.0, 101.0)
+        for i in range(60)
+    ]
+    first_md_seen = threading.Event()
+
+    class _SlowStrategy:
+        def on_event(self, e, ctx):
+            if e.kind == EVENT_KIND_MDARRIVE:
+                first_md_seen.set()
+                time.sleep(0.003)
+            return []
+
+    app = _build_interrupt_test_app(snapshots, _SlowStrategy())
+    result_holder = {}
+
+    def _run_app():
+        result_holder["result"] = app.run()
+
+    run_thread = threading.Thread(target=_run_app)
+    run_thread.start()
+    assert first_md_seen.wait(timeout=1.0), "策略未收到首个行情事件"
+    time.sleep(0.01)
+    app.request_stop("external_request")
+    run_thread.join(timeout=5.0)
+
+    assert not run_thread.is_alive(), "中断后 run 线程应及时退出"
+    result = result_holder["result"]
+    assert result["status"] == "interrupted"
+    assert result["interrupted"] is True
+    assert result["interrupt_reason"] == "external_request"
+    assert result["intervals"] < len(snapshots) - 1

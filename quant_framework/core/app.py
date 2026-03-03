@@ -7,11 +7,17 @@ CompositionRoot 只负责通用 wiring（连接接口间的 callback、注册 ha
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .dispatcher import Dispatcher
 from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
 from .kernel import EventLoopKernel
+from .obs_event_factory import (
+    make_oms_order_changed_event,
+    make_order_submitted_event,
+    make_receipt_delivered_event,
+)
+from .run_control import RunControl
 from .data_structure import (
     EVENT_KIND_ACTION_ARRIVAL,
     EVENT_KIND_RECEIPT_DELIVERY,
@@ -19,6 +25,9 @@ from .data_structure import (
     EventSpecRegistry,
     RuntimeContext,
 )
+
+if TYPE_CHECKING:
+    from .port import IObservability
 
 
 @dataclass
@@ -30,7 +39,7 @@ class RuntimeBuildConfig:
     strategy: Any
     oms: Any
     timeModel: Any
-    obs: Any
+    obs: "IObservability"
     eventSpec: Optional[EventSpecRegistry] = None
     dispatcher: Optional[Dispatcher] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -41,8 +50,9 @@ class CompositionRoot:
 
     def build(self, config: RuntimeBuildConfig) -> RuntimeContext:
         config.venue.set_market_data_query(config.feed)
-        config.oms.subscribe_new(config.obs.on_order_submitted)
-        config.oms.subscribe_receipt(config.obs.on_receipt_delivered)
+        config.oms.subscribe_new(lambda order: config.obs.ingest(make_order_submitted_event(order)))
+        config.oms.subscribe_receipt(lambda receipt: config.obs.ingest(make_receipt_delivered_event(receipt)))
+        config.oms.subscribe_order_change(lambda change: config.obs.ingest(make_oms_order_changed_event(change)))
 
         event_spec = config.eventSpec or EventSpecRegistry.default()
         dispatcher = config.dispatcher or Dispatcher(event_spec)
@@ -77,11 +87,18 @@ class BacktestApp:
         self._composition_root = composition_root or CompositionRoot()
         self._kernel = kernel or EventLoopKernel()
         self._last_context: Optional[RuntimeContext] = None
+        self._run_control = RunControl()
 
     def run(self) -> Dict[str, Any]:
         ctx = self._composition_root.build(self._config)
         self._last_context = ctx
-        return self._kernel.run(ctx)
+        try:
+            return self._kernel.run(ctx, run_control=self._run_control)
+        finally:
+            self._run_control = RunControl()
+
+    def request_stop(self, reason: str = "external_request") -> None:
+        self._run_control.request_stop(reason)
 
     @property
     def last_context(self) -> Optional[RuntimeContext]:

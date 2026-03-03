@@ -1,7 +1,7 @@
 """核心类型定义模块。"""
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from enum import Enum
 
 # 基本类型别名
@@ -411,17 +411,14 @@ class ReadOnlyOMSView:
         )
 
 
-class EventKind(str, Enum):
-    """事件类型枚举。"""
+EVENT_TYPE_MD_ARRIVE = "md.arrive"
+EVENT_TYPE_ACTION_ARRIVAL = "action.arrive"
+EVENT_TYPE_RECEIPT_DELIVERY = "receipt.delivery"
 
-    MDARRIVE = "MDArrive"
-    ACTION_ARRIVAL = "ActionArrival"
-    RECEIPT_DELIVERY = "ReceiptDelivery"
-
-
-EVENT_KIND_MDARRIVE = EventKind.MDARRIVE
-EVENT_KIND_ACTION_ARRIVAL = EventKind.ACTION_ARRIVAL
-EVENT_KIND_RECEIPT_DELIVERY = EventKind.RECEIPT_DELIVERY
+# 兼容旧常量命名，值统一为字符串事件类型。
+EVENT_KIND_MDARRIVE = EVENT_TYPE_MD_ARRIVE
+EVENT_KIND_ACTION_ARRIVAL = EVENT_TYPE_ACTION_ARRIVAL
+EVENT_KIND_RECEIPT_DELIVERY = EVENT_TYPE_RECEIPT_DELIVERY
 
 
 class ActionType(Enum):
@@ -491,11 +488,28 @@ def reset_event_seq() -> None:
 class Event:
     """调度器中的统一事件。"""
 
-    time: int
-    kind: EventKind
-    payload: object
+    type: str = ""
+    time: int = 0
+    payload: object = None
+    kind: str = ""
+    run_id: str = ""
     priority: int = 0
+    wall_time: float = 0.0
+    schema_version: int = 1
+    meta: Dict[str, Any] = field(default_factory=dict)
     seq: int = field(default_factory=_next_seq)
+
+    def __post_init__(self) -> None:
+        if self.type and not self.kind:
+            self.kind = self.type
+            return
+        if self.kind and not self.type:
+            self.type = self.kind
+            return
+        if not self.type and not self.kind:
+            raise ValueError("Event.type must not be empty")
+        if self.type != self.kind:
+            self.kind = self.type
 
     def __lt__(self, other: "Event") -> bool:
         if self.time != other.time:
@@ -518,8 +532,8 @@ class StrategyContext:
 class EventSpecRegistry:
     """事件规范与优先级注册中心。"""
 
-    _priorities: Dict[EventKind, int]
-    _validators: Dict[EventKind, Callable[[object], bool]]
+    _priorities: Dict[str, int]
+    _validators: Dict[str, Callable[[object], bool]]
 
     @classmethod
     def default(cls) -> "EventSpecRegistry":
@@ -537,19 +551,19 @@ class EventSpecRegistry:
             },
         )
 
-    def priorityOf(self, kind: EventKind) -> int:
-        return self._priorities.get(kind, 99)
+    def priorityOf(self, event_type: str) -> int:
+        return self._priorities.get(event_type, 99)
 
-    def validate(self, kind: EventKind, payload: object) -> bool:
-        validator = self._validators.get(kind)
+    def validate(self, event_type: str, payload: object) -> bool:
+        validator = self._validators.get(event_type)
         if validator is None:
             return True
         return bool(validator(payload))
 
-    def register(self, kind: EventKind, priority: int, validator: Optional[Callable[[object], bool]] = None) -> None:
-        self._priorities[kind] = priority
+    def register(self, event_type: str, priority: int, validator: Optional[Callable[[object], bool]] = None) -> None:
+        self._priorities[event_type] = priority
         if validator is not None:
-            self._validators[kind] = validator
+            self._validators[event_type] = validator
 
 
 @dataclass
@@ -561,8 +575,12 @@ class RuntimeContext:
     strategy: Any
     oms: Any
     timeModel: Any
-    obs: Any
+    obs: "IObservability"
     dispatcher: Any
     eventSpec: EventSpecRegistry
     last_snapshot: Optional[NormalizedSnapshot] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+if TYPE_CHECKING:
+    from .port import IObservability

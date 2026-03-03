@@ -137,13 +137,13 @@ def setup_logging(config: BacktestConfig) -> str:
         logging.getLogger('quant_framework.adapters.execution_venue.match_algorithm').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.DEBUG)
-        logging.getLogger('quant_framework.adapters.observability.ReceiptLogger_Impl').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.adapters.observability.Observability_Impl').setLevel(logging.DEBUG)
     else:
         logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.adapters.execution_venue.match_algorithm').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.WARNING)
-        logging.getLogger('quant_framework.adapters.observability.ReceiptLogger_Impl').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.adapters.observability.Observability_Impl').setLevel(logging.WARNING)
     
     return log_file or ""
 
@@ -199,10 +199,20 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         ctx = app.last_context
         oms = ctx.oms if ctx is not None else None
         receipt_logger = getattr(getattr(ctx, "obs", None), "receipt_logger", None)
-        print("\nBacktest completed successfully!")
+
+        run_status = str(results.get("status", "completed"))
+        interrupted = bool(results.get("interrupted", run_status == "interrupted"))
+        interrupt_reason = results.get("interrupt_reason") or "external_request"
+
+        if interrupted:
+            print("\nBacktest interrupted gracefully!")
+            print(f"Interrupt reason: {interrupt_reason}")
+        else:
+            print("\nBacktest completed successfully!")
         print("=" * 60)
         print("回测运行结果 (Backtest Execution Results)")
         print("=" * 60)
+        print(f"  status (运行状态): {run_status}")
         print(f"  intervals (处理的快照区间数): {results.get('intervals', 0)}")
         print(f"  final_time (最终时间戳 tick): {results.get('final_time', 0)}")
         

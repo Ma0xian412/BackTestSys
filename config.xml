@@ -104,6 +104,17 @@ BackTestSys 回测系统配置文件
     </receipt_logger>
 
     <!-- ============================================================================
+         可观测流配置 (Observability Stream Configuration)
+         ============================================================================ -->
+    <observability_stream>
+        <!-- 运行中历史事件的落盘目录 -->
+        <history_dir>.obs_history</history_dir>
+
+        <!-- 单个订阅者缓冲区内存上限（MB） -->
+        <subscriber_max_memory_mb>8</subscriber_max_memory_mb>
+    </observability_stream>
+
+    <!-- ============================================================================
          日志配置 (Logging Configuration)
          ============================================================================ -->
     <logging>

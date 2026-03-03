@@ -1,16 +1,23 @@
 """核心端口定义。"""
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Mapping, Optional, TYPE_CHECKING
+from typing import Any, Callable, List, Mapping, Optional, TYPE_CHECKING
 
 from .data_structure import (
     Action,
     CancelRequest,
+    Event,
     NormalizedSnapshot,
     Order,
     OrderReceipt,
     ShadowOrder,
     TapeSegment,
+)
+from .observability import (
+    OMSOrderChange,
+    ObsEventEnvelope,
+    ObsSubscriptionOptions,
+    ObsSubscriptionStatus,
 )
 
 if TYPE_CHECKING:
@@ -157,6 +164,10 @@ class IOMS(ABC):
     def view(self) -> "ReadOnlyOMSView":
         raise NotImplementedError
 
+    @abstractmethod
+    def subscribe_order_change(self, cb: Callable[[OMSOrderChange], None]) -> None:
+        raise NotImplementedError
+
 
 class ITimeModel(ABC):
     """时延模型端口。"""
@@ -170,35 +181,15 @@ class ITimeModel(ABC):
         raise NotImplementedError
 
 
-class IObservabilitySinks(ABC):
-    """可观测性端口。
-
-    纯观察者角色：记录事件 + 生成报表。
-    不维护订单状态。
-    """
+class IObservabilityIn(ABC):
+    """可观测性对内接口（框架事件输入）。"""
 
     @abstractmethod
-    def on_order_submitted(self, order: Order) -> None:
+    def ingest(self, event: Event) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def on_cancel_submitted(self, request: CancelRequest) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_receipt_generated(self, receipt: OrderReceipt) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_receipt_delivered(self, receipt: OrderReceipt) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_interval_end(self, stats: object) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def on_run_end(self, context: dict) -> None:
+    def register_event_handler(self, event_type: str, handler: Callable[[Event], bool]) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -208,6 +199,30 @@ class IObservabilitySinks(ABC):
     @abstractmethod
     def get_run_result(self) -> dict:
         raise NotImplementedError
+
+
+class IObservabilityOut(ABC):
+    """可观测性对外接口（订阅与读取）。"""
+
+    @abstractmethod
+    def subscribe(self, options: Optional[ObsSubscriptionOptions] = None) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def poll(self, subscription_id: str, max_items: int = 1, timeout_ms: int = 0) -> List[ObsEventEnvelope]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def unsubscribe(self, subscription_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_subscription_status(self, subscription_id: str) -> ObsSubscriptionStatus:
+        raise NotImplementedError
+
+
+class IObservability(IObservabilityIn, IObservabilityOut):
+    """可观测性统一接口。"""
 
 
 class IStrategy(ABC):
