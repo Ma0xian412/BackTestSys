@@ -14,7 +14,7 @@ from quant_framework.core.obs_event_factory import (
     make_order_submitted_event,
     make_receipt_delivered_event,
 )
-from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
+from quant_framework.adapters.observability.Observability_Impl import Observability_Impl
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 
 
@@ -22,7 +22,7 @@ def test_receipt_logger():
     """完整流程：OMS 登记订单 + 应用回执，Obs 记录 + 统计。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         output_file = os.path.join(tmpdir, "receipts.csv")
-        obs = ReceiptLogger_Impl(output_file=output_file)
+        obs = Observability_Impl(output_file=output_file)
         oms = OMS_Impl(portfolio=Portfolio())
 
         obs.set_oms(oms)

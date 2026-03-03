@@ -47,7 +47,7 @@ _DEFAULT_SUBSCRIBER_MEMORY = 8 * 1024 * 1024
 ReceiptCallback = Callable[[OrderReceipt], None]
 
 
-class ReceiptLogger_Impl(IObservability):
+class Observability_Impl(IObservability):
     """可观测实现：接收框架事件流并发布订阅流。"""
 
     def __init__(
@@ -83,12 +83,14 @@ class ReceiptLogger_Impl(IObservability):
             "receipts_generated": 0,
             "cancels_submitted": 0,
         }
+        self._event_handlers: Dict[str, Callable[[Event], bool]] = {}
+        self._register_builtin_handlers()
 
     def set_oms(self, oms: IOMS) -> None:
         self._oms = oms
 
     @property
-    def receipt_logger(self) -> "ReceiptLogger_Impl":
+    def receipt_logger(self) -> "Observability_Impl":
         return self
 
     def ingest(self, event: Event) -> None:
@@ -97,12 +99,33 @@ class ReceiptLogger_Impl(IObservability):
             return
         self._ensure_run_started()
         try:
-            should_publish = self._ingest_known_event(event)
+            should_publish = self._dispatch_event(event)
         except ValueError as exc:
             self._publish_invalid_event(event, str(exc))
             return
         if should_publish:
             self._publish_event(event)
+
+    def register_event_handler(self, event_type: str, handler: Callable[[Event], bool]) -> None:
+        if not event_type:
+            raise ValueError("event_type must not be empty")
+        self._event_handlers[str(event_type)] = handler
+
+    def _register_builtin_handlers(self) -> None:
+        self.register_event_handler(EVENT_TYPE_ORDER_SUBMITTED, self._handle_order_submitted)
+        self.register_event_handler(EVENT_TYPE_CANCEL_SUBMITTED, self._handle_cancel_submitted)
+        self.register_event_handler(EVENT_TYPE_RECEIPT_GENERATED, self._handle_receipt_generated)
+        self.register_event_handler(EVENT_TYPE_RECEIPT_DELIVERED, self._handle_receipt_delivered)
+        self.register_event_handler(EVENT_TYPE_INTERVAL_ENDED, self._handle_interval_ended)
+        self.register_event_handler(EVENT_TYPE_OMS_ORDER_CHANGED, self._handle_oms_order_changed)
+        self.register_event_handler(EVENT_TYPE_RUN_ENDED, self._handle_run_ended)
+
+    def _dispatch_event(self, event: Event) -> bool:
+        handler = self._event_handlers.get(event.type)
+        if handler is None:
+            logger.warning("Unknown observability event type: %s", event.type)
+            return True
+        return bool(handler(event))
 
     def _ingest_run_started(self, event: Event) -> None:
         payload = payload_mapping(event.payload)
@@ -117,38 +140,40 @@ class ReceiptLogger_Impl(IObservability):
         start_payload["run_id"] = assigned
         self._runtime.publish(EVENT_TYPE_RUN_STARTED, sim_time=int(event.time), payload=start_payload)
 
-    def _ingest_known_event(self, event: Event) -> bool:
-        event_type = event.type
-        if event_type == EVENT_TYPE_ORDER_SUBMITTED:
-            validate_order_payload(payload_mapping(event.payload))
-            self._diagnostics["orders_submitted"] += 1
-            return True
-        if event_type == EVENT_TYPE_CANCEL_SUBMITTED:
-            validate_cancel_payload(payload_mapping(event.payload))
-            self._diagnostics["cancels_submitted"] += 1
-            return True
-        if event_type == EVENT_TYPE_RECEIPT_GENERATED:
-            _ = receipt_from_payload(payload_mapping(event.payload))
-            self._diagnostics["receipts_generated"] += 1
-            return True
-        if event_type == EVENT_TYPE_RECEIPT_DELIVERED:
-            receipt = receipt_from_payload(payload_mapping(event.payload))
-            self._log_receipt(receipt)
-            if receipt.receipt_type in {"FILL", "PARTIAL"}:
-                self._diagnostics["orders_filled"] += 1
-            return True
-        if event_type == EVENT_TYPE_INTERVAL_ENDED:
-            payload_mapping(event.payload)
-            self._diagnostics["intervals_processed"] += 1
-            return True
-        if event_type == EVENT_TYPE_OMS_ORDER_CHANGED:
-            validate_oms_change_payload(payload_mapping(event.payload))
-            return True
-        if event_type == EVENT_TYPE_RUN_ENDED:
-            self._ingest_run_ended(event)
-            return False
-        logger.warning("Unknown observability event type: %s", event_type)
+    def _handle_order_submitted(self, event: Event) -> bool:
+        validate_order_payload(payload_mapping(event.payload))
+        self._diagnostics["orders_submitted"] += 1
         return True
+
+    def _handle_cancel_submitted(self, event: Event) -> bool:
+        validate_cancel_payload(payload_mapping(event.payload))
+        self._diagnostics["cancels_submitted"] += 1
+        return True
+
+    def _handle_receipt_generated(self, event: Event) -> bool:
+        _ = receipt_from_payload(payload_mapping(event.payload))
+        self._diagnostics["receipts_generated"] += 1
+        return True
+
+    def _handle_receipt_delivered(self, event: Event) -> bool:
+        receipt = receipt_from_payload(payload_mapping(event.payload))
+        self._log_receipt(receipt)
+        if receipt.receipt_type in {"FILL", "PARTIAL"}:
+            self._diagnostics["orders_filled"] += 1
+        return True
+
+    def _handle_interval_ended(self, event: Event) -> bool:
+        _ = payload_mapping(event.payload)
+        self._diagnostics["intervals_processed"] += 1
+        return True
+
+    def _handle_oms_order_changed(self, event: Event) -> bool:
+        validate_oms_change_payload(payload_mapping(event.payload))
+        return True
+
+    def _handle_run_ended(self, event: Event) -> bool:
+        self._ingest_run_ended(event)
+        return False
 
     def _ingest_run_ended(self, event: Event) -> None:
         payload = payload_mapping(event.payload)

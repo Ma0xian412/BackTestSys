@@ -5,7 +5,7 @@ import tempfile
 import threading
 import time
 
-from quant_framework.adapters import ExecutionVenue_Impl, ReceiptLogger_Impl, TimeModel_Impl
+from quant_framework.adapters import ExecutionVenue_Impl, Observability_Impl, TimeModel_Impl
 from quant_framework.core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
     EVENT_KIND_MDARRIVE,
@@ -21,7 +21,7 @@ from quant_framework.adapters.execution_venue import (
 )
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 from quant_framework.adapters.IStrategy.Replay_Strategy import ReplayStrategy_Impl
-from quant_framework.adapters.observability.ReceiptLogger_Impl import ReceiptLogger_Impl
+from quant_framework.adapters.observability.Observability_Impl import Observability_Impl
 
 from tests.conftest import create_test_snapshot, print_tape_path, MockFeed
 
@@ -42,7 +42,7 @@ def test_basic_pipeline():
         )
     )
     oms = OMS_Impl()
-    receipt_logger = ReceiptLogger_Impl()
+    receipt_logger = Observability_Impl()
 
     class _OneShot:
         def __init__(self):
@@ -136,7 +136,7 @@ def test_pipeline_with_delays():
                 delay_out=10 * TICK_PER_MS,
                 delay_in=5 * TICK_PER_MS,
             ),
-            obs=ReceiptLogger_Impl(),
+            obs=Observability_Impl(),
         ),
     )
     result = app.run()
@@ -172,7 +172,7 @@ def test_replay_pipeline():
             ),
         ]
 
-        receipt_logger = ReceiptLogger_Impl()
+        receipt_logger = Observability_Impl()
         app = BacktestApp(
             RuntimeBuildConfig(
                 feed=MockFeed(snapshots),
@@ -219,7 +219,7 @@ def _build_interrupt_test_app(snapshots, strategy):
             strategy=strategy,
             oms=OMS_Impl(),
             timeModel=TimeModel_Impl(delay_out=0, delay_in=0),
-            obs=ReceiptLogger_Impl(),
+            obs=Observability_Impl(),
         ),
     )
 

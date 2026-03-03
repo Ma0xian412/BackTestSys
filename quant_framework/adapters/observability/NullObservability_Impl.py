@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from .ReceiptLogger_Impl import (
-    ReceiptLogger_Impl,
+from .Observability_Impl import (
+    Observability_Impl,
     _DEFAULT_HISTORY_DIR,
     _DEFAULT_SUBSCRIBER_MEMORY,
 )
 
 
-class NullObservability_Impl(ReceiptLogger_Impl):
+class NullObservability_Impl(Observability_Impl):
     """无输出观测实现（保留诊断与流式能力）。"""
 
     def __init__(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 
-from quant_framework.adapters.observability import ReceiptLogger_Impl
+from quant_framework.adapters.observability import Observability_Impl
 from quant_framework.core.data_structure import Event, Order, Side
 from quant_framework.core.obs_event_factory import (
     make_order_submitted_event,
@@ -35,7 +35,7 @@ def _list_history_files(history_dir: str) -> list[str]:
 
 
 def test_stream_beginning_replay_after_run_end(tmp_path):
-    obs = ReceiptLogger_Impl(history_dir=str(tmp_path), keep_history_files=True)
+    obs = Observability_Impl(history_dir=str(tmp_path), keep_history_files=True)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
     obs.ingest(make_order_submitted_event(_mk_order("o1", 10)))
     obs.ingest(make_run_ended_event(sim_time=20, context={"status": "completed", "final_time": 20}))
@@ -47,7 +47,7 @@ def test_stream_beginning_replay_after_run_end(tmp_path):
 
 
 def test_topic_exact_match(tmp_path):
-    obs = ReceiptLogger_Impl(history_dir=str(tmp_path), keep_history_files=True)
+    obs = Observability_Impl(history_dir=str(tmp_path), keep_history_files=True)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
     sub = obs.subscribe(
         ObsSubscriptionOptions(
@@ -64,7 +64,7 @@ def test_topic_exact_match(tmp_path):
 
 
 def test_subscriber_memory_limit_isolated(tmp_path):
-    obs = ReceiptLogger_Impl(
+    obs = Observability_Impl(
         history_dir=str(tmp_path),
         keep_history_files=True,
         default_subscriber_memory_bytes=1024 * 1024,
@@ -89,7 +89,7 @@ def test_subscriber_memory_limit_isolated(tmp_path):
 
 def test_history_cleanup_normal_mode_after_unsubscribe(tmp_path):
     history_dir = str(tmp_path / "normal")
-    obs = ReceiptLogger_Impl(history_dir=history_dir, keep_history_files=False)
+    obs = Observability_Impl(history_dir=history_dir, keep_history_files=False)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
     obs.ingest(make_order_submitted_event(_mk_order("o-clean", 10)))
     obs.ingest(make_run_ended_event(sim_time=30, context={"status": "completed", "final_time": 30}))
@@ -104,7 +104,7 @@ def test_history_cleanup_normal_mode_after_unsubscribe(tmp_path):
 
 def test_history_keep_in_debug_mode(tmp_path):
     history_dir = str(tmp_path / "debug")
-    obs = ReceiptLogger_Impl(history_dir=history_dir, keep_history_files=True)
+    obs = Observability_Impl(history_dir=history_dir, keep_history_files=True)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
     obs.ingest(make_order_submitted_event(_mk_order("o-keep", 10)))
     obs.ingest(make_run_ended_event(sim_time=40, context={"status": "completed", "final_time": 40}))
@@ -115,7 +115,7 @@ def test_history_keep_in_debug_mode(tmp_path):
 
 
 def test_unknown_event_type_is_forwarded_with_warning(tmp_path):
-    obs = ReceiptLogger_Impl(history_dir=str(tmp_path), keep_history_files=True)
+    obs = Observability_Impl(history_dir=str(tmp_path), keep_history_files=True)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
     obs.ingest(Event(type="custom.unknown", time=2, payload={"k": "v"}))
     sub = obs.subscribe(ObsSubscriptionOptions(start_position=ObsStartPosition.BEGINNING))
@@ -124,9 +124,28 @@ def test_unknown_event_type_is_forwarded_with_warning(tmp_path):
 
 
 def test_invalid_payload_becomes_obs_invalid_event(tmp_path):
-    obs = ReceiptLogger_Impl(history_dir=str(tmp_path), keep_history_files=True)
+    obs = Observability_Impl(history_dir=str(tmp_path), keep_history_files=True)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
     obs.ingest(Event(type=EVENT_TYPE_ORDER_SUBMITTED, time=2, payload={"bad": "payload"}))
     sub = obs.subscribe(ObsSubscriptionOptions(start_position=ObsStartPosition.BEGINNING))
     events = obs.poll(sub, max_items=10, timeout_ms=200)
     assert any(e.type == "obs.event.invalid" for e in events)
+
+
+def test_dynamic_event_handler_registration(tmp_path):
+    obs = Observability_Impl(history_dir=str(tmp_path), keep_history_files=True)
+    handled_values: list[str] = []
+
+    def _handle_custom(event: Event) -> bool:
+        value = str(event.payload["k"])
+        handled_values.append(value)
+        return True
+
+    obs.register_event_handler("custom.dynamic", _handle_custom)
+    obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
+    obs.ingest(Event(type="custom.dynamic", time=2, payload={"k": "v"}))
+    sub = obs.subscribe(ObsSubscriptionOptions(start_position=ObsStartPosition.BEGINNING))
+    events = obs.poll(sub, max_items=10, timeout_ms=200)
+
+    assert handled_values == ["v"]
+    assert any(e.type == "custom.dynamic" and e.payload.get("k") == "v" for e in events)

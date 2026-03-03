@@ -189,6 +189,10 @@ class IObservabilityIn(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def register_event_handler(self, event_type: str, handler: Callable[[Event], bool]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_diagnostics(self) -> dict:
         raise NotImplementedError
 

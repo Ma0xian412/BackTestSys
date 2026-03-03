@@ -137,13 +137,13 @@ def setup_logging(config: BacktestConfig) -> str:
         logging.getLogger('quant_framework.adapters.execution_venue.match_algorithm').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.DEBUG)
-        logging.getLogger('quant_framework.adapters.observability.ReceiptLogger_Impl').setLevel(logging.DEBUG)
+        logging.getLogger('quant_framework.adapters.observability.Observability_Impl').setLevel(logging.DEBUG)
     else:
         logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.adapters.execution_venue.match_algorithm').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.kernel').setLevel(logging.WARNING)
         logging.getLogger('quant_framework.core.handlers').setLevel(logging.WARNING)
-        logging.getLogger('quant_framework.adapters.observability.ReceiptLogger_Impl').setLevel(logging.WARNING)
+        logging.getLogger('quant_framework.adapters.observability.Observability_Impl').setLevel(logging.WARNING)
     
     return log_file or ""
 
