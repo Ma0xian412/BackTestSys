@@ -29,10 +29,10 @@ def test_receipt_logger():
         oms.subscribe_new(lambda order: obs.ingest(make_order_submitted_event(order)))
         oms.subscribe_receipt(lambda receipt: obs.ingest(make_receipt_delivered_event(receipt)))
 
-        o1 = Order(order_id="order-1", side=Side.BUY, price=100.5, qty=100)
-        o2 = Order(order_id="order-2", side=Side.BUY, price=99.0, qty=50)
-        o3 = Order(order_id="order-3", side=Side.SELL, price=101.0, qty=30)
-        o4 = Order(order_id="order-4", side=Side.BUY, price=100.0, qty=0)
+        o1 = Order(order_id="1", side=Side.BUY, price=100.5, qty=100)
+        o2 = Order(order_id="2", side=Side.BUY, price=99.0, qty=50)
+        o3 = Order(order_id="3", side=Side.SELL, price=101.0, qty=30)
+        o4 = Order(order_id="4", side=Side.BUY, price=100.0, qty=0)
 
         oms.submit_order(o1, 100)
         oms.submit_order(o2, 200)
@@ -41,27 +41,27 @@ def test_receipt_logger():
 
         assert obs._diagnostics["orders_submitted"] == 4
 
-        r1a = OrderReceipt(order_id="order-1", receipt_type="PARTIAL",
+        r1a = OrderReceipt(order_id="1", receipt_type="PARTIAL",
                            timestamp=1000, fill_qty=30, fill_price=100.5, remaining_qty=70)
         r1a.recv_time = 1010
         oms.apply_receipt(r1a)
 
-        r1b = OrderReceipt(order_id="order-1", receipt_type="FILL",
+        r1b = OrderReceipt(order_id="1", receipt_type="FILL",
                            timestamp=2000, fill_qty=70, fill_price=100.5, remaining_qty=0)
         r1b.recv_time = 2010
         oms.apply_receipt(r1b)
 
-        r2a = OrderReceipt(order_id="order-2", receipt_type="PARTIAL",
+        r2a = OrderReceipt(order_id="2", receipt_type="PARTIAL",
                            timestamp=2500, fill_qty=20, fill_price=99.0, remaining_qty=30)
         r2a.recv_time = 2510
         oms.apply_receipt(r2a)
 
-        r2b = OrderReceipt(order_id="order-2", receipt_type="CANCELED",
+        r2b = OrderReceipt(order_id="2", receipt_type="CANCELED",
                            timestamp=3000, fill_qty=20, fill_price=99.0, remaining_qty=30)
         r2b.recv_time = 3010
         oms.apply_receipt(r2b)
 
-        r3 = OrderReceipt(order_id="order-3", receipt_type="REJECTED",
+        r3 = OrderReceipt(order_id="3", receipt_type="REJECTED",
                           timestamp=4000, fill_qty=0, fill_price=0.0, remaining_qty=30)
         r3.recv_time = 4010
         oms.apply_receipt(r3)
@@ -80,9 +80,9 @@ def test_receipt_logger():
         assert stats["partially_filled_orders"] == 1
         assert stats["unfilled_orders"] == 1
 
-        assert oms.orders["order-1"].filled_qty == 100
-        assert oms.orders["order-2"].filled_qty == 20
-        assert oms.orders["order-3"].filled_qty == 0
+        assert oms.orders["1"].filled_qty == 100
+        assert oms.orders["2"].filled_qty == 20
+        assert oms.orders["3"].filled_qty == 0
 
         assert abs(obs.calculate_fill_rate() - 120 / 180) < 0.01
         assert abs(obs.calculate_fill_rate_by_count() - 1 / 4) < 0.01

@@ -54,7 +54,7 @@ def test_event_causal_ordering():
             if e.kind == EVENT_KIND_MDARRIVE:
                 self.log.append(("SNAPSHOT", e.time))
                 if len(self.log) == 1:
-                    order = Order(order_id="test-order", side=Side.BUY, price=100.0, qty=5)
+                    order = Order(order_id="1", side=Side.BUY, price=100.0, qty=5)
                     return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
                 return []
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
@@ -91,7 +91,7 @@ def test_receipt_delay_consistency():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_MDARRIVE and not self.placed:
                 self.placed = True
-                order = Order(order_id="recv-test", side=Side.BUY, price=100.0, qty=3)
+                order = Order(order_id="2", side=Side.BUY, price=100.0, qty=3)
                 return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
             if e.kind == EVENT_KIND_RECEIPT_DELIVERY:
                 receipt = e.payload
@@ -118,7 +118,7 @@ def test_time_clamping():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_MDARRIVE:
                 self.count += 1
-                order = Order(order_id=f"t-{self.count}", side=Side.BUY, price=100.0, qty=5)
+                order = Order(order_id=str(self.count), side=Side.BUY, price=100.0, qty=5)
                 return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
             return []
 
@@ -133,4 +133,7 @@ def test_time_clamping():
             delay_out=delay_out,
             delay_in=delay_in,
         )
-        print(f"  {label}: intervals={results['intervals']}, receipts={results['diagnostics']['receipts_generated']}")
+        print(
+            f"  {label}: orders={len(results.OrderInfo)}, "
+            f"executions={len(results.ExecutionDetail)}"
+        )

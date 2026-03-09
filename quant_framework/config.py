@@ -50,14 +50,18 @@ class ContractInfo:
     存储从合约字典XML文件中读取的合约信息。
     
     Attributes:
-        contract_id: 合约ID
+        contract_id: 合约ID（整型，用于回测结果输出）
+        partition_day: 回测结果输出使用的分区日（yyyymmdd）
         tick_size: 最小价格变动单位
         exchange_code: 交易所代码
+        machine_name: 回测结果输出使用的机器名
         trading_hours: 交易时段列表
     """
-    contract_id: str = ""
+    contract_id: int = 0
+    partition_day: int = 0
     tick_size: float = 1.0
     exchange_code: str = ""
+    machine_name: str = ""
     trading_hours: List[TradingHour] = field(default_factory=list)
 
 
@@ -462,7 +466,7 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
     合约字典XML格式：
     <ContractDictionaryConfig>
         <Contract>
-            <ContractId>...</ContractId>
+            <ContractId>...</ContractId>  # 用于匹配的合约标识（如 IF2401）
             <TickSize>...</TickSize>
             <ExchangeCode>...</ExchangeCode>
             <TradingHours>
@@ -506,7 +510,10 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
             if cid_elem.text.strip() == str(contract_id):
                 # 找到匹配的合约，解析信息
                 tick_size = 1.0
+                resolved_contract_id = 0
+                partition_day = 0
                 exchange_code = ""
+                machine_name = ""
                 trading_hours: List[TradingHour] = []
                 
                 # 解析 TickSize
@@ -516,11 +523,29 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
                         tick_size = float(tick_size_elem.text.strip())
                     except ValueError:
                         pass
+
+                result_contract_id_elem = contract_elem.find("ResultContractId")
+                if result_contract_id_elem is not None and result_contract_id_elem.text:
+                    try:
+                        resolved_contract_id = int(result_contract_id_elem.text.strip())
+                    except ValueError:
+                        pass
+
+                partition_day_elem = contract_elem.find("PartitionDay")
+                if partition_day_elem is not None and partition_day_elem.text:
+                    try:
+                        partition_day = int(partition_day_elem.text.strip())
+                    except ValueError:
+                        pass
                 
                 # 解析 ExchangeCode
                 exchange_code_elem = contract_elem.find("ExchangeCode")
                 if exchange_code_elem is not None and exchange_code_elem.text:
                     exchange_code = exchange_code_elem.text.strip()
+
+                machine_name_elem = contract_elem.find("MachineName")
+                if machine_name_elem is not None and machine_name_elem.text:
+                    machine_name = machine_name_elem.text.strip()
                 
                 # 解析 TradingHours
                 trading_hours_elem = contract_elem.find("TradingHours")
@@ -544,9 +569,11 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
                             ))
                 
                 return ContractInfo(
-                    contract_id=contract_id,
+                    contract_id=resolved_contract_id,
+                    partition_day=partition_day,
                     tick_size=tick_size,
                     exchange_code=exchange_code,
+                    machine_name=machine_name,
                     trading_hours=trading_hours
                 )
         
@@ -796,8 +823,11 @@ def print_config(config: BacktestConfig) -> None:
     if config.contract.contract_info:
         info = config.contract.contract_info
         print(f"  Contract Info (loaded from dictionary):")
+        print(f"    contract_id: {info.contract_id}")
+        print(f"    partition_day: {info.partition_day}")
         print(f"    tick_size: {info.tick_size}")
         print(f"    exchange_code: {info.exchange_code or '(not set)'}")
+        print(f"    machine_name: {info.machine_name or '(not set)'}")
         print(f"    trading_hours: {len(info.trading_hours)} session(s)")
         for i, th in enumerate(info.trading_hours, 1):
             print(f"      Session {i}: {th.start_time} - {th.end_time}")

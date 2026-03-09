@@ -51,7 +51,7 @@ def test_basic_pipeline():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_MDARRIVE and not self.sent:
                 self.sent = True
-                order = Order(order_id="one-shot", side=Side.BUY, price=100.0, qty=1)
+                order = Order(order_id="1", side=Side.BUY, price=100.0, qty=1)
                 return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
             return []
 
@@ -73,8 +73,9 @@ def test_basic_pipeline():
         ),
     )
     result = app.run()
-    assert result["intervals"] == 1
-    assert result["diagnostics"]["orders_submitted"] == 1
+    assert len(result.OrderInfo) == 1
+    assert len(result.DoneInfo) == 1
+    assert result.OrderInfo[0].OrderId == 1
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +105,7 @@ def test_pipeline_with_delays():
                 self.snapshots_received.append(e.time)
                 if ctx.snapshot and ctx.snapshot.bids:
                     order = Order(
-                        order_id=f"order-{self.count}",
+                        order_id=str(self.count),
                         side=Side.BUY,
                         price=ctx.snapshot.bids[0].price,
                         qty=5,
@@ -140,7 +141,7 @@ def test_pipeline_with_delays():
         ),
     )
     result = app.run()
-    assert result['intervals'] == 2, f"应处理 2 个区间，实际 {result['intervals']}"
+    assert len(result.OrderInfo) == 3, f"应提交 3 个订单，实际 {len(result.OrderInfo)}"
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +196,11 @@ def test_replay_pipeline():
             ),
         )
         results = app.run()
-        assert results['diagnostics']['orders_submitted'] == 2, (
-            f"应提交 2 个订单，实际 {results['diagnostics']['orders_submitted']}"
+        assert len(results.OrderInfo) == 2, (
+            f"应提交 2 个订单，实际 {len(results.OrderInfo)}"
         )
-        assert results['diagnostics']['cancels_submitted'] == 1, (
-            f"应有 1 个撤单，实际 {results['diagnostics']['cancels_submitted']}"
+        assert len(results.CancelRequest) == 1, (
+            f"应有 1 个撤单，实际 {len(results.CancelRequest)}"
         )
 
 
@@ -238,10 +239,10 @@ def test_run_can_interrupt_before_start():
     app.request_stop("external_request")
     result = app.run()
 
-    assert result["status"] == "interrupted"
-    assert result["interrupted"] is True
-    assert result["interrupt_reason"] == "external_request"
-    assert result["intervals"] == 0
+    assert len(result.OrderInfo) == 0
+    assert len(result.ExecutionDetail) == 0
+    assert len(result.DoneInfo) == 0
+    assert len(result.CancelRequest) == 0
 
 
 def test_run_can_interrupt_during_execution():
@@ -273,7 +274,4 @@ def test_run_can_interrupt_during_execution():
 
     assert not run_thread.is_alive(), "中断后 run 线程应及时退出"
     result = result_holder["result"]
-    assert result["status"] == "interrupted"
-    assert result["interrupted"] is True
-    assert result["interrupt_reason"] == "external_request"
-    assert result["intervals"] < len(snapshots) - 1
+    assert len(result.OrderInfo) < len(snapshots)

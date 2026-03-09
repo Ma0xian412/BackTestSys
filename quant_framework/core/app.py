@@ -25,6 +25,7 @@ from .data_structure import (
     EventSpecRegistry,
     RuntimeContext,
 )
+from .run_result import BacktestRunResult
 
 if TYPE_CHECKING:
     from .port import IObservability
@@ -50,6 +51,8 @@ class CompositionRoot:
 
     def build(self, config: RuntimeBuildConfig) -> RuntimeContext:
         config.venue.set_market_data_query(config.feed)
+        if hasattr(config.obs, "set_oms"):
+            config.obs.set_oms(config.oms)
         config.oms.subscribe_new(lambda order: config.obs.ingest(make_order_submitted_event(order)))
         config.oms.subscribe_receipt(lambda receipt: config.obs.ingest(make_receipt_delivered_event(receipt)))
         config.oms.subscribe_order_change(lambda change: config.obs.ingest(make_oms_order_changed_event(change)))
@@ -89,7 +92,7 @@ class BacktestApp:
         self._last_context: Optional[RuntimeContext] = None
         self._run_control = RunControl()
 
-    def run(self) -> Dict[str, Any]:
+    def run(self) -> BacktestRunResult:
         ctx = self._composition_root.build(self._config)
         self._last_context = ctx
         try:
