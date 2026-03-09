@@ -49,7 +49,7 @@ class SimpleStrategy_Impl(IStrategy):
 
         # 在最优买价下一个小买单
         order = Order(
-            order_id=f"{self.name}-{self.order_count}",
+            order_id=str(self.order_count),
             side=Side.BUY,
             price=best_bid,
             qty=1,
@@ -76,7 +76,7 @@ class SimpleStrategy_Impl(IStrategy):
             # 在最优卖价下一个卖单
             self.order_count += 1
             order = Order(
-                order_id=f"{self.name}-fill-{self.order_count}",
+                order_id=str(self.order_count),
                 side=Side.SELL,
                 price=best_ask,
                 qty=receipt.fill_qty,

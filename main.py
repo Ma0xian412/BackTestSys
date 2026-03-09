@@ -199,30 +199,14 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         ctx = app.last_context
         oms = ctx.oms if ctx is not None else None
         receipt_logger = getattr(getattr(ctx, "obs", None), "receipt_logger", None)
-
-        run_status = str(results.get("status", "completed"))
-        interrupted = bool(results.get("interrupted", run_status == "interrupted"))
-        interrupt_reason = results.get("interrupt_reason") or "external_request"
-
-        if interrupted:
-            print("\nBacktest interrupted gracefully!")
-            print(f"Interrupt reason: {interrupt_reason}")
-        else:
-            print("\nBacktest completed successfully!")
+        print("\nBacktest completed successfully!")
         print("=" * 60)
         print("回测运行结果 (Backtest Execution Results)")
         print("=" * 60)
-        print(f"  status (运行状态): {run_status}")
-        print(f"  intervals (处理的快照区间数): {results.get('intervals', 0)}")
-        print(f"  final_time (最终时间戳 tick): {results.get('final_time', 0)}")
-        
-        diagnostics = results.get('diagnostics', {})
-        print(f"\n诊断信息 (Diagnostics):")
-        print(f"  intervals_processed (已处理区间数): {diagnostics.get('intervals_processed', 0)}")
-        print(f"  orders_submitted (提交的订单数): {diagnostics.get('orders_submitted', 0)}")
-        print(f"  orders_filled (成交的订单数): {diagnostics.get('orders_filled', 0)}")
-        print(f"  receipts_generated (产生的回执数): {diagnostics.get('receipts_generated', 0)}")
-        print(f"  cancels_submitted (提交的撤单数): {diagnostics.get('cancels_submitted', 0)}")
+        print(f"  DoneInfo 数量: {len(results.DoneInfo)}")
+        print(f"  ExecutionDetail 数量: {len(results.ExecutionDetail)}")
+        print(f"  OrderInfo 数量: {len(results.OrderInfo)}")
+        print(f"  CancelRequest 数量: {len(results.CancelRequest)}")
         
         # Print portfolio summary
         print(f"\n投资组合摘要 (Portfolio Summary):")

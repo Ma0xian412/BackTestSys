@@ -42,3 +42,11 @@ from .handlers import MDArriveHandler, ActionArrivalHandler, ReceiptDeliveryHand
 from .kernel import EventLoopKernel
 from .run_control import RunControl
 from .app import RuntimeBuildConfig, CompositionRoot, BacktestApp
+from .run_result import (
+    BacktestRunResult,
+    CancelRequestRecord,
+    DoneInfo,
+    ExecutionDetail,
+    OrderInfo,
+    RunResultMetadata,
+)

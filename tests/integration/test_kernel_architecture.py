@@ -31,7 +31,7 @@ class _FrequentOrderStrategy:
         if e.kind != EVENT_KIND_MDARRIVE or ctx.snapshot is None or not ctx.snapshot.bids:
             return []
         self._seq += 1
-        order = Order(order_id=f"snap-{self._seq}", side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)
+        order = Order(order_id=str(self._seq), side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)
         return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
 
 def _build_basic_app(strategy, snapshots):
@@ -68,9 +68,8 @@ def test_backtest_app_on_event_strategy():
     app = _build_basic_app(_FrequentOrderStrategy(), snapshots)
     result = app.run()
 
-    assert result["intervals"] == 2
-    # 每张快照应只触发一次 SnapshotArrival（不重复入队）
-    assert result["diagnostics"]["orders_submitted"] == len(snapshots)
+    assert len(result.OrderInfo) == len(snapshots)
+    assert len(result.DoneInfo) == len(snapshots)
 
 
 def test_backtest_app_replay_strategy_cancel_compat():
@@ -129,5 +128,5 @@ def test_backtest_app_replay_strategy_cancel_compat():
 
         result = app.run()
 
-        assert result["diagnostics"]["orders_submitted"] == 2
-        assert result["diagnostics"]["cancels_submitted"] == 1
+        assert len(result.OrderInfo) == 2
+        assert len(result.CancelRequest) == 1

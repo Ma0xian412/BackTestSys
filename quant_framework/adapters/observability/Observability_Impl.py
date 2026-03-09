@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Dict, List, Mapping, Optional
 
+from ...config import ContractInfo
 from ...core.data_structure import Event, OrderReceipt
 from ...core.observability import (
     EVENT_TYPE_CANCEL_SUBMITTED,
@@ -21,6 +22,7 @@ from ...core.observability import (
     ObsSubscriptionStatus,
 )
 from ...core.port import IObservability, IOMS
+from ...core.run_result import BacktestRunResult, RunResultMetadata
 from .receipt_logger_utils import (
     ReceiptRecord,
     build_statistics,
@@ -39,6 +41,7 @@ from .receipt_logger_ingest_utils import (
     validate_oms_change_payload,
     validate_order_payload,
 )
+from .run_result_builder import RunResultBuilder
 from .stream_runtime import ObsStreamRuntime
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,7 @@ class Observability_Impl(IObservability):
         output_file: Optional[str] = None,
         verbose: bool = False,
         callback: Optional[ReceiptCallback] = None,
+        contract_info: Optional[ContractInfo] = None,
         history_dir: str = _DEFAULT_HISTORY_DIR,
         keep_history_files: bool = False,
         default_subscriber_memory_bytes: int = _DEFAULT_SUBSCRIBER_MEMORY,
@@ -69,6 +73,7 @@ class Observability_Impl(IObservability):
             keep_history_files=keep_history_files,
             default_max_memory_bytes=default_subscriber_memory_bytes,
         )
+        self._result_builder = RunResultBuilder(self._build_result_metadata(contract_info))
         self._run_open = False
         self._run_id: Optional[str] = None
         self._final_time = 0
@@ -131,6 +136,7 @@ class Observability_Impl(IObservability):
         payload = payload_mapping(event.payload)
         if self._run_open:
             self._runtime.finish_run()
+        self._result_builder.reset()
         run_id = payload.get("run_id")
         seed_id = run_id if isinstance(run_id, str) and run_id else (event.run_id or None)
         assigned = self._runtime.start_run(seed_id)
@@ -141,13 +147,17 @@ class Observability_Impl(IObservability):
         self._runtime.publish(EVENT_TYPE_RUN_STARTED, sim_time=int(event.time), payload=start_payload)
 
     def _handle_order_submitted(self, event: Event) -> bool:
-        validate_order_payload(payload_mapping(event.payload))
+        payload = payload_mapping(event.payload)
+        validate_order_payload(payload)
         self._diagnostics["orders_submitted"] += 1
+        self._result_builder.record_order_submitted(event.time, payload)
         return True
 
     def _handle_cancel_submitted(self, event: Event) -> bool:
-        validate_cancel_payload(payload_mapping(event.payload))
+        payload = payload_mapping(event.payload)
+        validate_cancel_payload(payload)
         self._diagnostics["cancels_submitted"] += 1
+        self._result_builder.record_cancel_submitted(event.time, payload)
         return True
 
     def _handle_receipt_generated(self, event: Event) -> bool:
@@ -156,8 +166,11 @@ class Observability_Impl(IObservability):
         return True
 
     def _handle_receipt_delivered(self, event: Event) -> bool:
-        receipt = receipt_from_payload(payload_mapping(event.payload))
+        payload = payload_mapping(event.payload)
+        receipt = receipt_from_payload(payload)
         self._log_receipt(receipt)
+        order_lookup = getattr(self._oms, "orders", {}) if self._oms is not None else {}
+        self._result_builder.record_receipt_delivered(payload, order_lookup)
         if receipt.receipt_type in {"FILL", "PARTIAL"}:
             self._diagnostics["orders_filled"] += 1
         return True
@@ -237,20 +250,8 @@ class Observability_Impl(IObservability):
     def get_diagnostics(self) -> dict:
         return dict(self._diagnostics)
 
-    def get_run_result(self) -> dict:
-        result: Dict[str, object] = {
-            "intervals": self._diagnostics["intervals_processed"],
-            "final_time": self._final_time,
-            "status": self._status,
-            "interrupted": self._interrupted,
-            "interrupt_reason": self._interrupt_reason,
-            "diagnostics": self.get_diagnostics(),
-        }
-        if self._error is not None:
-            result["error"] = self._error
-        if self._run_id is not None:
-            result["run_id"] = self._run_id
-        return result
+    def get_run_result(self) -> BacktestRunResult:
+        return self._result_builder.build(self._oms, self._final_time)
 
     def _log_receipt(self, receipt: OrderReceipt) -> None:
         self.records.append(
@@ -295,3 +296,14 @@ class Observability_Impl(IObservability):
 
     def clear(self) -> None:
         self.records.clear()
+        self._result_builder.reset()
+
+    @staticmethod
+    def _build_result_metadata(contract_info: Optional[ContractInfo]) -> RunResultMetadata:
+        if contract_info is None:
+            return RunResultMetadata()
+        return RunResultMetadata(
+            partition_day=int(contract_info.partition_day),
+            contract_id=int(contract_info.result_contract_id),
+            machine_name=str(contract_info.machine_name),
+        )

@@ -25,8 +25,11 @@ _CONTRACT_XML = """\
 <ContractDictionaryConfig>
     <Contract>
         <ContractId>IF2401</ContractId>
+        <ResultContractId>101</ResultContractId>
+        <PartitionDay>20250309</PartitionDay>
         <TickSize>0.2</TickSize>
         <ExchangeCode>CFFEX</ExchangeCode>
+        <MachineName>alpha-node</MachineName>
         <TradingHours>
             <TradingHour><StartTime>09:30:00</StartTime><EndTime>11:30:00</EndTime></TradingHour>
             <TradingHour><StartTime>13:00:00</StartTime><EndTime>15:00:00</EndTime></TradingHour>
@@ -34,8 +37,11 @@ _CONTRACT_XML = """\
     </Contract>
     <Contract>
         <ContractId>AU2401</ContractId>
+        <ResultContractId>202</ResultContractId>
+        <PartitionDay>20250310</PartitionDay>
         <TickSize>0.02</TickSize>
         <ExchangeCode>SHFE</ExchangeCode>
+        <MachineName>night-node</MachineName>
         <TradingHours>
             <TradingHour><StartTime>21:00:00</StartTime><EndTime>02:30:00</EndTime></TradingHour>
             <TradingHour><StartTime>09:00:00</StartTime><EndTime>10:15:00</EndTime></TradingHour>
@@ -55,15 +61,21 @@ def test_contract_config_loading():
         info = _load_contract_dictionary(path, "IF2401")
         assert info is not None
         assert info.contract_id == "IF2401"
+        assert info.result_contract_id == 101
+        assert info.partition_day == 20250309
         assert info.tick_size == 0.2
         assert info.exchange_code == "CFFEX"
+        assert info.machine_name == "alpha-node"
         assert len(info.trading_hours) == 2
         assert info.trading_hours[0].start_time == "09:30:00"
 
         # AU2401（跨午夜）
         info2 = _load_contract_dictionary(path, "AU2401")
         assert info2 is not None
+        assert info2.result_contract_id == 202
+        assert info2.partition_day == 20250310
         assert info2.tick_size == 0.02
+        assert info2.machine_name == "night-node"
         assert info2.trading_hours[0].start_time == "21:00:00"
         assert info2.trading_hours[0].end_time == "02:30:00"
 

@@ -102,6 +102,7 @@ class BacktestConfigFactory:
             verbose=config.receipt_logger.verbose,
             history_dir=config.observability_stream.history_dir,
             keep_history_files=bool(config.logging.debug),
+            contract_info=config.contract.contract_info,
             default_subscriber_memory_bytes=int(
                 max(1, config.observability_stream.subscriber_max_memory_mb) * 1024 * 1024
             ),

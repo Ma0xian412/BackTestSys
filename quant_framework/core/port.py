@@ -19,6 +19,7 @@ from .observability import (
     ObsSubscriptionOptions,
     ObsSubscriptionStatus,
 )
+from .run_result import BacktestRunResult
 
 if TYPE_CHECKING:
     from .data_structure import ReadOnlyOMSView
@@ -197,7 +198,7 @@ class IObservabilityIn(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_run_result(self) -> dict:
+    def get_run_result(self) -> BacktestRunResult:
         raise NotImplementedError
 
 

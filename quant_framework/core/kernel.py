@@ -17,6 +17,7 @@ from .obs_event_factory import (
     make_run_ended_event,
     make_run_started_event,
 )
+from .run_result import BacktestRunResult
 from .run_control import DEFAULT_INTERRUPT_REASON, RunControl
 from .scheduler import HeapScheduler
 
@@ -34,7 +35,7 @@ class EventLoopKernel:
         self._scheduler = scheduler or HeapScheduler()
         self._t_cur = 0
 
-    def run(self, ctx: RuntimeContext, run_control: Optional[RunControl] = None) -> Dict[str, Any]:
+    def run(self, ctx: RuntimeContext, run_control: Optional[RunControl] = None) -> BacktestRunResult:
         reset_event_seq()
         self._t_cur = 0
         self._scheduler.clear()
@@ -166,7 +167,7 @@ class EventLoopKernel:
         run_control: Optional[RunControl],
         interrupted: bool = False,
         error: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> BacktestRunResult:
         status = "interrupted" if interrupted else "completed"
         interrupt_reason = self._interrupt_reason(run_control) if interrupted else None
         run_context: Dict[str, Any] = {
