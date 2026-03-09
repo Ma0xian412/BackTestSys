@@ -50,16 +50,14 @@ class ContractInfo:
     存储从合约字典XML文件中读取的合约信息。
     
     Attributes:
-        contract_id: 合约ID
-        result_contract_id: 回测结果输出使用的整型合约ID
+        contract_id: 合约ID（整型，用于回测结果输出）
         partition_day: 回测结果输出使用的分区日（yyyymmdd）
         tick_size: 最小价格变动单位
         exchange_code: 交易所代码
         machine_name: 回测结果输出使用的机器名
         trading_hours: 交易时段列表
     """
-    contract_id: str = ""
-    result_contract_id: int = 0
+    contract_id: int = 0
     partition_day: int = 0
     tick_size: float = 1.0
     exchange_code: str = ""
@@ -468,7 +466,8 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
     合约字典XML格式：
     <ContractDictionaryConfig>
         <Contract>
-            <ContractId>...</ContractId>
+            <ContractId>...</ContractId>  # 用于匹配的合约标识（如 IF2401）
+            <ResultContractId>...</ResultContractId>  # 整型合约ID，写入 contract_id
             <TickSize>...</TickSize>
             <ExchangeCode>...</ExchangeCode>
             <TradingHours>
@@ -512,7 +511,7 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
             if cid_elem.text.strip() == str(contract_id):
                 # 找到匹配的合约，解析信息
                 tick_size = 1.0
-                result_contract_id = 0
+                resolved_contract_id = 0
                 partition_day = 0
                 exchange_code = ""
                 machine_name = ""
@@ -529,7 +528,7 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
                 result_contract_id_elem = contract_elem.find("ResultContractId")
                 if result_contract_id_elem is not None and result_contract_id_elem.text:
                     try:
-                        result_contract_id = int(result_contract_id_elem.text.strip())
+                        resolved_contract_id = int(result_contract_id_elem.text.strip())
                     except ValueError:
                         pass
 
@@ -571,8 +570,7 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
                             ))
                 
                 return ContractInfo(
-                    contract_id=contract_id,
-                    result_contract_id=result_contract_id,
+                    contract_id=resolved_contract_id,
                     partition_day=partition_day,
                     tick_size=tick_size,
                     exchange_code=exchange_code,
@@ -826,7 +824,7 @@ def print_config(config: BacktestConfig) -> None:
     if config.contract.contract_info:
         info = config.contract.contract_info
         print(f"  Contract Info (loaded from dictionary):")
-        print(f"    result_contract_id: {info.result_contract_id}")
+        print(f"    contract_id: {info.contract_id}")
         print(f"    partition_day: {info.partition_day}")
         print(f"    tick_size: {info.tick_size}")
         print(f"    exchange_code: {info.exchange_code or '(not set)'}")
