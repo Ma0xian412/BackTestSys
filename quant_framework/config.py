@@ -467,7 +467,6 @@ def _load_contract_dictionary(dictionary_path: str, contract_id: str) -> Optiona
     <ContractDictionaryConfig>
         <Contract>
             <ContractId>...</ContractId>  # 用于匹配的合约标识（如 IF2401）
-            <ResultContractId>...</ResultContractId>  # 整型合约ID，写入 contract_id
             <TickSize>...</TickSize>
             <ExchangeCode>...</ExchangeCode>
             <TradingHours>
