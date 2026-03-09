@@ -145,7 +145,7 @@ def test_invalid_time_order():
     """时间顺序：当 t_b ≤ t_a 时应抛出 ValueError。"""
     builder = UnifiedIntervalModel_impl(config=TapeConfig(), tick_size=1.0)
 
-    # t_b == t_a
+        # 相等情况
     prev = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0)
     curr = create_test_snapshot(1000 * TICK_PER_MS, 100.5, 101.5)
     try:
@@ -154,7 +154,7 @@ def test_invalid_time_order():
     except ValueError:
         pass
 
-    # t_b < t_a
+        # 严格小于情况
     prev2 = create_test_snapshot(2000 * TICK_PER_MS, 100.0, 101.0)
     curr2 = create_test_snapshot(1000 * TICK_PER_MS, 100.5, 101.5)
     try:

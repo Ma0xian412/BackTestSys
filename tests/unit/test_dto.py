@@ -18,7 +18,7 @@ def test_normalized_snapshot_is_frozen():
     """NormalizedSnapshot：frozen 属性、便捷属性、不可变。"""
     snap = create_test_snapshot(1000 * TICK_PER_MS, 100.0, 101.0, bid_qty=50, ask_qty=60)
 
-    # frozen
+    # frozen 不可变
     is_frozen = (
         hasattr(snap, '__dataclass_fields__')
         and snap.__class__.__dataclass_params__.frozen

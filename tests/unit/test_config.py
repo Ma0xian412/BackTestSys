@@ -57,7 +57,7 @@ def test_contract_config_loading():
         path = f.name
 
     try:
-        # IF2401
+        # 合约 IF2401
         info = _load_contract_dictionary(path, "IF2401")
         assert info is not None
         assert info.contract_id == 101
@@ -89,7 +89,7 @@ def test_contract_config_loading():
 
 
 # ---------------------------------------------------------------------------
-# TradingHoursHelper
+# 交易时段助手
 # ---------------------------------------------------------------------------
 
 def test_trading_hours_helper():

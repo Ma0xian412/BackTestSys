@@ -1,21 +1,21 @@
-"""Main entry point for the kernel/ports backtest architecture.
+"""内核/端口回测架构的主入口。
 
-This demonstrates:
-- BacktestApp + CompositionRoot for runtime wiring
-- EventLoopKernel for event-driven execution
-- ExecutionVenue_Impl over Simulator + SegmentBaseAlgorithm
-- Single-entry strategy interface (on_event)
+本模块演示：
+- BacktestApp + CompositionRoot 运行时装配
+- EventLoopKernel 事件驱动执行
+- ExecutionVenue_Impl 基于 Simulator + SegmentBaseAlgorithm
+- 单入口策略接口 (on_event)
 
-Observability features:
-- Progress bar for tracking backtest progress (requires tqdm)
-- Receipt logging for tracking all order receipts
-- Debug logging for exchange simulator events
+可观测性：
+- 进度条跟踪回测进度（需 tqdm）
+- 回执日志记录所有订单回执
+- 调试日志记录交易所模拟器事件
 
-Configuration:
-- Supports external XML configuration files (default)
-- Also supports YAML/JSON for backward compatibility
-- Default configuration file: config.xml
-- Use --config to specify a custom configuration file
+配置：
+- 支持外部 XML 配置文件（默认）
+- 支持 YAML/JSON 向后兼容
+- 默认配置文件：config.xml
+- 使用 --config 指定自定义配置文件
 """
 
 import argparse
@@ -29,45 +29,45 @@ from quant_framework.adapters.factory import BacktestConfigFactory
 from quant_framework.config import load_config, print_config, BacktestConfig
 
 
-# Default configuration path
+# 默认配置文件路径
 DEFAULT_CONFIG_PATH = "config.xml"
 
 
 def resolve_output_path(path: str, default_filename: str) -> str:
-    """Resolve a folder path to a complete file path.
+    """将文件夹路径解析为完整文件路径。
     
-    If the provided path is a folder, auto-generate a timestamped filename.
-    If the provided path is a complete file path, return it as-is.
+    若提供的路径是文件夹，则自动生成带时间戳的文件名。
+    若提供的路径已是完整文件路径，则原样返回。
     
     Args:
-        path: User-provided path (can be a folder or complete file path)
-        default_filename: Default filename prefix (without timestamp and extension)
+        path: 用户提供的路径（可为文件夹或完整文件路径）
+        default_filename: 默认文件名前缀（不含时间戳和扩展名）
         
     Returns:
-        Complete file path, or empty string if path is empty
+        完整文件路径，若路径为空则返回空字符串
     """
     if not path:
         return ""
     
-    # Strip trailing slashes for consistent path handling
+    # 去掉尾部斜杠以统一路径处理
     normalized_path = path.rstrip(os.sep).rstrip('/')
     
-    # Check if path is a directory (existing directory, ends with separator, or has no extension)
+    # 判断路径是否为目录（已存在的目录、以分隔符结尾、或无扩展名）
     is_directory = os.path.isdir(normalized_path) or path.endswith(os.sep) or path.endswith('/')
     
-    # If path has no extension and is not an existing file, treat it as a folder
+    # 若路径无扩展名且非已存在文件，则视为文件夹
     if not is_directory and not os.path.isfile(normalized_path):
         _, file_ext = os.path.splitext(normalized_path)
         if not file_ext:
             is_directory = True
     
     if is_directory:
-        # Ensure directory exists
+        # 确保目录存在
         os.makedirs(normalized_path, exist_ok=True)
         
-        # Generate timestamped filename with milliseconds for uniqueness
+        # 生成带毫秒的时间戳文件名以保证唯一性
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        # Determine extension based on default_filename
+        # 根据 default_filename 确定扩展名
         if 'log' in default_filename.lower():
             output_ext = '.log'
         elif 'receipt' in default_filename.lower():
@@ -78,7 +78,7 @@ def resolve_output_path(path: str, default_filename: str) -> str:
         filename = f"{default_filename}_{timestamp}{output_ext}"
         return os.path.join(normalized_path, filename)
     else:
-        # For complete file paths, ensure parent directory exists
+        # 对于完整文件路径，确保父目录存在
         dir_path = os.path.dirname(normalized_path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
@@ -86,28 +86,28 @@ def resolve_output_path(path: str, default_filename: str) -> str:
 
 
 def setup_logging(config: BacktestConfig) -> str:
-    """Setup logging configuration from config.
+    """根据配置设置日志。
     
     Args:
-        config: Backtest configuration object
+        config: 回测配置对象
         
     Returns:
-        Actual log file path if configured, otherwise empty string
+        若已配置日志文件则返回实际路径，否则返回空字符串
     """
     debug = config.logging.debug
     log_file_config = config.logging.log_file or None
     
-    # Resolve log file path if configured
+    # 若配置了日志文件则解析其路径
     log_file = None
     if log_file_config:
         log_file = resolve_output_path(log_file_config, "backtest_log")
     
-    # Configure root logger
+    # 配置根 logger
     log_level = logging.DEBUG if debug else getattr(logging, config.logging.level, logging.INFO)
     
     handlers = []
     
-    # Console handler (optional, controlled by config.logging.console)
+    # 控制台 handler（可选，由 config.logging.console 控制）
     if config.logging.console:
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(log_level)
@@ -118,7 +118,7 @@ def setup_logging(config: BacktestConfig) -> str:
         console_handler.setFormatter(console_format)
         handlers.append(console_handler)
     
-    # File handler (optional)
+    # 文件 handler（可选）
     if log_file:
         file_handler = logging.FileHandler(log_file, mode='w')
         file_handler.setLevel(logging.DEBUG)
@@ -128,10 +128,10 @@ def setup_logging(config: BacktestConfig) -> str:
         file_handler.setFormatter(file_format)
         handlers.append(file_handler)
     
-    # Configure loggers
+    # 配置各 logger
     logging.basicConfig(level=log_level, handlers=handlers)
     
-    # Set specific module log levels
+    # 设置各模块的日志级别
     if debug:
         logging.getLogger('quant_framework.adapters.execution_venue.simulator').setLevel(logging.DEBUG)
         logging.getLogger('quant_framework.adapters.execution_venue.match_algorithm').setLevel(logging.DEBUG)
@@ -149,16 +149,16 @@ def setup_logging(config: BacktestConfig) -> str:
 
 
 def run_backtest(config: BacktestConfig, show_config: bool = False):
-    """Run the backtest using kernel + ports architecture.
+    """使用内核 + 端口架构运行回测。
     
     Args:
-        config: Backtest configuration object
-        show_config: If True, print configuration before running
+        config: 回测配置对象
+        show_config: 为 True 时在运行前打印配置
     """
-    # Setup logging (returns actual log file path if configured)
+    # 设置日志（若已配置则返回实际日志文件路径）
     actual_log_file = setup_logging(config)
     
-    # Resolve receipt output file path (folder -> auto-generated filename)
+    # 解析回执输出文件路径（文件夹 -> 自动生成文件名）
     receipt_output_file = None
     if config.receipt_logger.output_file:
         receipt_output_file = resolve_output_path(
@@ -192,7 +192,7 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     runtime_cfg = BacktestConfigFactory().create(config)
     app = BacktestApp(runtime_cfg)
     
-    # Run backtest
+    # 运行回测
     print("Starting backtest...")
     try:
         results = app.run()
@@ -208,14 +208,14 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         print(f"  OrderInfo 数量: {len(results.OrderInfo)}")
         print(f"  CancelRequest 数量: {len(results.CancelRequest)}")
         
-        # Print portfolio summary
+        # 打印投资组合摘要
         print(f"\n投资组合摘要 (Portfolio Summary):")
         if oms is not None:
             print(f"  Cash (现金余额): {oms.portfolio.cash:.2f}")
             print(f"  Position (持仓数量): {oms.portfolio.position}")
             print(f"  Realized PnL (已实现盈亏): {oms.portfolio.realized_pnl:.2f}")
         
-        # Print order summary
+        # 打印订单摘要
         active_orders = oms.get_active_orders() if oms is not None else []
         all_orders = list(oms.orders.values()) if oms is not None else []
         print(f"\n订单摘要 (Order Summary):")
@@ -223,16 +223,16 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         print(f"  Active orders (活跃订单数): {len(active_orders)}")
         print(f"  Filled orders (已成交订单数): {sum(1 for o in all_orders if o.status.value == 'FILLED')}")
         
-        # Print receipt summary
+        # 打印回执摘要
         if receipt_logger is not None:
             receipt_logger.print_summary()
         
-        # Save receipts to file if specified
+        # 若已指定则保存回执到文件
         if receipt_output_file and receipt_logger is not None:
             receipt_logger.save_to_file()
             print(f"\nReceipts saved to: {receipt_output_file}")
         
-        # Print all receipts if verbose mode is not already enabled
+        # 若未启用 verbose 模式则提示可查看所有回执
         if receipt_logger is not None and (not config.receipt_logger.verbose) and receipt_logger.records:
             print("\nTo see all receipts, set receipt_logger.verbose: true in config")
             print("Or use receipt_logger.print_all_receipts() programmatically")
@@ -249,30 +249,30 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
 
 
 def main():
-    """Main entry point with argument parsing."""
+    """主入口，负责命令行参数解析。"""
     parser = argparse.ArgumentParser(
         description="EventLoop-Based Unified Backtest Framework",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Run with default configuration (config.xml)
+示例：
+  # 使用默认配置（config.xml）运行
   python main.py
   
-  # Run with custom configuration file
+  # 使用自定义配置文件运行
   python main.py --config my_config.xml
   
-  # Show configuration before running
+  # 运行前显示配置
   python main.py --show-config
   
-  # Override specific settings via command line
+  # 通过命令行覆盖特定设置
   python main.py --data data/custom.pkl --progress --debug
   
-  # Full observability mode
+  # 完整可观测模式
   python main.py --progress --verbose-receipts --debug --save-receipts output/receipts.csv
 
-Configuration File:
-  The system loads configuration from config.xml by default.
-  See CONFIG.md for detailed documentation on all available parameters.
+配置文件：
+  系统默认从 config.xml 加载配置。
+  详见 CONFIG.md 获取所有可用参数的文档。
 """
     )
     
@@ -280,58 +280,58 @@ Configuration File:
         '--config', '-c',
         type=str,
         default=None,
-        help=f'Path to configuration file (default: {DEFAULT_CONFIG_PATH})'
+        help=f'配置文件路径（默认：{DEFAULT_CONFIG_PATH}）'
     )
     
     parser.add_argument(
         '--show-config',
         action='store_true',
-        help='Print configuration before running backtest'
+        help='运行回测前打印配置'
     )
     
-    # Command-line overrides (optional)
+    # 命令行覆盖（可选）
     parser.add_argument(
         '--data', '-d',
         type=str,
         default=None,
-        help='Override data.path from configuration'
+        help='覆盖配置中的 data.path'
     )
     
     parser.add_argument(
         '--progress', '-p',
         action='store_true',
-        help='Override runner.show_progress to enable progress bar'
+        help='覆盖 runner.show_progress 以启用进度条'
     )
     
     parser.add_argument(
         '--verbose-receipts', '-v',
         action='store_true',
-        help='Override receipt_logger.verbose to print receipts in real-time'
+        help='覆盖 receipt_logger.verbose 以实时打印回执'
     )
     
     parser.add_argument(
         '--save-receipts', '-s',
         type=str,
         default=None,
-        help='Override receipt_logger.output_file to save receipts to CSV'
+        help='覆盖 receipt_logger.output_file 以将回执保存为 CSV'
     )
     
     parser.add_argument(
         '--debug',
         action='store_true',
-        help='Override logging.debug to enable debug logging'
+        help='覆盖 logging.debug 以启用调试日志'
     )
     
     parser.add_argument(
         '--log-file', '-l',
         type=str,
         default=None,
-        help='Override logging.log_file to save logs to file'
+        help='覆盖 logging.log_file 以将日志保存到文件'
     )
     
     args = parser.parse_args()
     
-    # Load configuration
+    # 加载配置
     try:
         config = load_config(args.config)
     except FileNotFoundError as e:
@@ -342,7 +342,7 @@ Configuration File:
         print(f"Error loading configuration: {e}")
         sys.exit(1)
     
-    # Apply command-line overrides
+    # 应用命令行覆盖
     if args.data is not None:
         config.data.path = args.data
     if args.progress:

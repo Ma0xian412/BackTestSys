@@ -156,7 +156,7 @@ class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
                     return None
 
         def _parse_levels(side: str) -> List[Level]:
-            # side in {"Bid", "Ask"}
+            # side 取 {"Bid", "Ask"}
             out: List[Level] = []
             for i in range(1, 6):
                 px_key = side if i == 1 else f"{side}{i}"
@@ -174,7 +174,7 @@ class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
             ts_exch = _to_int(row.get('ExchTick')) or 0
             ts_recv = _to_int(row.get('RecvTick'))
             
-            # RecvTick is mandatory - error if missing or invalid
+            # RecvTick 为必填字段，缺失或无效时报错
             if ts_recv is None:
                 raise ValueError(
                     f"RecvTick field is required but missing or invalid. "
@@ -198,8 +198,8 @@ class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
                         p2 = _to_float(p)
                         q2 = _to_int(q)
                         if p2 is not None and q2 is not None:
-                            # Round price to 6 decimal places to fix floating-point precision issues
-                            # e.g., 1050.199999999 -> 1050.2
+                        # 价格取 6 位小数以修正浮点精度问题
+                        # 例如 1050.199999999 -> 1050.2
                             p2 = round(p2, 6)
                             lvs.append((p2, q2))
                     except Exception:
@@ -217,7 +217,7 @@ class PickleMarketDataFeed_Impl(IMarketDataStream, IMarketDataQuery):
                 average_price=avg_px,
             )
         except Exception as e:
-            # Re-raise ValueError for mandatory field errors
+            # 必填字段错误时重新抛出 ValueError
             if isinstance(e, ValueError):
                 raise
             return None

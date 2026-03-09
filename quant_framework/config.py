@@ -89,7 +89,7 @@ class DataConfig:
     format: str = "pkl"  # 数据格式：pkl 或 csv
     
     def __post_init__(self):
-        """Validate configuration values."""
+        """校验配置值。"""
         valid_formats = {"pkl", "csv"}
         if self.format not in valid_formats:
             raise ValueError(
@@ -165,14 +165,14 @@ class LoggingConfig:
     console: bool = True  # 是否在终端打印日志
     
     def __post_init__(self):
-        """Validate configuration values."""
+        """校验配置值。"""
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if self.level.upper() not in valid_levels:
             raise ValueError(
                 f"Invalid log level '{self.level}'. "
                 f"Must be one of: {', '.join(valid_levels)}"
             )
-        # Normalize to uppercase
+        # 规范化为大写
         self.level = self.level.upper()
 
 
