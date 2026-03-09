@@ -60,8 +60,7 @@ def test_contract_config_loading():
         # IF2401
         info = _load_contract_dictionary(path, "IF2401")
         assert info is not None
-        assert info.contract_id == "IF2401"
-        assert info.result_contract_id == 101
+        assert info.contract_id == 101
         assert info.partition_day == 20250309
         assert info.tick_size == 0.2
         assert info.exchange_code == "CFFEX"
@@ -72,7 +71,7 @@ def test_contract_config_loading():
         # AU2401（跨午夜）
         info2 = _load_contract_dictionary(path, "AU2401")
         assert info2 is not None
-        assert info2.result_contract_id == 202
+        assert info2.contract_id == 202
         assert info2.partition_day == 20250310
         assert info2.tick_size == 0.02
         assert info2.machine_name == "night-node"

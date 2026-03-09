@@ -304,6 +304,6 @@ class Observability_Impl(IObservability):
             return RunResultMetadata()
         return RunResultMetadata(
             partition_day=int(contract_info.partition_day),
-            contract_id=int(contract_info.result_contract_id),
+            contract_id=contract_info.contract_id,
             machine_name=str(contract_info.machine_name),
         )
