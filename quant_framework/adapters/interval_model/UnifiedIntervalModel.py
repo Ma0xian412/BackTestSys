@@ -1,14 +1,14 @@
-"""Unified tape builder for constructing event tapes from snapshot pairs.
+"""统一 tape 构建器，从快照对构建事件 tape。
 
-This module implements the complete tape construction logic from the specification:
-- A/B snapshots + lastvolsplit -> Event Tape
-- Discrete price paths with minimal displacement
-- Price-level based volume allocation
-- Conservation-based cancellation derivation
-- Top-5 activation window enforcement
-- Time scaling with lambda parameter
+本模块实现规约中的完整 tape 构建逻辑：
+- A/B 快照 + lastvolsplit -> 事件 Tape
+- 最小位移的离散价格路径
+- 基于价位档的体量分配
+- 基于守恒的撤单推导
+- Top-5 激活窗口约束
+- 基于 lambda 参数的时间缩放
 
-All timestamps use the unified recv timeline (ts_recv) in tick units (100ns per tick).
+所有时间戳使用统一的 recv 时间线 (ts_recv)，单位为 tick（每 tick = 100ns）。
 """
 
 from dataclasses import dataclass, replace
@@ -19,7 +19,7 @@ from ...core.port import IIntervalModel
 from ...core.data_structure import NormalizedSnapshot, Price, Qty, Side, TapeSegment, Level, TICK_PER_MS
 
 
-# Constants
+# 常量
 EPSILON = 1e-12
 LAMBDA_THRESHOLD = 1e-6
 
@@ -68,59 +68,57 @@ def _largest_remainder_round(values: List[float], total: int) -> List[int]:
 
 @dataclass
 class TapeConfig:
-    """Configuration parameters for tape building.
+    """Tape 构建配置参数。
     
-    All time values are in tick units (100ns per tick).
+    所有时间值单位为 tick（每 tick = 100ns）。
     """
     
-    # Volume allocation configuration
-    epsilon: float = 1.0  # No-trade baseline weight for time allocation (prevents zero-length segments)
+    # 体量分配配置
+    epsilon: float = 1.0  # 无成交时段的时间分配基准权重（避免零长度段）
     
-    # Time scaling (u' axis)
-    time_scale_lambda: float = 0.0  # Lambda for early/late event distribution
+    # 时间缩放（u' 轴）
+    time_scale_lambda: float = 0.0  # 早/晚事件分布的 lambda 参数
     
-    # Top-5 constraint
-    top_k: int = 5  # Number of price levels to track
+    # Top-5 约束
+    top_k: int = 5  # 跟踪的价位档数量
 
 
 class UnifiedIntervalModel_impl(IIntervalModel):
-    """Build event tape from A/B snapshots and lastvolsplit.
+    """从 A/B 快照和 lastvolsplit 构建事件 tape。
     
-    This is a pure function implementation - no internal state is maintained
-    between calls to build().
+    纯函数实现，build() 调用之间无内部状态。
     
-    Implements the complete specification including:
-    - Symmetric/proportion ghost rules for lastvolsplit
-    - Optimal price path construction (minimal displacement, single reversal)
-    - Price-level based volume allocation with time distribution
-    - Conservation-based queue evolution (N = delta_Q + M)
-    - Top-5 activation window enforcement
-    - Time scaling via lambda parameter
+    实现完整规约，包括：
+    - lastvolsplit 的对称/比例 ghost 规则
+    - 最优价格路径构建（最小位移、单次反转）
+    - 基于价位档的体量分配与时间分布
+    - 基于守恒的队列演化 (N = delta_Q + M)
+    - Top-5 激活窗口约束
+    - 基于 lambda 参数的时间缩放
     """
     
     def __init__(self, config: TapeConfig = None, tick_size: float = 1.0):
-        """Initialize the tape builder.
+        """初始化 tape 构建器。
         
         Args:
-            config: Configuration parameters
-            tick_size: Minimum price increment
+            config: 配置参数
+            tick_size: 最小价格变动单位
         """
         self.config = config or TapeConfig()
         self.tick_size = tick_size
     
     def build(self, prev: NormalizedSnapshot, curr: NormalizedSnapshot) -> List[TapeSegment]:
-        """Build tape segments from A/B snapshots.
+        """从 A/B 快照构建 tape 段。
         
-        从A/B快照构建tape段。使用统一的recv timeline (ts_recv)。
-        
-        注意：快照间隔由feed层保证，tape始终从t_a开始到t_b结束。
+        使用统一的 recv 时间线 (ts_recv)。
+        注意：快照间隔由 feed 层保证，tape 始终从 t_a 开始到 t_b 结束。
         
         Args:
-            prev: Previous snapshot (A) at time T_A / 前一个快照（A），在T_A时刻
-            curr: Current snapshot (B) at time T_B / 当前快照（B），在T_B时刻
+            prev: 前一个快照（A），在 T_A 时刻
+            curr: 当前快照（B），在 T_B 时刻
             
         Returns:
-            List of TapeSegments ordered by time / 按时间排序的TapeSegment列表
+            按时间排序的 TapeSegment 列表
             
         Raises:
             ValueError: 当 t_b <= t_a 时抛出，因为快照时间必须严格递增
@@ -129,21 +127,20 @@ class UnifiedIntervalModel_impl(IIntervalModel):
         t_a = int(prev.ts_recv)
         t_b = int(curr.ts_recv)
         
-        # 快照时间必须严格递增，否则抛出ValueError
-        # Snapshot timestamps must be strictly increasing
+        # 快照时间必须严格递增，否则抛出 ValueError
         if t_b <= t_a:
             raise ValueError(
                 f"Snapshot timestamps must be strictly increasing: t_b ({t_b}) <= t_a ({t_a}). "
                 f"快照时间必须严格递增。"
             )
         
-        # Extract endpoint best prices
+        # 提取端点最优价
         bid_a = self._best_price(prev, Side.BUY) or 0.0
         ask_a = self._best_price(prev, Side.SELL) or 0.0
         bid_b = self._best_price(curr, Side.BUY) or bid_a
         ask_b = self._best_price(curr, Side.SELL) or ask_a
         
-        # Get lastvolsplit prices
+        # 获取 lastvolsplit 价位
         last_vol_split = curr.last_vol_split or []
         price_set = {p for p, q in last_vol_split if q > 0}
         
@@ -172,10 +169,10 @@ class UnifiedIntervalModel_impl(IIntervalModel):
                 f"第一个段的开始时间必须等于t_a。"
             )
         
-        # Compute activation sets for each segment
+        # 为每段计算激活集
         segments = self._add_activation_sets(segments, prev, curr)
         
-        # Volume allocation based on price-level distribution
+        # 基于价位档分布的体量分配
         segments = self._allocate_volumes(segments, last_vol_split, t_a, t_b)
         
         # 再次验证：_allocate_volumes 可能会修改 t_start
@@ -186,13 +183,13 @@ class UnifiedIntervalModel_impl(IIntervalModel):
                 f"体量分配后，第一个段的开始时间必须等于t_a。"
             )
         
-        # Derive cancellations and net flow using queue-zero constraint at price transitions
+        # 基于价位转换处的队列归零约束推导撤单和净流量
         segments = self._derive_cancellations_and_net_flow(segments, prev, curr)
         
         return segments
     
     def _best_price(self, snap: NormalizedSnapshot, side: Side) -> Optional[float]:
-        """Extract best price from snapshot."""
+        """从快照提取最优价。"""
         levels = snap.bids if side == Side.BUY else snap.asks
         if not levels:
             return None
@@ -523,14 +520,13 @@ class UnifiedIntervalModel_impl(IIntervalModel):
     
     def _merge_paths_to_segments(self, bid_path: List[Price], ask_path: List[Price], 
                                   t_a: int, t_b: int) -> List[TapeSegment]:
-        """Merge bid/ask paths into global segments.
+        """将 bid/ask 路径合并为全局段。
         
-        Creates segments at each price change point to ensure P_bid[i] and P_ask[i]
-        are well-defined within each segment.
+        在每个价格变化点创建段，确保 P_bid[i] 和 P_ask[i] 在每段内定义明确。
         """
-        # Build change events (normalized progress u in [0,1])
-        # Use len(path) as divisor so N path points generate N segments
-        # (each point starts a segment that ends at the next point's u or at u=1)
+        # 构建变化事件（归一化进度 u 在 [0,1] 内）
+        # 以 len(path) 为除数，N 个路径点生成 N 段
+        # （每点开始一段，结束于下一个点的 u 或 u=1）
         events: List[Tuple[float, str, Price]] = []
         
         bid_n = max(1, len(bid_path))
@@ -544,10 +540,10 @@ class UnifiedIntervalModel_impl(IIntervalModel):
             u = i / ask_n if ask_n > 0 else 0.0
             events.append((u, "ask", p))
         
-        # Sort by progress, then by side
+        # 按进度、再按方向排序
         events.sort(key=lambda x: (x[0], x[1]))
         
-        # Build segments
+        # 构建段
         segments: List[TapeSegment] = []
         current_bid = bid_path[0] if bid_path else 0.0
         current_ask = ask_path[0] if ask_path else 0.0
@@ -580,7 +576,7 @@ class UnifiedIntervalModel_impl(IIntervalModel):
             else:
                 current_ask = price
         
-        # Final segment
+        # 最后一段
         if last_u < 1.0 - EPSILON:
             # 确保第一个段的开始时间精确等于 t_a
             if is_first_segment:
@@ -624,10 +620,10 @@ class UnifiedIntervalModel_impl(IIntervalModel):
         return result
     
     def _u_to_u_prime(self, u: float) -> float:
-        """Convert real progress u to scaled progress u'.
+        """将实际进度 u 转换为缩放进度 u'。
         
-        u' = (1 - e^(-lambda*u)) / (1 - e^(-lambda))  if |lambda| >= threshold
-        u' = u                                         otherwise
+        u' = (1 - e^(-lambda*u)) / (1 - e^(-lambda))  当 |lambda| >= 阈值时
+        u' = u                                        否则
         """
         lam = self.config.time_scale_lambda
         if abs(lam) < LAMBDA_THRESHOLD:
@@ -635,10 +631,10 @@ class UnifiedIntervalModel_impl(IIntervalModel):
         return (1 - math.exp(-lam * u)) / (1 - math.exp(-lam))
     
     def _u_prime_to_u(self, u_prime: float) -> float:
-        """Convert scaled progress u' back to real progress u.
+        """将缩放进度 u' 转回实际进度 u。
         
-        u = -ln(1 - (1 - e^(-lambda)) * u') / lambda  if |lambda| >= threshold
-        u = u'                                          otherwise
+        u = -ln(1 - (1 - e^(-lambda)) * u') / lambda  当 |lambda| >= 阈值时
+        u = u'                                         否则
         """
         lam = self.config.time_scale_lambda
         if abs(lam) < LAMBDA_THRESHOLD:
@@ -651,25 +647,25 @@ class UnifiedIntervalModel_impl(IIntervalModel):
     def _allocate_volumes(self, segments: List[TapeSegment], 
                           last_vol_split: List[Tuple[Price, Qty]],
                           t_a: int, t_b: int) -> List[TapeSegment]:
-        """Allocate volumes based on price-level volume distribution.
+        """基于价位档体量分布分配体量。
         
-        Algorithm:
-        1. Count occurrences of each price in the path (bilateral segments)
-        2. Distribute total volume for each price evenly across its occurrences
-        3. For prices with no volume, use epsilon as minimum weight
-        4. Time allocation is proportional to allocated volume weights
+        算法：
+        1. 统计路径中每个价位的出现次数（双边段）
+        2. 将每个价位的总成交量均匀分配到其各次出现
+        3. 无成交的价位使用 epsilon 作为最小权重
+        4. 时间分配与分配体量权重成正比
         
-        Example:
-        - Path: 0, 1, 2, 3, 2, 1, 4
-        - Volume at price 1: 100 total (appears twice -> 50 each)
-        - Volume at price 2: 200 total (appears twice -> 100 each)
-        - Volume at price 3: 200 total (appears once -> 200)
-        - Prices 0 and 4 have no volume -> use epsilon
+        示例：
+        - 路径：0, 1, 2, 3, 2, 1, 4
+        - 价位 1 的体量：100 总（出现两次 -> 各 50）
+        - 价位 2 的体量：200 总（出现两次 -> 各 100）
+        - 价位 3 的体量：200 总（出现一次 -> 200）
+        - 价位 0 和 4 无体量 -> 使用 epsilon
         
-        Time allocation for total duration N:
-        - Total weight = 2*epsilon + 100 + 200 + 200 = 2*epsilon + 500
-        - Time for price 0 = (N / total_weight) * epsilon
-        - Time for each price 1 occurrence = (N / total_weight) * 50
+        总时长 N 的时间分配：
+        - 总权重 = 2*epsilon + 100 + 200 + 200 = 2*epsilon + 500
+        - 价位 0 的时间 = (N / total_weight) * epsilon
+        - 价位 1 每次出现的时间 = (N / total_weight) * 50
         
         重要约束：成交必须是双边的
         - 只有当segment的bid_price == ask_price == 成交价时，才能分配成交量
@@ -681,11 +677,11 @@ class UnifiedIntervalModel_impl(IIntervalModel):
         
         eps = self.config.epsilon
         
-        # Track allocated volumes per segment (bilateral - same for both sides)
-        m_seg = [0.0] * n  # M_i (bilateral trade volume at price)
+        # 跟踪每段分配的体量（双边，买卖相同）
+        m_seg = [0.0] * n  # M_i（该价位的双边成交量）
         
-        # Step 1: Count occurrences of each price (bilateral segments only)
-        # Price is considered bilateral when bid_price == ask_price
+        # 步骤 1：统计每个价位的出现次数（仅双边段）
+        # 当 bid_price == ask_price 时视为双边
         price_segment_indices: Dict[Price, List[int]] = {}
         for i, seg in enumerate(segments):
             if abs(seg.bid_price - seg.ask_price) < EPSILON:
@@ -694,15 +690,15 @@ class UnifiedIntervalModel_impl(IIntervalModel):
                     price_segment_indices[price] = []
                 price_segment_indices[price].append(i)
         
-        # Step 2: Distribute volumes evenly for each price across its occurrences
-        # Use _largest_remainder_round to preserve total volume when dividing
-        # Round price to 6 decimals (matching data loader normalization) for O(1) lookup
+        # 步骤 2：将每个价位的体量均匀分配到其各次出现
+        # 使用 _largest_remainder_round 保证取整后总成交量不变
+        # 价格取 6 位小数（与数据加载器归一化一致）以便 O(1) 查找
         for price, total_vol in last_vol_split:
             if total_vol <= 0:
                 continue
             
-            # Round price to 6 decimals to match data loader normalization
-            # e.g., price=1050.199999999 rounds to 1050.2
+            # 价格取 6 位小数以匹配数据加载器归一化
+            # 例如 1050.199999999 取整为 1050.2
             rounded_price = round(price, 6)
             
             if rounded_price not in price_segment_indices:
@@ -713,7 +709,7 @@ class UnifiedIntervalModel_impl(IIntervalModel):
             if count == 0:
                 continue
             
-            # Calculate even distribution and use largest remainder method for rounding
+            # 计算均匀分配并使用最大余数法取整
             vol_per_segment_float = total_vol / count
             float_volumes = [vol_per_segment_float] * count
             rounded_volumes = _largest_remainder_round(float_volumes, int(total_vol))
@@ -721,10 +717,10 @@ class UnifiedIntervalModel_impl(IIntervalModel):
             for j, i in enumerate(indices):
                 m_seg[i] += rounded_volumes[j]
         
-        # Step 3: Calculate segment weights for time allocation
-        # Weight = allocated volume, or eps (config.epsilon) if no volume
-        # Note: EPSILON (1e-12) is used for floating point comparison, 
-        # eps (config.epsilon, default 1.0) is used as minimum weight for no-trade segments
+        # 步骤 3：计算每段的时间分配权重
+        # 权重 = 分配体量，无体量时使用 eps (config.epsilon)
+        # 注：EPSILON (1e-12) 用于浮点比较，
+        # eps (config.epsilon，默认 1.0) 用于无成交段的最小权重
         weights = []
         for i in range(n):
             if m_seg[i] > EPSILON:
@@ -734,24 +730,24 @@ class UnifiedIntervalModel_impl(IIntervalModel):
         
         total_weight = sum(weights)
         
-        # Guard against division by zero (should not happen with eps > 0)
+        # 防止除零（eps > 0 时不应发生）
         if total_weight < EPSILON:
-            total_weight = n  # Fallback to uniform distribution
+            total_weight = n  # 退回均匀分布
             weights = [1.0] * n
         
-        # Step 4: Calculate time proportions based on weights
+        # 步骤 4：根据权重计算时间比例
         # delta_u_prime[i] = weights[i] / total_weight
         delta_u_prime = [w / total_weight for w in weights]
         
-        # Compute cumulative u' boundaries
+        # 计算 u' 的累积边界
         u_prime_cumsum = [0.0]
         for d in delta_u_prime:
             u_prime_cumsum.append(u_prime_cumsum[-1] + d)
         
-        # Map u' back to u (real progress) - apply lambda transformation
+        # 将 u' 映射回 u（实际进度）- 应用 lambda 变换
         u_cumsum = [self._u_prime_to_u(up) for up in u_prime_cumsum]
         
-        # Update segment times and volumes
+        # 更新段的时间和体量
         dt = t_b - t_a
         result = []
         for i, seg in enumerate(segments):
@@ -767,11 +763,11 @@ class UnifiedIntervalModel_impl(IIntervalModel):
             else:
                 new_t_end = int(t_a + u_cumsum[i+1] * dt)
             
-            # Build trades dict: bilateral trades at the matching price
+            # 构建成交字典：匹配价位的双边成交
             trades: Dict[Tuple[Side, Price], Qty] = {}
             if m_seg[i] > 0:
-                trade_price = seg.bid_price  # bid_price == ask_price in bilateral segments
-                trade_qty = int(m_seg[i])  # Already integer from _largest_remainder_round
+                trade_price = seg.bid_price  # 双边段中 bid_price == ask_price
+                trade_qty = int(m_seg[i])  # _largest_remainder_round 已为整数
                 trades[(Side.BUY, trade_price)] = trade_qty
                 trades[(Side.SELL, trade_price)] = trade_qty
             
@@ -1064,16 +1060,15 @@ class UnifiedIntervalModel_impl(IIntervalModel):
         prev: NormalizedSnapshot,
         curr: NormalizedSnapshot,
     ) -> List[TapeSegment]:
-        """Derive cancellations and net flow from snapshot conservation.
+        """从快照守恒推导撤单和净流量。
 
-        For each price p in the activated universe:
+        对激活集中的每个价位 p：
         - delta_Q = Q^B(p) - Q^A(p)
-        - M(p) = sum of trades at p across all segments
-        - N(p) = delta_Q + M(p)  (conservation: Q_B = Q_A + N - M)
-        - Distribute N sequentially across active segments based on duration
-          while ensuring queue depth never goes negative. If a segment is the
-          last active one before the price deactivates (bid down / ask up),
-          force the queue to zero at the end of that segment.
+        - M(p) = 所有段在 p 处成交之和
+        - N(p) = delta_Q + M(p)（守恒：Q_B = Q_A + N - M）
+        - 按时长将 N 顺序分配到各活跃段，且保证队列深度不为负。
+          若某段是价位失活（bid 下移 / ask 上移）前的最后活跃段，
+          则在该段结束时强制队列归零。
         """
         n = len(segments)
         if n == 0:
