@@ -14,7 +14,7 @@ from .execution_venue import ExecutionVenue_Impl, SegmentBaseAlgorithm, Simulato
 from .interval_model import TapeConfig as BuilderTapeConfig, UnifiedIntervalModel_impl
 from .market_data_feed import CsvMarketDataFeed_Impl, PickleMarketDataFeed_Impl, SnapshotDuplicatingFeed_Impl
 from .IOMS.oms import OMS_Impl, Portfolio
-from .IStrategy import SimpleStrategy_Impl
+from .IStrategy import SimpleStrategy_Impl, ReplayStrategy_Impl
 from .observability.Observability_Impl import Observability_Impl
 from .time_model import TimeModel_Impl
 
@@ -81,7 +81,17 @@ class BacktestConfigFactory:
 
     @staticmethod
     def _create_strategy(config: BacktestConfig) -> Any:
-        return SimpleStrategy_Impl(name=config.strategy.name)
+        name = config.strategy.name
+        params = config.strategy.params
+        if name in ("ReplayStrategy", "ReplayStrategy_Impl"):
+            order_file = params.order_file or None
+            cancel_file = params.cancel_file or None
+            return ReplayStrategy_Impl(
+                name=name,
+                order_file=order_file,
+                cancel_file=cancel_file,
+            )
+        return SimpleStrategy_Impl(name=name)
 
     @staticmethod
     def _create_oms(config: BacktestConfig) -> OMS_Impl:
