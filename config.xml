@@ -84,9 +84,9 @@ BackTestSys 回测系统配置文件
         <!-- 策略特定参数 (可根据策略自定义) -->
         <params>
             <!-- SimpleStrategy: 每隔多少个快照下单 -->
-            <order_interval>10</order_interval>
+            <!-- <order_interval>10</order_interval> -->
             <!-- SimpleStrategy: 最大活跃订单数 -->
-            <max_active_orders>5</max_active_orders>
+            <!-- <max_active_orders>5</max_active_orders> -->
             <!-- ReplayStrategy: 下单CSV文件路径 -->
             <order_file></order_file>
             <!-- ReplayStrategy: 撤单CSV文件路径 -->
