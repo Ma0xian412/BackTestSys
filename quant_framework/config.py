@@ -132,6 +132,8 @@ class StrategyParams:
     """策略参数。"""
     order_interval: int = 10
     max_active_orders: int = 5
+    order_file: str = ""
+    cancel_file: str = ""
 
 
 @dataclass
