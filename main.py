@@ -94,21 +94,35 @@ def resolve_output_path(path: str, default_filename: str) -> str:
         return normalized_path
 
 
-def resolve_result_output_base(path: str) -> tuple[str, bool] | None:
+def _contract_name_suffix(config: BacktestConfig) -> str:
+    """从 config.contract 提取合约标识，用于文件名后缀。"""
+    c = config.contract
+    if c.contract_id and c.contract_id.strip():
+        return c.contract_id.strip()
+    if c.contract_info and c.contract_info.contract_id:
+        return str(c.contract_info.contract_id)
+    return ""
+
+
+def resolve_result_output_base(path: str, config: BacktestConfig) -> tuple[str, bool] | None:
     """解析回测结果落盘路径。
 
     若路径为空返回 None。
-    若为目录，创建 run_result_时间戳 子目录并返回 (目录路径, True)。
-    若为文件路径，返回 (去掉扩展名的基础路径, False)。
+    若为目录，创建 run_result_合约_时间戳 子目录并返回 (目录路径, True)。
+    若为文件路径，返回 (去掉扩展名的基础路径_合约, False)。
+    合约信息来自 config.contract，无则省略。
 
     Args:
         path: 配置中的 output_file
+        config: 回测配置，用于获取合约信息
 
     Returns:
         (base_path, is_directory) 或 None
     """
     if not path or not path.strip():
         return None
+    contract_suffix = _contract_name_suffix(config)
+    contract_part = f"_{contract_suffix}" if contract_suffix else ""
     normalized = path.strip().rstrip(os.sep).rstrip("/")
     is_directory = (
         os.path.isdir(normalized)
@@ -122,14 +136,14 @@ def resolve_result_output_base(path: str) -> tuple[str, bool] | None:
     if is_directory:
         os.makedirs(normalized, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        subdir = os.path.join(normalized, f"run_result_{timestamp}")
+        subdir = os.path.join(normalized, f"run_result{contract_part}_{timestamp}")
         os.makedirs(subdir, exist_ok=True)
         return (subdir, True)
     parent = os.path.dirname(normalized)
     if parent:
         os.makedirs(parent, exist_ok=True)
     base, _ = os.path.splitext(normalized)
-    return (base, False)
+    return (f"{base}{contract_part}", False)
 
 
 _RESULT_TABLE_FIELDS = {
@@ -140,16 +154,56 @@ _RESULT_TABLE_FIELDS = {
 }
 
 
-def save_run_result_to_csv(result: BacktestRunResult, base_path: str, is_directory: bool) -> list[str]:
-    """将 BacktestRunResult 落盘为 4 个 CSV 文件。
+def _save_contract_info(config: BacktestConfig, base_path: str, is_directory: bool) -> str | None:
+    """落盘 config.contract 信息为 contract_info.csv。
+
+    Returns:
+        写入的文件路径，若无合约信息则返回 None
+    """
+    c = config.contract
+    rows = [
+        ("contract_id", c.contract_id or ""),
+        ("contract_dictionary_path", c.contract_dictionary_path or ""),
+    ]
+    ci = c.contract_info
+    if ci:
+        rows.extend([
+            ("contract_info.contract_id", str(ci.contract_id)),
+            ("contract_info.partition_day", str(ci.partition_day)),
+            ("contract_info.tick_size", str(ci.tick_size)),
+            ("contract_info.exchange_code", ci.exchange_code or ""),
+            ("contract_info.machine_name", ci.machine_name or ""),
+        ])
+    has_any = any(v for _, v in rows if v)
+    if not has_any:
+        return None
+    if is_directory:
+        filepath = os.path.join(base_path, "contract_info.csv")
+    else:
+        filepath = f"{base_path}_contract_info.csv"
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(("key", "value"))
+        writer.writerows(rows)
+    return filepath
+
+
+def save_run_result_to_csv(
+    result: BacktestRunResult,
+    base_path: str,
+    is_directory: bool,
+    config: BacktestConfig,
+) -> list[str]:
+    """将 BacktestRunResult 落盘为 4 个 CSV 文件，并落盘 contract 信息。
 
     Args:
         result: 回测结果
         base_path: 基础路径（目录或文件前缀）
         is_directory: True 则在 base_path 下生成 DoneInfo.csv 等；False 则生成 base_path_DoneInfo.csv 等
+        config: 回测配置，用于落盘 contract 信息
 
     Returns:
-        生成的 4 个文件路径列表
+        生成的文件路径列表（含 contract_info.csv，若有）
     """
     tables = [
         ("DoneInfo", result.DoneInfo),
@@ -170,6 +224,9 @@ def save_run_result_to_csv(result: BacktestRunResult, base_path: str, is_directo
             for row in rows:
                 writer.writerow(asdict(row))
         written.append(filepath)
+    contract_path = _save_contract_info(config, base_path, is_directory)
+    if contract_path:
+        written.append(contract_path)
     return written
 
 
@@ -254,8 +311,8 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
             "receipts"
         )
 
-    # 解析回测结果落盘路径
-    result_output_base = resolve_result_output_base(config.run_result.output_file)
+    # 解析回测结果落盘路径（含合约信息）
+    result_output_base = resolve_result_output_base(config.run_result.output_file, config)
     
     print("\n" + "="*60)
     print("EventLoop-Based Unified Backtest Framework")
@@ -332,7 +389,7 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         # 若已指定则落盘回测结果（4 个 CSV）
         if result_output_base:
             base_path, is_dir = result_output_base
-            written = save_run_result_to_csv(results, base_path, is_dir)
+            written = save_run_result_to_csv(results, base_path, is_dir, config)
             print("\nRun result saved to:")
             for p in written:
                 print(f"  {p}")

@@ -232,19 +232,20 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `output_file` | string | `""` | 回测结果落盘路径（留空则不保存）。指定后生成 4 个 CSV：DoneInfo.csv、ExecutionDetail.csv、OrderInfo.csv、CancelRequest.csv |
+| `output_file` | string | `""` | 回测结果落盘路径（留空则不保存）。指定后生成 4 个 CSV（DoneInfo、ExecutionDetail、OrderInfo、CancelRequest）及 contract_info.csv（含 config.contract 信息） |
 
 路径规则：
-- **目录路径**（如 `output/`）：在目录下创建 `run_result_时间戳` 子目录，内含 4 个 CSV 文件
-- **文件路径**（如 `output/result` 或 `output/result.csv`）：生成 `result_DoneInfo.csv`、`result_ExecutionDetail.csv`、`result_OrderInfo.csv`、`result_CancelRequest.csv`
+- **目录路径**（如 `output/`）：在目录下创建 `run_result_合约_时间戳` 子目录，内含 4 个 CSV 及 contract_info.csv
+- **文件路径**（如 `output/result` 或 `output/result.csv`）：生成 `result_合约_DoneInfo.csv` 等 4 个文件及 `result_合约_contract_info.csv`
+- 合约信息来自 `contract`，文件名含 contract_id，同时落盘到 contract_info.csv（contract_id、partition_day、tick_size、exchange_code、machine_name 等）
 
 **示例：**
 ```xml
 <run_result>
-    <!-- 方式1：提供文件夹路径，程序创建 run_result_20240311_143025/ 并写入 4 个 CSV -->
+    <!-- 方式1：提供文件夹路径，程序创建 run_result_IF2401_20240311_143025/ 并写入 4 个 CSV -->
     <output_file>output/</output_file>
     
-    <!-- 方式2：提供文件基础路径，生成 result_DoneInfo.csv 等 4 个文件 -->
+    <!-- 方式2：提供文件基础路径，生成 result_IF2401_DoneInfo.csv 等 4 个文件 -->
     <!-- <output_file>output/result</output_file> -->
 </run_result>
 ```
