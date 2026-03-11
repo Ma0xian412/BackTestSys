@@ -184,6 +184,12 @@ class SnapshotConfig:
 
 
 @dataclass
+class RunResultConfig:
+    """回测结果落盘配置。"""
+    output_file: str = ""
+
+
+@dataclass
 class BacktestConfig:
     """完整的回测配置。"""
     data: DataConfig = field(default_factory=DataConfig)
@@ -197,6 +203,7 @@ class BacktestConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     snapshot: SnapshotConfig = field(default_factory=SnapshotConfig)
     contract: ContractConfig = field(default_factory=ContractConfig)
+    run_result: RunResultConfig = field(default_factory=RunResultConfig)
 
 
 def _dict_to_dataclass(data_class, data: Dict[str, Any]):
@@ -608,7 +615,8 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
     )
     logging_config = _dict_to_dataclass(LoggingConfig, raw_config.get("logging"))
     snapshot_config = _dict_to_dataclass(SnapshotConfig, raw_config.get("snapshot"))
-    
+    run_result_config = _dict_to_dataclass(RunResultConfig, raw_config.get("run_result"))
+
     # 解析策略配置（包含嵌套的params）
     strategy_raw = raw_config.get("strategy", {})
     strategy_params = _dict_to_dataclass(
@@ -648,6 +656,7 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
         logging=logging_config,
         snapshot=snapshot_config,
         contract=contract_config,
+        run_result=run_result_config,
     )
 
 
@@ -802,6 +811,9 @@ def print_config(config: BacktestConfig) -> None:
     print("\n[Receipt Logger]")
     print(f"  verbose: {config.receipt_logger.verbose}")
     print(f"  output_file: {config.receipt_logger.output_file or '(not set)'}")
+
+    print("\n[Run Result]")
+    print(f"  output_file: {config.run_result.output_file or '(not set)'}")
 
     print("\n[Observability Stream]")
     print(f"  history_dir: {config.observability_stream.history_dir}")
