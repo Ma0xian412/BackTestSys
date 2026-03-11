@@ -19,12 +19,21 @@
 """
 
 import argparse
+import csv
 import logging
 import os
 import sys
+from dataclasses import asdict, fields
 from datetime import datetime
 
 from quant_framework.core import BacktestApp
+from quant_framework.core.run_result import (
+    BacktestRunResult,
+    CancelRequestRecord,
+    DoneInfo,
+    ExecutionDetail,
+    OrderInfo,
+)
 from quant_framework.adapters.factory import BacktestConfigFactory
 from quant_framework.config import load_config, print_config, BacktestConfig
 
@@ -83,6 +92,142 @@ def resolve_output_path(path: str, default_filename: str) -> str:
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
         return normalized_path
+
+
+def _contract_name_suffix(config: BacktestConfig) -> str:
+    """从 config.contract 提取合约标识，用于文件名后缀。"""
+    c = config.contract
+    if c.contract_id and c.contract_id.strip():
+        return c.contract_id.strip()
+    if c.contract_info and c.contract_info.contract_id:
+        return str(c.contract_info.contract_id)
+    return ""
+
+
+def resolve_result_output_base(path: str, config: BacktestConfig) -> tuple[str, bool] | None:
+    """解析回测结果落盘路径。
+
+    若路径为空返回 None。
+    若为目录，创建 run_result_合约_时间戳 子目录并返回 (目录路径, True)。
+    若为文件路径，返回 (去掉扩展名的基础路径_合约, False)。
+    合约信息来自 config.contract，无则省略。
+
+    Args:
+        path: 配置中的 output_file
+        config: 回测配置，用于获取合约信息
+
+    Returns:
+        (base_path, is_directory) 或 None
+    """
+    if not path or not path.strip():
+        return None
+    contract_suffix = _contract_name_suffix(config)
+    contract_part = f"_{contract_suffix}" if contract_suffix else ""
+    normalized = path.strip().rstrip(os.sep).rstrip("/")
+    is_directory = (
+        os.path.isdir(normalized)
+        or path.endswith(os.sep)
+        or path.endswith("/")
+    )
+    if not is_directory and not os.path.isfile(normalized):
+        _, ext = os.path.splitext(normalized)
+        if not ext:
+            is_directory = True
+    if is_directory:
+        os.makedirs(normalized, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        subdir = os.path.join(normalized, f"run_result{contract_part}_{timestamp}")
+        os.makedirs(subdir, exist_ok=True)
+        return (subdir, True)
+    parent = os.path.dirname(normalized)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    base, _ = os.path.splitext(normalized)
+    return (f"{base}{contract_part}", False)
+
+
+_RESULT_TABLE_FIELDS = {
+    "DoneInfo": [f.name for f in fields(DoneInfo)],
+    "ExecutionDetail": [f.name for f in fields(ExecutionDetail)],
+    "OrderInfo": [f.name for f in fields(OrderInfo)],
+    "CancelRequest": [f.name for f in fields(CancelRequestRecord)],
+}
+
+
+def _save_contract_info(config: BacktestConfig, base_path: str, is_directory: bool) -> str | None:
+    """落盘 config.contract 信息为 contract_info.csv。
+
+    Returns:
+        写入的文件路径，若无合约信息则返回 None
+    """
+    c = config.contract
+    rows = [
+        ("contract_id", c.contract_id or ""),
+        ("contract_dictionary_path", c.contract_dictionary_path or ""),
+    ]
+    ci = c.contract_info
+    if ci:
+        rows.extend([
+            ("contract_info.contract_id", str(ci.contract_id)),
+            ("contract_info.partition_day", str(ci.partition_day)),
+            ("contract_info.tick_size", str(ci.tick_size)),
+            ("contract_info.exchange_code", ci.exchange_code or ""),
+            ("contract_info.machine_name", ci.machine_name or ""),
+        ])
+    has_any = any(v for _, v in rows if v)
+    if not has_any:
+        return None
+    if is_directory:
+        filepath = os.path.join(base_path, "contract_info.csv")
+    else:
+        filepath = f"{base_path}_contract_info.csv"
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(("key", "value"))
+        writer.writerows(rows)
+    return filepath
+
+
+def save_run_result_to_csv(
+    result: BacktestRunResult,
+    base_path: str,
+    is_directory: bool,
+    config: BacktestConfig,
+) -> list[str]:
+    """将 BacktestRunResult 落盘为 4 个 CSV 文件，并落盘 contract 信息。
+
+    Args:
+        result: 回测结果
+        base_path: 基础路径（目录或文件前缀）
+        is_directory: True 则在 base_path 下生成 DoneInfo.csv 等；False 则生成 base_path_DoneInfo.csv 等
+        config: 回测配置，用于落盘 contract 信息
+
+    Returns:
+        生成的文件路径列表（含 contract_info.csv，若有）
+    """
+    tables = [
+        ("DoneInfo", result.DoneInfo),
+        ("ExecutionDetail", result.ExecutionDetail),
+        ("OrderInfo", result.OrderInfo),
+        ("CancelRequest", result.CancelRequest),
+    ]
+    written = []
+    for name, rows in tables:
+        if is_directory:
+            filepath = os.path.join(base_path, f"{name}.csv")
+        else:
+            filepath = f"{base_path}_{name}.csv"
+        field_names = _RESULT_TABLE_FIELDS[name]
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=field_names)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(asdict(row))
+        written.append(filepath)
+    contract_path = _save_contract_info(config, base_path, is_directory)
+    if contract_path:
+        written.append(contract_path)
+    return written
 
 
 def setup_logging(config: BacktestConfig) -> str:
@@ -162,9 +307,12 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
     receipt_output_file = None
     if config.receipt_logger.output_file:
         receipt_output_file = resolve_output_path(
-            config.receipt_logger.output_file, 
+            config.receipt_logger.output_file,
             "receipts"
         )
+
+    # 解析回测结果落盘路径（含合约信息）
+    result_output_base = resolve_result_output_base(config.run_result.output_file, config)
     
     print("\n" + "="*60)
     print("EventLoop-Based Unified Backtest Framework")
@@ -183,6 +331,12 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         print(f"Logs will be saved to: {actual_log_file}")
     if receipt_output_file:
         print(f"Receipts will be saved to: {receipt_output_file}")
+    if result_output_base:
+        base_path, is_dir = result_output_base
+        if is_dir:
+            print(f"Run result will be saved to: {base_path}/")
+        else:
+            print(f"Run result will be saved to: {base_path}_*.csv")
     print()
     
     # main 只处理输入/config；组件构造交给 BacktestApp + CompositionRoot
@@ -231,6 +385,14 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         if receipt_output_file and receipt_logger is not None:
             receipt_logger.save_to_file()
             print(f"\nReceipts saved to: {receipt_output_file}")
+
+        # 若已指定则落盘回测结果（4 个 CSV）
+        if result_output_base:
+            base_path, is_dir = result_output_base
+            written = save_run_result_to_csv(results, base_path, is_dir, config)
+            print("\nRun result saved to:")
+            for p in written:
+                print(f"  {p}")
         
         # 若未启用 verbose 模式则提示可查看所有回执
         if receipt_logger is not None and (not config.receipt_logger.verbose) and receipt_logger.records:
@@ -315,6 +477,13 @@ def main():
         default=None,
         help='覆盖 receipt_logger.output_file 以将回执保存为 CSV'
     )
+
+    parser.add_argument(
+        '--save-result',
+        type=str,
+        default=None,
+        help='覆盖 run_result.output_file 以将回测结果落盘为 4 个 CSV'
+    )
     
     parser.add_argument(
         '--debug',
@@ -351,6 +520,8 @@ def main():
         config.receipt_logger.verbose = True
     if args.save_receipts is not None:
         config.receipt_logger.output_file = args.save_receipts
+    if args.save_result is not None:
+        config.run_result.output_file = args.save_result
     if args.debug:
         config.logging.debug = True
     if args.log_file is not None:
