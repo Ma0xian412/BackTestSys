@@ -164,6 +164,7 @@ def _save_contract_info(config: BacktestConfig, base_path: str, is_directory: bo
     rows = [
         ("contract_id", c.contract_id or ""),
         ("contract_dictionary_path", c.contract_dictionary_path or ""),
+        ("contract.machine_name", c.machine_name or ""),
     ]
     ci = c.contract_info
     if ci:

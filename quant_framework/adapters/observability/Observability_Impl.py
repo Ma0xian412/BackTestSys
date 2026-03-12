@@ -59,6 +59,7 @@ class Observability_Impl(IObservability):
         verbose: bool = False,
         callback: Optional[ReceiptCallback] = None,
         contract_info: Optional[ContractInfo] = None,
+        machine_name: str = "",
         history_dir: str = _DEFAULT_HISTORY_DIR,
         keep_history_files: bool = False,
         default_subscriber_memory_bytes: int = _DEFAULT_SUBSCRIBER_MEMORY,
@@ -73,7 +74,9 @@ class Observability_Impl(IObservability):
             keep_history_files=keep_history_files,
             default_max_memory_bytes=default_subscriber_memory_bytes,
         )
-        self._result_builder = RunResultBuilder(self._build_result_metadata(contract_info))
+        self._result_builder = RunResultBuilder(
+            self._build_result_metadata(contract_info, machine_name)
+        )
         self._run_open = False
         self._run_id: Optional[str] = None
         self._final_time = 0
@@ -299,11 +302,17 @@ class Observability_Impl(IObservability):
         self._result_builder.reset()
 
     @staticmethod
-    def _build_result_metadata(contract_info: Optional[ContractInfo]) -> RunResultMetadata:
+    def _build_result_metadata(
+        contract_info: Optional[ContractInfo],
+        machine_name: str,
+    ) -> RunResultMetadata:
+        resolved_machine_name = str(machine_name).strip()
+        if not resolved_machine_name and contract_info is not None:
+            resolved_machine_name = str(contract_info.machine_name).strip()
         if contract_info is None:
-            return RunResultMetadata()
+            return RunResultMetadata(machine_name=resolved_machine_name)
         return RunResultMetadata(
             partition_day=int(contract_info.partition_day),
             contract_id=contract_info.contract_id,
-            machine_name=str(contract_info.machine_name),
+            machine_name=resolved_machine_name,
         )
