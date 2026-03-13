@@ -3,7 +3,9 @@
 import csv
 import logging
 import os
-from typing import List, Tuple, Optional
+import re
+from datetime import datetime
+from typing import Any, List, Tuple, Optional
 
 from ...core.data_structure import (
     EVENT_KIND_RECEIPT_DELIVERY,
@@ -17,6 +19,61 @@ from ...core.data_structure import CancelRequest, Order, Side
 
 
 logger = logging.getLogger(__name__)
+_CONTRACT_ID_COLUMNS = ("ContractId", "contract_id", "ResultContractId")
+_PARTITION_DAY_COLUMNS = ("PartitionDay", "partition_day", "TradingDay", "TradeDate", "ActionDay")
+_MACHINE_NAME_COLUMNS = ("MachineName", "machine_name")
+_TIME_COLUMNS = ("SentTime", "CancelSentTime", "RecvTick", "ExchTick")
+_FILENAME_CONTRACT_ID_PATTERN = re.compile(r"id(\d+)", re.IGNORECASE)
+
+
+def _safe_int(value: object) -> Optional[int]:
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        try:
+            return int(float(text))
+        except (TypeError, ValueError):
+            return None
+
+
+def _is_valid_partition_day(day: int) -> bool:
+    if day < 19000101 or day > 21001231:
+        return False
+    try:
+        datetime.strptime(str(day), "%Y%m%d")
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_partition_day(value: object) -> Optional[int]:
+    text = str(value).strip()
+    if not text:
+        return None
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) < 8:
+        return None
+    for i in range(len(digits) - 7):
+        candidate = int(digits[i:i + 8])
+        if _is_valid_partition_day(candidate):
+            return candidate
+    return None
+
+
+def _extract_contract_id(value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    parsed = _safe_int(text)
+    if parsed is not None:
+        if parsed <= 0:
+            return ""
+        if "." in text:
+            return str(parsed)
+    return text
 
 
 class ReplayStrategy_Impl(IStrategy):
@@ -51,12 +108,17 @@ class ReplayStrategy_Impl(IStrategy):
         
         # 订单ID映射：原始order_id -> 内部order_id字符串（用于撤单关联）
         self._order_id_map: dict = {}
+        self._inferred_contract_id: str = ""
+        self._inferred_partition_day: Optional[int] = None
+        self._inferred_machine_name: str = ""
         
         # 加载文件，直接存入pending_orders/pending_cancels
         if order_file and os.path.exists(order_file):
             self._load_orders(order_file)
         if cancel_file and os.path.exists(cancel_file):
             self._load_cancels(cancel_file)
+        self._infer_contract_id_from_filename(order_file)
+        self._infer_contract_id_from_filename(cancel_file)
         
         # 一次性排序
         self.pending_orders.sort(key=lambda x: x[0])
@@ -75,6 +137,7 @@ class ReplayStrategy_Impl(IStrategy):
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
+                self._infer_metadata_from_row(row)
                 try:
                     order_id = int(row['OrderId'])
                     sent_time = int(row['SentTime'])
@@ -106,6 +169,7 @@ class ReplayStrategy_Impl(IStrategy):
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
+                self._infer_metadata_from_row(row)
                 try:
                     order_id = int(row['OrderId'])
                     cancel_sent_time = int(row['CancelSentTime'])
@@ -123,6 +187,99 @@ class ReplayStrategy_Impl(IStrategy):
                 except (KeyError, ValueError) as e:
                     # 跳过无效行
                     logger.warning(f"Skipping invalid cancel row: {row}, error: {e}")
+
+    def _infer_metadata_from_row(self, row: dict[str, Any]) -> None:
+        contract_id = self._pick_first_contract_id(row)
+        partition_day = self._pick_first_partition_day(row)
+        machine_name = self._pick_first_text(row, _MACHINE_NAME_COLUMNS)
+        self._set_inferred_contract_id(contract_id)
+        self._set_inferred_partition_day(partition_day)
+        self._set_inferred_machine_name(machine_name)
+
+    def _pick_first_contract_id(self, row: dict[str, Any]) -> str:
+        for key in _CONTRACT_ID_COLUMNS:
+            value = _extract_contract_id(row.get(key))
+            if value:
+                return value
+        return ""
+
+    def _pick_first_partition_day(self, row: dict[str, Any]) -> Optional[int]:
+        for key in _PARTITION_DAY_COLUMNS:
+            value = _extract_partition_day(row.get(key))
+            if value is not None:
+                return value
+        for key in _TIME_COLUMNS:
+            value = _extract_partition_day(row.get(key))
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _pick_first_text(row: dict[str, Any], columns: tuple[str, ...]) -> str:
+        for key in columns:
+            value = str(row.get(key, "")).strip()
+            if value:
+                return value
+        return ""
+
+    def _set_inferred_contract_id(self, value: str) -> None:
+        if not value:
+            return
+        if not self._inferred_contract_id:
+            self._inferred_contract_id = value
+            return
+        if self._inferred_contract_id != value:
+            logger.warning(
+                "ReplayStrategy inferred conflicting ContractId values: %s vs %s",
+                self._inferred_contract_id,
+                value,
+            )
+
+    def _set_inferred_partition_day(self, value: Optional[int]) -> None:
+        if value is None:
+            return
+        if self._inferred_partition_day is None:
+            self._inferred_partition_day = value
+            return
+        if self._inferred_partition_day != value:
+            logger.warning(
+                "ReplayStrategy inferred conflicting PartitionDay values: %s vs %s",
+                self._inferred_partition_day,
+                value,
+            )
+
+    def _set_inferred_machine_name(self, value: str) -> None:
+        if not value:
+            return
+        if not self._inferred_machine_name:
+            self._inferred_machine_name = value
+            return
+        if self._inferred_machine_name != value:
+            logger.warning(
+                "ReplayStrategy inferred conflicting MachineName values: %s vs %s",
+                self._inferred_machine_name,
+                value,
+            )
+
+    def _infer_contract_id_from_filename(self, filepath: Optional[str]) -> None:
+        if not filepath:
+            return
+        filename = os.path.basename(filepath)
+        match = _FILENAME_CONTRACT_ID_PATTERN.search(filename)
+        if not match:
+            return
+        self._set_inferred_contract_id(match.group(1))
+
+    def get_inferred_result_metadata(self) -> dict[str, object]:
+        """返回从 replay 数据中推断的结果元数据。"""
+        out: dict[str, object] = {}
+        if self._inferred_contract_id:
+            out["contract_id"] = self._inferred_contract_id
+        if self._inferred_partition_day and self._inferred_partition_day > 0:
+            out["partition_day"] = self._inferred_partition_day
+        if self._inferred_machine_name:
+            out["machine_name"] = self._inferred_machine_name
+        return out
     
     def on_event(self, e, ctx: StrategyContext) -> List:
         if e.kind == EVENT_KIND_MDARRIVE and self.is_first_snapshot:

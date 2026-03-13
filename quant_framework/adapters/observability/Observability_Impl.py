@@ -60,6 +60,7 @@ class Observability_Impl(IObservability):
         callback: Optional[ReceiptCallback] = None,
         contract_info: Optional[ContractInfo] = None,
         machine_name: str = "",
+        result_contract_id: str = "",
         history_dir: str = _DEFAULT_HISTORY_DIR,
         keep_history_files: bool = False,
         default_subscriber_memory_bytes: int = _DEFAULT_SUBSCRIBER_MEMORY,
@@ -75,7 +76,7 @@ class Observability_Impl(IObservability):
             default_max_memory_bytes=default_subscriber_memory_bytes,
         )
         self._result_builder = RunResultBuilder(
-            self._build_result_metadata(contract_info, machine_name)
+            self._build_result_metadata(contract_info, machine_name, result_contract_id)
         )
         self._run_open = False
         self._run_id: Optional[str] = None
@@ -305,14 +306,23 @@ class Observability_Impl(IObservability):
     def _build_result_metadata(
         contract_info: Optional[ContractInfo],
         machine_name: str,
+        result_contract_id: str,
     ) -> RunResultMetadata:
         resolved_machine_name = str(machine_name).strip()
         if not resolved_machine_name and contract_info is not None:
             resolved_machine_name = str(contract_info.machine_name).strip()
+        resolved_contract_id = str(result_contract_id).strip()
+        if not resolved_contract_id and contract_info is not None:
+            raw_contract_id = str(contract_info.contract_id).strip()
+            if raw_contract_id and raw_contract_id != "0":
+                resolved_contract_id = raw_contract_id
         if contract_info is None:
-            return RunResultMetadata(machine_name=resolved_machine_name)
+            return RunResultMetadata(
+                contract_id=resolved_contract_id,
+                machine_name=resolved_machine_name,
+            )
         return RunResultMetadata(
             partition_day=int(contract_info.partition_day),
-            contract_id=contract_info.contract_id,
+            contract_id=resolved_contract_id,
             machine_name=resolved_machine_name,
         )

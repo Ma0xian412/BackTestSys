@@ -36,6 +36,13 @@ def _to_output_direction(side: object) -> str:
     raise ValueError(f"unsupported order direction: {side!r}")
 
 
+def _to_output_contract_id(contract_id: object) -> str:
+    value = str(contract_id).strip()
+    if value == "0":
+        return ""
+    return value
+
+
 def _trade_state(order: Any) -> str:
     qty = int(getattr(order, "qty", 0))
     filled_qty = int(getattr(order, "filled_qty", 0))
@@ -56,6 +63,7 @@ class RunResultBuilder:
 
     def __init__(self, metadata: Optional[RunResultMetadata] = None) -> None:
         self._metadata = metadata or RunResultMetadata()
+        self._contract_id = _to_output_contract_id(self._metadata.contract_id)
         self.reset()
 
     def reset(self) -> None:
@@ -71,7 +79,7 @@ class RunResultBuilder:
         self._orders.append(
             OrderInfo(
                 PartitionDay=self._metadata.partition_day,
-                ContractId=self._metadata.contract_id,
+                ContractId=self._contract_id,
                 OrderId=_to_output_order_id(order_id_raw),
                 LimitPrice=float(payload["price"]),
                 Volume=int(payload["qty"]),
@@ -85,7 +93,7 @@ class RunResultBuilder:
         self._cancels.append(
             CancelRequestRecord(
                 PartitionDay=self._metadata.partition_day,
-                ContractId=self._metadata.contract_id,
+                ContractId=self._contract_id,
                 OrderId=_to_output_order_id(payload["order_id"]),
                 CancelSentTime=int(payload.get("create_time", event_time)),
                 MachineName=self._metadata.machine_name,
@@ -110,7 +118,7 @@ class RunResultBuilder:
                 RecvTick=recv_tick,
                 ExchTick=int(payload["timestamp"]),
                 OrderId=_to_output_order_id(order_id_raw),
-                ContractId=self._metadata.contract_id,
+                ContractId=self._contract_id,
                 Price=float(payload["fill_price"]),
                 Volume=int(payload["fill_qty"]),
                 OrderDirection=_to_output_direction(getattr(order.side, "value", order.side)),
@@ -151,7 +159,7 @@ class RunResultBuilder:
         done_time = self._last_recv_time_by_order.get(order_id_raw, int(final_time))
         return DoneInfo(
             PartitionDay=self._metadata.partition_day,
-            ContractId=self._metadata.contract_id,
+            ContractId=self._contract_id,
             OrderId=_to_output_order_id(order_id_raw),
             DoneTime=int(done_time),
             OrderTradeState=_trade_state(order),
