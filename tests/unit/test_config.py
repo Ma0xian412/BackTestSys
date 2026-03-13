@@ -9,7 +9,7 @@
 import os
 import tempfile
 
-from quant_framework.config import _load_contract_dictionary, TradingHour
+from quant_framework.config import _load_contract_dictionary, TradingHour, load_config
 from quant_framework.utils.trading_hours import TradingHoursHelper
 from quant_framework.adapters.market_data_feed import SnapshotDuplicatingFeed_Impl
 
@@ -84,6 +84,27 @@ def test_contract_config_loading():
         # 空参数
         assert _load_contract_dictionary("", "IF2401") is None
         assert _load_contract_dictionary(path, "") is None
+    finally:
+        os.unlink(path)
+
+
+def test_config_contract_machine_name_loaded_from_xml():
+    config_xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+    <contract>
+        <contract_id>IF2401</contract_id>
+        <machine_name>cfg-node</machine_name>
+        <contract_dictionary_path></contract_dictionary_path>
+    </contract>
+</config>
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False) as f:
+        f.write(config_xml)
+        path = f.name
+    try:
+        config = load_config(path)
+        assert config.contract.machine_name == "cfg-node"
     finally:
         os.unlink(path)
 

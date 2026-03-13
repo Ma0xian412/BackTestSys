@@ -113,6 +113,7 @@ class BacktestConfigFactory:
             history_dir=config.observability_stream.history_dir,
             keep_history_files=bool(config.logging.debug),
             contract_info=config.contract.contract_info,
+            machine_name=config.contract.machine_name or "",
             default_subscriber_memory_bytes=int(
                 max(1, config.observability_stream.subscriber_max_memory_mb) * 1024 * 1024
             ),

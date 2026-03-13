@@ -75,10 +75,12 @@ class ContractConfig:
     Attributes:
         contract_id: 用户指定的合约ID
         contract_dictionary_path: 合约字典XML文件路径
+        machine_name: 手动指定回测结果输出机器名（优先于字典）
         contract_info: 从合约字典中读取的合约详细信息（自动填充）
     """
     contract_id: str = ""
     contract_dictionary_path: str = ""
+    machine_name: str = ""
     contract_info: Optional[ContractInfo] = None
 
 
@@ -634,6 +636,7 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
     contract_raw = raw_config.get("contract", {})
     contract_id = contract_raw.get("contract_id", "") if contract_raw else ""
     contract_dictionary_path = contract_raw.get("contract_dictionary_path", "") if contract_raw else ""
+    machine_name = contract_raw.get("machine_name", "") if contract_raw else ""
     
     # 如果提供了合约ID和字典路径，则从字典中加载合约信息
     contract_info = None
@@ -643,6 +646,7 @@ def _parse_config(raw_config: Dict[str, Any]) -> BacktestConfig:
     contract_config = ContractConfig(
         contract_id=contract_id,
         contract_dictionary_path=contract_dictionary_path,
+        machine_name=machine_name,
         contract_info=contract_info
     )
     
@@ -834,6 +838,7 @@ def print_config(config: BacktestConfig) -> None:
     print("\n[Contract]")
     print(f"  contract_id: {config.contract.contract_id or '(not set)'}")
     print(f"  contract_dictionary_path: {config.contract.contract_dictionary_path or '(not set)'}")
+    print(f"  machine_name: {config.contract.machine_name or '(not set)'}")
     if config.contract.contract_info:
         info = config.contract.contract_info
         print(f"  Contract Info (loaded from dictionary):")

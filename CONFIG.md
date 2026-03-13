@@ -324,6 +324,7 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `contract_id` | string | `""` | 合约ID，用于从合约字典中查找对应合约信息 |
+| `machine_name` | string | `""` | 手动指定回测结果中的机器名（优先于合约字典） |
 | `contract_dictionary_path` | string | `""` | 合约字典XML文件路径 |
 
 #### 合约字典XML格式
@@ -387,6 +388,7 @@ Tape构建器负责从快照对构建事件Tape，是回测引擎的核心组件
 ```xml
 <contract>
     <contract_id>AU2401</contract_id>
+    <machine_name>alpha-node-01</machine_name>
     <contract_dictionary_path>data/contracts.xml</contract_dictionary_path>
 </contract>
 ```

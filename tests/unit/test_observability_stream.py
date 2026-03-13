@@ -6,6 +6,7 @@ import os
 import time
 
 from quant_framework.adapters.observability import Observability_Impl
+from quant_framework.config import ContractInfo
 from quant_framework.core.data_structure import Event, Order, Side
 from quant_framework.core.obs_event_factory import (
     make_order_submitted_event,
@@ -149,3 +150,34 @@ def test_dynamic_event_handler_registration(tmp_path):
 
     assert handled_values == ["v"]
     assert any(e.type == "custom.dynamic" and e.payload.get("k") == "v" for e in events)
+
+
+def test_manual_machine_name_written_into_result(tmp_path):
+    obs = Observability_Impl(
+        history_dir=str(tmp_path),
+        keep_history_files=True,
+        machine_name="cfg-node",
+    )
+    obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
+    obs.ingest(make_order_submitted_event(_mk_order("10", 10)))
+    obs.ingest(make_run_ended_event(sim_time=20, context={"status": "completed", "final_time": 20}))
+
+    result = obs.get_run_result()
+    assert len(result.OrderInfo) == 1
+    assert result.OrderInfo[0].MachineName == "cfg-node"
+
+
+def test_manual_machine_name_overrides_dictionary_value(tmp_path):
+    obs = Observability_Impl(
+        history_dir=str(tmp_path),
+        keep_history_files=True,
+        contract_info=ContractInfo(contract_id=11, partition_day=20250101, machine_name="dict-node"),
+        machine_name="cfg-node",
+    )
+    obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
+    obs.ingest(make_order_submitted_event(_mk_order("20", 10)))
+    obs.ingest(make_run_ended_event(sim_time=20, context={"status": "completed", "final_time": 20}))
+
+    result = obs.get_run_result()
+    assert len(result.OrderInfo) == 1
+    assert result.OrderInfo[0].MachineName == "cfg-node"

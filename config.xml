@@ -168,6 +168,8 @@ BackTestSys 回测系统配置文件
     <contract>
         <!-- 合约ID (用于从合约字典中查找对应合约信息) -->
         <contract_id></contract_id>
+        <!-- 结果输出使用的机器名（可手动填写；优先于字典中的 MachineName） -->
+        <machine_name></machine_name>
         
         <!-- 合约字典XML文件路径 (包含所有合约的详细信息)
              XML格式示例：

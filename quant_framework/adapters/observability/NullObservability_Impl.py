@@ -16,6 +16,7 @@ class NullObservability_Impl(Observability_Impl):
     def __init__(
         self,
         contract_info: ContractInfo | None = None,
+        machine_name: str = "",
         history_dir: str = _DEFAULT_HISTORY_DIR,
         keep_history_files: bool = False,
         default_subscriber_memory_bytes: int = _DEFAULT_SUBSCRIBER_MEMORY,
@@ -25,6 +26,7 @@ class NullObservability_Impl(Observability_Impl):
             verbose=False,
             callback=None,
             contract_info=contract_info,
+            machine_name=machine_name,
             history_dir=history_dir,
             keep_history_files=keep_history_files,
             default_subscriber_memory_bytes=default_subscriber_memory_bytes,
