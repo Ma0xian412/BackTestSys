@@ -54,7 +54,7 @@ def test_replay_result_metadata_inferred_from_replay_csv(tmp_path):
     assert len(result.CancelRequest) == 1
 
     expected_day = 20250102
-    expected_contract_id = 12345
+    expected_contract_id = "12345"
     expected_machine = "replay-node-a"
 
     for row in result.DoneInfo:

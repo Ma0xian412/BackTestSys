@@ -112,6 +112,10 @@ class BacktestConfigFactory:
         oms: OMS_Impl,
         inferred_metadata: dict[str, object],
     ) -> Observability_Impl:
+        resolved_result_contract_id = BacktestConfigFactory._resolve_result_contract_id(
+            config.contract.contract_info,
+            inferred_metadata,
+        )
         resolved_contract_info = BacktestConfigFactory._resolve_contract_info(
             config.contract.contract_info,
             inferred_metadata,
@@ -126,6 +130,7 @@ class BacktestConfigFactory:
             keep_history_files=bool(config.logging.debug),
             contract_info=resolved_contract_info,
             machine_name=resolved_machine_name,
+            result_contract_id=resolved_result_contract_id,
             default_subscriber_memory_bytes=int(
                 max(1, config.observability_stream.subscriber_max_memory_mb) * 1024 * 1024
             ),
@@ -150,11 +155,11 @@ class BacktestConfigFactory:
         raw = getter()
         if not isinstance(raw, dict):
             return {}
-        contract_id = BacktestConfigFactory._positive_int(raw.get("contract_id"))
+        contract_id = BacktestConfigFactory._non_zero_text(raw.get("contract_id"))
         partition_day = BacktestConfigFactory._positive_int(raw.get("partition_day"))
         machine_name = str(raw.get("machine_name", "")).strip()
         out: dict[str, object] = {}
-        if contract_id > 0:
+        if contract_id:
             out["contract_id"] = contract_id
         if partition_day > 0:
             out["partition_day"] = partition_day
@@ -163,30 +168,36 @@ class BacktestConfigFactory:
         return out
 
     @staticmethod
+    def _resolve_result_contract_id(
+        base_info: ContractInfo | None,
+        inferred_metadata: dict[str, object],
+    ) -> str:
+        if base_info is not None:
+            base_contract_id = BacktestConfigFactory._non_zero_text(base_info.contract_id)
+            if base_contract_id:
+                return base_contract_id
+        return BacktestConfigFactory._non_zero_text(inferred_metadata.get("contract_id"))
+
+    @staticmethod
     def _resolve_contract_info(
         base_info: ContractInfo | None,
         inferred_metadata: dict[str, object],
     ) -> ContractInfo | None:
-        inferred_contract_id = BacktestConfigFactory._positive_int(inferred_metadata.get("contract_id"))
         inferred_partition_day = BacktestConfigFactory._positive_int(inferred_metadata.get("partition_day"))
         inferred_machine_name = str(inferred_metadata.get("machine_name", "")).strip()
         if base_info is None:
-            if inferred_contract_id <= 0 and inferred_partition_day <= 0 and not inferred_machine_name:
+            if inferred_partition_day <= 0 and not inferred_machine_name:
                 return None
             return ContractInfo(
-                contract_id=inferred_contract_id,
                 partition_day=inferred_partition_day,
                 machine_name=inferred_machine_name,
             )
-        resolved_contract_id = int(base_info.contract_id)
-        if resolved_contract_id <= 0 and inferred_contract_id > 0:
-            resolved_contract_id = inferred_contract_id
         resolved_partition_day = int(base_info.partition_day)
         if resolved_partition_day <= 0 and inferred_partition_day > 0:
             resolved_partition_day = inferred_partition_day
         resolved_machine_name = str(base_info.machine_name).strip() or inferred_machine_name
         return ContractInfo(
-            contract_id=resolved_contract_id,
+            contract_id=int(base_info.contract_id),
             partition_day=resolved_partition_day,
             tick_size=float(base_info.tick_size),
             exchange_code=base_info.exchange_code,
@@ -201,3 +212,10 @@ class BacktestConfigFactory:
         except (TypeError, ValueError):
             return 0
         return parsed if parsed > 0 else 0
+
+    @staticmethod
+    def _non_zero_text(value: object) -> str:
+        text = str(value).strip()
+        if not text or text == "0":
+            return ""
+        return text

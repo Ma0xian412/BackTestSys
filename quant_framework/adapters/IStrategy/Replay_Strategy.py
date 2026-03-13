@@ -63,6 +63,19 @@ def _extract_partition_day(value: object) -> Optional[int]:
     return None
 
 
+def _extract_contract_id(value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    parsed = _safe_int(text)
+    if parsed is not None:
+        if parsed <= 0:
+            return ""
+        if "." in text:
+            return str(parsed)
+    return text
+
+
 class ReplayStrategy_Impl(IStrategy):
     """重放策略 - 首张快照时一次性发出订单与撤单动作。"""
     
@@ -95,7 +108,7 @@ class ReplayStrategy_Impl(IStrategy):
         
         # 订单ID映射：原始order_id -> 内部order_id字符串（用于撤单关联）
         self._order_id_map: dict = {}
-        self._inferred_contract_id: Optional[int] = None
+        self._inferred_contract_id: str = ""
         self._inferred_partition_day: Optional[int] = None
         self._inferred_machine_name: str = ""
         
@@ -176,19 +189,19 @@ class ReplayStrategy_Impl(IStrategy):
                     logger.warning(f"Skipping invalid cancel row: {row}, error: {e}")
 
     def _infer_metadata_from_row(self, row: dict[str, Any]) -> None:
-        contract_id = self._pick_first_int(row, _CONTRACT_ID_COLUMNS)
+        contract_id = self._pick_first_contract_id(row)
         partition_day = self._pick_first_partition_day(row)
         machine_name = self._pick_first_text(row, _MACHINE_NAME_COLUMNS)
         self._set_inferred_contract_id(contract_id)
         self._set_inferred_partition_day(partition_day)
         self._set_inferred_machine_name(machine_name)
 
-    def _pick_first_int(self, row: dict[str, Any], columns: tuple[str, ...]) -> Optional[int]:
-        for key in columns:
-            value = _safe_int(row.get(key))
-            if value is not None and value > 0:
+    def _pick_first_contract_id(self, row: dict[str, Any]) -> str:
+        for key in _CONTRACT_ID_COLUMNS:
+            value = _extract_contract_id(row.get(key))
+            if value:
                 return value
-        return None
+        return ""
 
     def _pick_first_partition_day(self, row: dict[str, Any]) -> Optional[int]:
         for key in _PARTITION_DAY_COLUMNS:
@@ -209,10 +222,10 @@ class ReplayStrategy_Impl(IStrategy):
                 return value
         return ""
 
-    def _set_inferred_contract_id(self, value: Optional[int]) -> None:
-        if value is None:
+    def _set_inferred_contract_id(self, value: str) -> None:
+        if not value:
             return
-        if self._inferred_contract_id is None:
+        if not self._inferred_contract_id:
             self._inferred_contract_id = value
             return
         if self._inferred_contract_id != value:
@@ -255,12 +268,12 @@ class ReplayStrategy_Impl(IStrategy):
         match = _FILENAME_CONTRACT_ID_PATTERN.search(filename)
         if not match:
             return
-        self._set_inferred_contract_id(_safe_int(match.group(1)))
+        self._set_inferred_contract_id(match.group(1))
 
     def get_inferred_result_metadata(self) -> dict[str, object]:
         """返回从 replay 数据中推断的结果元数据。"""
         out: dict[str, object] = {}
-        if self._inferred_contract_id and self._inferred_contract_id > 0:
+        if self._inferred_contract_id:
             out["contract_id"] = self._inferred_contract_id
         if self._inferred_partition_day and self._inferred_partition_day > 0:
             out["partition_day"] = self._inferred_partition_day

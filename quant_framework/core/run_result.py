@@ -11,14 +11,14 @@ class RunResultMetadata:
     """回测结果公共元数据。"""
 
     partition_day: int = 0
-    contract_id: int = 0
+    contract_id: str = ""
     machine_name: str = ""
 
 
 @dataclass(frozen=True)
 class DoneInfo:
     PartitionDay: int
-    ContractId: int
+    ContractId: str
     OrderId: int
     DoneTime: int
     OrderTradeState: str
@@ -31,7 +31,7 @@ class ExecutionDetail:
     RecvTick: int
     ExchTick: int
     OrderId: int
-    ContractId: int
+    ContractId: str
     Price: float
     Volume: int
     OrderDirection: str
@@ -41,7 +41,7 @@ class ExecutionDetail:
 @dataclass(frozen=True)
 class OrderInfo:
     PartitionDay: int
-    ContractId: int
+    ContractId: str
     OrderId: int
     LimitPrice: float
     Volume: int
@@ -53,7 +53,7 @@ class OrderInfo:
 @dataclass(frozen=True)
 class CancelRequestRecord:
     PartitionDay: int
-    ContractId: int
+    ContractId: str
     OrderId: int
     CancelSentTime: int
     MachineName: str
