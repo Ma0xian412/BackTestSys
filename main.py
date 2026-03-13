@@ -94,17 +94,47 @@ def resolve_output_path(path: str, default_filename: str) -> str:
         return normalized_path
 
 
-def _contract_name_suffix(config: BacktestConfig) -> str:
-    """从 config.contract 提取合约标识，用于文件名后缀。"""
+def _normalize_contract_id_text(value: object) -> str:
+    text = str(value).strip()
+    if not text or text == "0":
+        return ""
+    return text
+
+
+def _contract_name_suffix(config: BacktestConfig, result_contract_id: str = "") -> str:
+    """提取合约标识（字符串），用于文件名后缀。"""
     c = config.contract
-    if c.contract_id and c.contract_id.strip():
-        return c.contract_id.strip()
-    if c.contract_info and c.contract_info.contract_id:
-        return str(c.contract_info.contract_id)
+    config_contract_id = _normalize_contract_id_text(c.contract_id)
+    if config_contract_id:
+        return config_contract_id
+    inferred_contract_id = _normalize_contract_id_text(result_contract_id)
+    if inferred_contract_id:
+        return inferred_contract_id
+    if c.contract_info:
+        return _normalize_contract_id_text(c.contract_info.contract_id)
     return ""
 
 
-def resolve_result_output_base(path: str, config: BacktestConfig) -> tuple[str, bool] | None:
+def _extract_result_contract_id(result: BacktestRunResult) -> str:
+    tables = (
+        result.OrderInfo,
+        result.DoneInfo,
+        result.ExecutionDetail,
+        result.CancelRequest,
+    )
+    for rows in tables:
+        for row in rows:
+            contract_id = _normalize_contract_id_text(getattr(row, "ContractId", ""))
+            if contract_id:
+                return contract_id
+    return ""
+
+
+def resolve_result_output_base(
+    path: str,
+    config: BacktestConfig,
+    result_contract_id: str = "",
+) -> tuple[str, bool] | None:
     """解析回测结果落盘路径。
 
     若路径为空返回 None。
@@ -121,7 +151,7 @@ def resolve_result_output_base(path: str, config: BacktestConfig) -> tuple[str, 
     """
     if not path or not path.strip():
         return None
-    contract_suffix = _contract_name_suffix(config)
+    contract_suffix = _contract_name_suffix(config, result_contract_id)
     contract_part = f"_{contract_suffix}" if contract_suffix else ""
     normalized = path.strip().rstrip(os.sep).rstrip("/")
     is_directory = (
@@ -154,22 +184,28 @@ _RESULT_TABLE_FIELDS = {
 }
 
 
-def _save_contract_info(config: BacktestConfig, base_path: str, is_directory: bool) -> str | None:
+def _save_contract_info(
+    config: BacktestConfig,
+    base_path: str,
+    is_directory: bool,
+    result_contract_id: str = "",
+) -> str | None:
     """落盘 config.contract 信息为 contract_info.csv。
 
     Returns:
         写入的文件路径，若无合约信息则返回 None
     """
     c = config.contract
+    resolved_contract_id = _contract_name_suffix(config, result_contract_id)
     rows = [
-        ("contract_id", c.contract_id or ""),
+        ("contract_id", resolved_contract_id),
         ("contract_dictionary_path", c.contract_dictionary_path or ""),
         ("contract.machine_name", c.machine_name or ""),
     ]
     ci = c.contract_info
     if ci:
         rows.extend([
-            ("contract_info.contract_id", str(ci.contract_id)),
+            ("contract_info.contract_id", _normalize_contract_id_text(ci.contract_id)),
             ("contract_info.partition_day", str(ci.partition_day)),
             ("contract_info.tick_size", str(ci.tick_size)),
             ("contract_info.exchange_code", ci.exchange_code or ""),
@@ -225,7 +261,13 @@ def save_run_result_to_csv(
             for row in rows:
                 writer.writerow(asdict(row))
         written.append(filepath)
-    contract_path = _save_contract_info(config, base_path, is_directory)
+    result_contract_id = _extract_result_contract_id(result)
+    contract_path = _save_contract_info(
+        config,
+        base_path,
+        is_directory,
+        result_contract_id=result_contract_id,
+    )
     if contract_path:
         written.append(contract_path)
     return written
@@ -312,9 +354,6 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
             "receipts"
         )
 
-    # 解析回测结果落盘路径（含合约信息）
-    result_output_base = resolve_result_output_base(config.run_result.output_file, config)
-    
     print("\n" + "="*60)
     print("EventLoop-Based Unified Backtest Framework")
     print("="*60 + "\n")
@@ -332,12 +371,6 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
         print(f"Logs will be saved to: {actual_log_file}")
     if receipt_output_file:
         print(f"Receipts will be saved to: {receipt_output_file}")
-    if result_output_base:
-        base_path, is_dir = result_output_base
-        if is_dir:
-            print(f"Run result will be saved to: {base_path}/")
-        else:
-            print(f"Run result will be saved to: {base_path}_*.csv")
     print()
     
     # main 只处理输入/config；组件构造交给 BacktestApp + CompositionRoot
@@ -388,6 +421,15 @@ def run_backtest(config: BacktestConfig, show_config: bool = False):
             print(f"\nReceipts saved to: {receipt_output_file}")
 
         # 若已指定则落盘回测结果（4 个 CSV）
+        if config.run_result.output_file:
+            result_contract_id = _extract_result_contract_id(results)
+            result_output_base = resolve_result_output_base(
+                config.run_result.output_file,
+                config,
+                result_contract_id=result_contract_id,
+            )
+        else:
+            result_output_base = None
         if result_output_base:
             base_path, is_dir = result_output_base
             written = save_run_result_to_csv(results, base_path, is_dir, config)
