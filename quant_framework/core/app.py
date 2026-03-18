@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .dispatcher import Dispatcher
-from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler
+from .handlers import ActionArrivalHandler, MDArriveHandler, ReceiptDeliveryHandler, SnapMDArriveHandler
 from .kernel import EventLoopKernel
 from .obs_event_factory import (
     make_oms_order_changed_event,
@@ -61,6 +61,7 @@ class CompositionRoot:
         dispatcher = config.dispatcher or Dispatcher(event_spec)
 
         dispatcher.register(EVENT_KIND_MDARRIVE, MDArriveHandler())
+        dispatcher.subscribe(EVENT_KIND_MDARRIVE, SnapMDArriveHandler())
         dispatcher.register(EVENT_KIND_ACTION_ARRIVAL, ActionArrivalHandler())
         dispatcher.register(EVENT_KIND_RECEIPT_DELIVERY, ReceiptDeliveryHandler())
 

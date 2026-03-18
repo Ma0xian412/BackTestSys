@@ -113,6 +113,13 @@ class TapeConfig:
 class ExchangeConfig:
     """交易所模拟器配置。"""
     cancel_bias_k: float = 0.0
+    venue_type: str = "segment"
+    queue_ratio: float = 0.5
+    match_delay: int = 0
+    match_queue_delay: int = 0
+    response_delay: int = 0
+    cancel_ratio: float = 0.5
+    mask_decay_halflife: int = 1000
 
 
 @dataclass
