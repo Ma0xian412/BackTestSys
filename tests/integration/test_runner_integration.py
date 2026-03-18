@@ -51,7 +51,7 @@ def test_basic_pipeline():
         def on_event(self, e, ctx):
             if e.kind == EVENT_KIND_MDARRIVE and not self.sent:
                 self.sent = True
-                order = Order(order_id="1", side=Side.BUY, price=100.0, qty=1)
+                order = Order(order_id=1, side=Side.BUY, price=100.0, qty=1)
                 return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
             return []
 
@@ -105,7 +105,7 @@ def test_pipeline_with_delays():
                 self.snapshots_received.append(e.time)
                 if ctx.snapshot and ctx.snapshot.bids:
                     order = Order(
-                        order_id=str(self.count),
+                        order_id=self.count,
                         side=Side.BUY,
                         price=ctx.snapshot.bids[0].price,
                         qty=5,

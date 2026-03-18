@@ -99,7 +99,7 @@ def test_replay_strategy():
         rev = Event(
             time=snap.ts_recv,
             kind=EVENT_KIND_RECEIPT_DELIVERY,
-            payload=OrderReceipt(order_id="x", receipt_type="FILL", timestamp=snap.ts_recv, recv_time=snap.ts_recv),
+            payload=OrderReceipt(order_id=999, receipt_type="FILL", timestamp=snap.ts_recv, recv_time=snap.ts_recv),
             priority=30,
         )
         assert strategy.on_event(rev, sctx) == []

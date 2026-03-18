@@ -46,7 +46,7 @@ class _BuilderByWindow:
         return list(self._mapping.get((int(prev.ts_recv), int(curr.ts_recv)), []))
 
 
-def _place(order_id: str, price: float, qty: int, t: int) -> Action:
+def _place(order_id: int, price: float, qty: int, t: int) -> Action:
     return Action(
         action_type=ActionType.PLACE_ORDER,
         create_time=t,
@@ -88,7 +88,7 @@ def _single_segment_scenario(cancel_bias_k: float, *, trades: int, cancels: int,
     sim.start_run()
     feed.next()
     sim.start_session()
-    sim.on_action(_place(f"bias-{cancel_bias_k}", 100.0, qty, t0 + TICK_PER_MS))
+    sim.on_action(_place(301, 100.0, qty, t0 + TICK_PER_MS))
 
     total_fill = 0
     for _ in range(64):
@@ -185,7 +185,7 @@ def test_multi_segment_cumulative():
     sim.start_run()
     feed.next()
     sim.start_session()
-    sim.on_action(_place("multi-seg", 100.0, 5, t0 + TICK_PER_MS))
+    sim.on_action(_place(302, 100.0, 5, t0 + TICK_PER_MS))
 
     receipts_all = []
     for _ in range(128):

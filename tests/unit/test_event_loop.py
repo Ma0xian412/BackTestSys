@@ -86,20 +86,20 @@ def test_request_receipt_types():
     assert RequestType.ORDER.value == "ORDER"
     assert RequestType.CANCEL.value == "CANCEL"
 
-    cancel = CancelRequest(order_id="o1", create_time=1000)
-    assert cancel.order_id == "o1"
+    cancel = CancelRequest(order_id=1, create_time=1000)
+    assert cancel.order_id == 1
     assert cancel.create_time == 1000
 
     # 各种回执类型
-    r1 = OrderReceipt(order_id="o1", receipt_type="CANCELED", timestamp=1100,
+    r1 = OrderReceipt(order_id=1, receipt_type="CANCELED", timestamp=1100,
                       fill_qty=5, remaining_qty=0)
     assert r1.receipt_type == "CANCELED" and r1.fill_qty > 0
 
-    r2 = OrderReceipt(order_id="o2", receipt_type="CANCELED", timestamp=1200,
+    r2 = OrderReceipt(order_id=2, receipt_type="CANCELED", timestamp=1200,
                       fill_qty=0, remaining_qty=0)
     assert r2.receipt_type == "CANCELED" and r2.fill_qty == 0
 
-    r3 = OrderReceipt(order_id="o3", receipt_type="REJECTED", timestamp=1300)
+    r3 = OrderReceipt(order_id=3, receipt_type="REJECTED", timestamp=1300)
     assert r3.receipt_type == "REJECTED"
 
 

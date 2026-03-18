@@ -12,7 +12,7 @@ from ...core.data_structure import OrderStatus
 
 @dataclass
 class ReceiptRecord:
-    order_id: str
+    order_id: int
     exch_time: int
     recv_time: int
     receipt_type: str
@@ -35,7 +35,7 @@ def count_receipts(records: Iterable[Any]) -> dict:
     }
 
 
-def split_order_states(orders: Mapping[str, Any]) -> tuple[int, int, int]:
+def split_order_states(orders: Mapping[int, Any]) -> tuple[int, int, int]:
     full = partial = unfilled = 0
     for order in orders.values():
         if order.qty <= 0:

@@ -7,7 +7,7 @@ from enum import Enum
 # 基本类型别名
 Price = float      # 价格类型
 Qty = int          # 数量类型
-OrderId = str      # 订单ID类型
+OrderId = int      # 订单ID类型
 Timestamp = int    # 时间戳类型（单位：tick，每tick=100ns，从0000-00-00开始计数）
 
 # 快照推送最小间隔（tick单位，500ms = 5_000_000 ticks）
@@ -278,7 +278,7 @@ class OrderReceipt:
         pos: 订单在该时刻的队列位置（由 Simulator 维护）
         recv_time: 策略接收到该回执的时间（可选）
     """
-    order_id: str
+    order_id: Optional[OrderId]
     receipt_type: str
     timestamp: int
     fill_qty: Qty = 0
@@ -323,7 +323,7 @@ class OrderDiagnostics:
         x_final: 区间结束时的X(px, T_B)
         q_truncation_count: Q < 0 截断的次数
     """
-    order_id: str
+    order_id: OrderId
     side: Side
     price: Price
     qty: Qty
@@ -342,7 +342,7 @@ class OrderDiagnostics:
 class OrderSnapshot:
     """订单只读快照。"""
 
-    order_id: str
+    order_id: OrderId
     side: Side
     price: Price
     qty: Qty
@@ -381,7 +381,7 @@ class ReadOnlyOMSView:
         orders = self._oms.get_active_orders()
         return [self._to_order_snapshot(o) for o in orders]
 
-    def get_order(self, order_id: str) -> Optional[OrderSnapshot]:
+    def get_order(self, order_id: OrderId) -> Optional[OrderSnapshot]:
         order = self._oms.get_order(order_id)
         if order is None:
             return None
@@ -462,7 +462,7 @@ class ShadowOrder:
     """交易所内影子订单（由 Simulator 维护）。"""
 
     create_time: int
-    order_id: str
+    order_id: OrderId
     side: Side
     price: Price
     pos: int

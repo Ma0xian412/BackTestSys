@@ -70,17 +70,17 @@ class RunResultBuilder:
         self._orders: list[OrderInfo] = []
         self._cancels: list[CancelRequestRecord] = []
         self._executions: list[ExecutionDetail] = []
-        self._last_recv_time_by_order: dict[str, int] = {}
-        self._submitted_order_ids: list[str] = []
+        self._last_recv_time_by_order: dict[int, int] = {}
+        self._submitted_order_ids: list[int] = []
 
     def record_order_submitted(self, event_time: int, payload: Mapping[str, object]) -> None:
-        order_id_raw = str(payload["order_id"])
-        self._submitted_order_ids.append(order_id_raw)
+        order_id = _to_output_order_id(payload["order_id"])
+        self._submitted_order_ids.append(order_id)
         self._orders.append(
             OrderInfo(
                 PartitionDay=self._metadata.partition_day,
                 ContractId=self._contract_id,
-                OrderId=_to_output_order_id(order_id_raw),
+                OrderId=order_id,
                 LimitPrice=float(payload["price"]),
                 Volume=int(payload["qty"]),
                 OrderDirection=_to_output_direction(payload["side"]),
@@ -100,24 +100,24 @@ class RunResultBuilder:
             )
         )
 
-    def record_receipt_delivered(self, payload: Mapping[str, object], order_lookup: Mapping[str, Any]) -> None:
-        order_id_raw = str(payload["order_id"])
+    def record_receipt_delivered(self, payload: Mapping[str, object], order_lookup: Mapping[int, Any]) -> None:
+        order_id = _to_output_order_id(payload["order_id"])
         recv_tick = int(payload.get("recv_time") or payload["timestamp"])
-        self._last_recv_time_by_order[order_id_raw] = recv_tick
+        self._last_recv_time_by_order[order_id] = recv_tick
 
         receipt_type = str(payload["receipt_type"])
         if receipt_type not in _FILLED_RECEIPT_TYPES:
             return
 
-        order = order_lookup.get(order_id_raw)
+        order = order_lookup.get(order_id)
         if order is None:
-            raise ValueError(f"missing order for receipt order_id={order_id_raw!r}")
+            raise ValueError(f"missing order for receipt order_id={order_id!r}")
         self._executions.append(
             ExecutionDetail(
                 PartitionDay=self._metadata.partition_day,
                 RecvTick=recv_tick,
                 ExchTick=int(payload["timestamp"]),
-                OrderId=_to_output_order_id(order_id_raw),
+                OrderId=order_id,
                 ContractId=self._contract_id,
                 Price=float(payload["fill_price"]),
                 Volume=int(payload["fill_qty"]),
@@ -136,31 +136,31 @@ class RunResultBuilder:
             CancelRequest=tuple(self._cancels),
         )
 
-    def _build_done_info(self, orders: Mapping[str, Any], final_time: int) -> list[DoneInfo]:
-        seen: set[str] = set()
+    def _build_done_info(self, orders: Mapping[int, Any], final_time: int) -> list[DoneInfo]:
+        seen: set[int] = set()
         output: list[DoneInfo] = []
 
-        for order_id_raw in self._submitted_order_ids:
-            if order_id_raw in seen:
+        for order_id in self._submitted_order_ids:
+            if order_id in seen:
                 continue
-            seen.add(order_id_raw)
-            order = orders.get(order_id_raw)
+            seen.add(order_id)
+            order = orders.get(order_id)
             if order is None:
                 continue
-            output.append(self._make_done_info(order_id_raw, order, final_time))
+            output.append(self._make_done_info(order_id, order, final_time))
 
-        for order_id_raw, order in orders.items():
-            if order_id_raw in seen:
+        for order_id, order in orders.items():
+            if order_id in seen:
                 continue
-            output.append(self._make_done_info(str(order_id_raw), order, final_time))
+            output.append(self._make_done_info(order_id, order, final_time))
         return output
 
-    def _make_done_info(self, order_id_raw: str, order: Any, final_time: int) -> DoneInfo:
-        done_time = self._last_recv_time_by_order.get(order_id_raw, int(final_time))
+    def _make_done_info(self, order_id: int, order: Any, final_time: int) -> DoneInfo:
+        done_time = self._last_recv_time_by_order.get(order_id, int(final_time))
         return DoneInfo(
             PartitionDay=self._metadata.partition_day,
             ContractId=self._contract_id,
-            OrderId=_to_output_order_id(order_id_raw),
+            OrderId=order_id,
             DoneTime=int(done_time),
             OrderTradeState=_trade_state(order),
             MachineName=self._metadata.machine_name,

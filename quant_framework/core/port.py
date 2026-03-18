@@ -9,6 +9,7 @@ from .data_structure import (
     Event,
     NormalizedSnapshot,
     Order,
+    OrderId,
     OrderReceipt,
     ShadowOrder,
     TapeSegment,
@@ -128,14 +129,14 @@ class IMatchAlgorithm(ABC):
     def on_order_action_impl(
         self,
         order: ShadowOrder,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
     ) -> List[OrderReceipt]:
         raise NotImplementedError
 
     @abstractmethod
     def on_step(
         self,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
         start_time: int,
         until_time: int,
     ) -> List[OrderReceipt]:

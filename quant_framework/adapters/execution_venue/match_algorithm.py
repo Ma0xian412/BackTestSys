@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from ...core.data_structure import (
     NormalizedSnapshot,
+    OrderId,
     OrderReceipt,
     ShadowOrder,
     Side,
@@ -140,7 +141,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
     def on_order_action_impl(
         self,
         order: ShadowOrder,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
     ) -> List[OrderReceipt]:
         t = int(order.create_time)
         qty = int(max(0, order.now_vol))
@@ -213,7 +214,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
 
     def on_step(
         self,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
         start_time: int,
         until_time: int,
     ) -> List[OrderReceipt]:
@@ -562,7 +563,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         return order_price <= opposite_best
 
     def _has_blocking_shadow(
-        self, side: Side, price: float, active_orders: Mapping[str, ShadowOrder]
+        self, side: Side, price: float, active_orders: Mapping[OrderId, ShadowOrder]
     ) -> bool:
         price = round(float(price), 8)
         for shadow in active_orders.values():
@@ -576,7 +577,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         return False
 
     def _same_side_queue_depth(
-        self, side: Side, price: float, t: int, active_orders: Mapping[str, ShadowOrder]
+        self, side: Side, price: float, t: int, active_orders: Mapping[OrderId, ShadowOrder]
     ) -> float:
         q_mkt = self._get_q_mkt(side, price, t)
         shadow_qty = sum(
@@ -634,7 +635,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
 
     def _compute_queue_position(
         self, side: Side, price: float, t: int,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
     ) -> int:
         last_shadow = None
         for s in active_orders.values():
@@ -658,7 +659,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
     # ── Zone-aware X 坐标计算 ───────────────────────────────────
 
     def _get_shadows_at_price(
-        self, side: Side, price: float, active_orders: Mapping[str, ShadowOrder]
+        self, side: Side, price: float, active_orders: Mapping[OrderId, ShadowOrder]
     ) -> List[ShadowOrder]:
         return sorted(
             [s for s in active_orders.values()
@@ -670,7 +671,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
 
     def _build_queue_zones(
         self, side: Side, price: float, x_running: float, q_mkt: float,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
     ) -> List[Tuple[str, float, float, Optional[ShadowOrder]]]:
         shadows = self._get_shadows_at_price(side, price, active_orders)
         zones: List[Tuple[str, float, float, Optional[ShadowOrder]]] = []
@@ -821,7 +822,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
     def _get_x_coord(
         self, side: Side, price: float, t: int,
         ref_shadow: ShadowOrder,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
     ) -> float:
         """Zone-aware X 坐标计算，在 shadow 到达时间点拆分以保证 zone 结构正确。"""
         level = self._get_level(side, price)
@@ -895,7 +896,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         seg_idx: int,
         t_from: int,
         t_to: int,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
     ) -> Optional[int]:
         if t_to <= t_from or seg_idx < 0:
             return None
@@ -940,7 +941,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
 
     @staticmethod
     def _get_best_active_price(
-        side: Side, t_from: int, active_orders: Mapping[str, ShadowOrder]
+        side: Side, t_from: int, active_orders: Mapping[OrderId, ShadowOrder]
     ) -> Optional[float]:
         best: Optional[float] = None
         for s in active_orders.values():
@@ -958,7 +959,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
     @staticmethod
     def _get_first_active_shadow(
         side: Side, price: float, t_from: int,
-        active_orders: Mapping[str, ShadowOrder],
+        active_orders: Mapping[OrderId, ShadowOrder],
     ) -> Optional[ShadowOrder]:
         best: Optional[ShadowOrder] = None
         for s in active_orders.values():
@@ -973,7 +974,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
     # ── 通用辅助 ────────────────────────────────────────────────
 
     @staticmethod
-    def _none_receipt(timestamp: int, order_id: str = "") -> OrderReceipt:
+    def _none_receipt(timestamp: int, order_id: Optional[OrderId] = None) -> OrderReceipt:
         return OrderReceipt(
             order_id=order_id,
             receipt_type="NONE",

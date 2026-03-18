@@ -52,7 +52,7 @@ def test_readonly_oms_view():
     portfolio = Portfolio(cash=10000.0)
     oms = OMS_Impl(portfolio=portfolio)
 
-    order = Order(order_id="ro-1", side=Side.BUY, price=100.0, qty=10)
+    order = Order(order_id=1, side=Side.BUY, price=100.0, qty=10)
     oms.submit_order(order, 1000 * TICK_PER_MS)
 
     view = ReadOnlyOMSView(oms)
@@ -63,9 +63,9 @@ def test_readonly_oms_view():
     assert isinstance(active[0], OrderSnapshot)
 
     # 单个订单
-    dto = view.get_order("ro-1")
+    dto = view.get_order(1)
     assert dto is not None
-    assert dto.order_id == "ro-1"
+    assert dto.order_id == 1
     assert dto.price == 100.0
 
     # 不可变

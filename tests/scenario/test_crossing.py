@@ -82,7 +82,7 @@ def _seg(t0: int, t1: int, bid: float, ask: float) -> TapeSegment:
     )
 
 
-def _place(order_id: str, side: Side, price: float, qty: int, t: int) -> Action:
+def _place(order_id: int, side: Side, price: float, qty: int, t: int) -> Action:
     return Action(
         action_type=ActionType.PLACE_ORDER,
         create_time=t,
@@ -97,9 +97,9 @@ def test_immediate_execution():
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 100.0, 101.0)]})
     sim.start_session()
 
-    buy_cross = sim.on_action(_place("buy-cross", Side.BUY, 101.0, 10, t0 + 10 * TICK_PER_MS))[0]
-    sell_cross = sim.on_action(_place("sell-cross", Side.SELL, 100.0, 15, t0 + 20 * TICK_PER_MS))[0]
-    passive = sim.on_action(_place("passive-1", Side.BUY, 99.0, 20, t0 + 30 * TICK_PER_MS))[0]
+    buy_cross = sim.on_action(_place(101, Side.BUY, 101.0, 10, t0 + 10 * TICK_PER_MS))[0]
+    sell_cross = sim.on_action(_place(102, Side.SELL, 100.0, 15, t0 + 20 * TICK_PER_MS))[0]
+    passive = sim.on_action(_place(103, Side.BUY, 99.0, 20, t0 + 30 * TICK_PER_MS))[0]
 
     assert buy_cross.receipt_type in {"PARTIAL", "FILL"}
     assert sell_cross.receipt_type in {"PARTIAL", "FILL"}
@@ -113,7 +113,7 @@ def test_partial_fill_position_zero():
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 100.0, 101.0)]})
     sim.start_session()
 
-    receipt = sim.on_action(_place("after-crossing", Side.BUY, 101.0, 150, t0 + 10 * TICK_PER_MS))[0]
+    receipt = sim.on_action(_place(104, Side.BUY, 101.0, 150, t0 + 10 * TICK_PER_MS))[0]
     assert receipt.receipt_type == "PARTIAL"
     assert receipt.fill_qty == 100
     assert receipt.remaining_qty == 50
@@ -128,8 +128,8 @@ def test_blocked_by_existing_shadow():
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 100.0, 101.0)]})
     sim.start_session()
 
-    r1 = sim.on_action(_place("buy-1", Side.BUY, 100.0, 30, t0 + 10 * TICK_PER_MS))[0]
-    r2 = sim.on_action(_place("buy-2", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))[0]
+    r1 = sim.on_action(_place(105, Side.BUY, 100.0, 30, t0 + 10 * TICK_PER_MS))[0]
+    r2 = sim.on_action(_place(106, Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))[0]
 
     assert r1.receipt_type == "NONE"
     assert r2.receipt_type == "NONE"
@@ -143,7 +143,7 @@ def test_blocked_by_queue_depth():
     sim = _make_sim([s0, s1], {(t0, t1): [_seg(t0, t1, 101.0, 102.0)]})
     sim.start_session()
 
-    receipt = sim.on_action(_place("buy-q-depth", Side.BUY, 101.0, 10, t0 + 10 * TICK_PER_MS))[0]
+    receipt = sim.on_action(_place(107, Side.BUY, 101.0, 10, t0 + 10 * TICK_PER_MS))[0]
     assert receipt.receipt_type == "NONE"
     assert receipt.pos >= 20
 
@@ -161,13 +161,13 @@ def test_post_crossing_pos_uses_x_coord():
     sim = _make_sim([s0, s1, s2], mapping)
 
     sim.start_session()
-    r1 = sim.on_action(_place("post-cross", Side.BUY, 101.0, 150, t0 + 10 * TICK_PER_MS))[0]
+    r1 = sim.on_action(_place(108, Side.BUY, 101.0, 150, t0 + 10 * TICK_PER_MS))[0]
     assert r1.receipt_type == "PARTIAL"
     assert r1.pos == 0
     assert r1.remaining_qty == 50
 
     sim._test_feed.next()  # type: ignore[attr-defined]
     sim.start_session()
-    r2 = sim.on_action(_place("subsequent", Side.BUY, 101.0, 10, t1 + 10 * TICK_PER_MS))[0]
+    r2 = sim.on_action(_place(109, Side.BUY, 101.0, 10, t1 + 10 * TICK_PER_MS))[0]
     assert r2.receipt_type == "NONE"
     assert r2.pos >= 50

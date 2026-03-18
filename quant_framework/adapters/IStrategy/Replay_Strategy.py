@@ -106,8 +106,8 @@ class ReplayStrategy_Impl(IStrategy):
         self._total_orders_loaded = 0
         self._total_cancels_loaded = 0
         
-        # 订单ID映射：原始order_id -> 内部order_id字符串（用于撤单关联）
-        self._order_id_map: dict = {}
+        # 订单ID映射：原始 order_id -> 内部 order_id（用于撤单关联）
+        self._order_id_map: dict[int, int] = {}
         self._inferred_contract_id: str = ""
         self._inferred_partition_day: Optional[int] = None
         self._inferred_machine_name: str = ""
@@ -145,12 +145,11 @@ class ReplayStrategy_Impl(IStrategy):
                     volume = int(row['Volume'])
                     direction = row['OrderDirection']
                     
-                    order_id_str = str(order_id)
-                    self._order_id_map[order_id] = order_id_str
+                    self._order_id_map[order_id] = order_id
                     
                     side = Side.BUY if direction.upper() == "BUY" else Side.SELL
                     order = Order(
-                        order_id=order_id_str,
+                        order_id=order_id,
                         side=side,
                         price=limit_price,
                         qty=volume,
@@ -175,12 +174,12 @@ class ReplayStrategy_Impl(IStrategy):
                     cancel_sent_time = int(row['CancelSentTime'])
                     
                     # 撤单时需要使用映射后的订单ID
-                    order_id_str = self._order_id_map.get(
+                    mapped_order_id = self._order_id_map.get(
                         order_id, 
-                        str(order_id)
+                        order_id,
                     )
                     cancel_request = CancelRequest(
-                        order_id=order_id_str,
+                        order_id=mapped_order_id,
                         create_time=cancel_sent_time,
                     )
                     self.pending_cancels.append((cancel_sent_time, cancel_request))

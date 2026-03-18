@@ -63,7 +63,7 @@ class ObsSubscriptionStatus:
 class OMSOrderChange:
     """OMS 订单变化事件。"""
 
-    order_id: str
+    order_id: int
     prev_status: str
     new_status: str
     prev_filled_qty: int
