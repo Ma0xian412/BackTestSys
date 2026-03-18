@@ -31,7 +31,7 @@ class _FrequentOrderStrategy:
         if e.kind != EVENT_KIND_MDARRIVE or ctx.snapshot is None or not ctx.snapshot.bids:
             return []
         self._seq += 1
-        order = Order(order_id=str(self._seq), side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)
+        order = Order(order_id=self._seq, side=Side.BUY, price=ctx.snapshot.bids[0].price, qty=1)
         return [Action(action_type=ActionType.PLACE_ORDER, create_time=0, payload=order)]
 
 def _build_basic_app(strategy, snapshots):

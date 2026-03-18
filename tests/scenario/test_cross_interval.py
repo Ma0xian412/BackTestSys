@@ -48,7 +48,7 @@ class _BuilderByWindow:
         return list(self._mapping.get((int(prev.ts_recv), int(curr.ts_recv)), []))
 
 
-def _place(order_id: str, side: Side, price: float, qty: int, t: int) -> Action:
+def _place(order_id: int, side: Side, price: float, qty: int, t: int) -> Action:
     return Action(
         action_type=ActionType.PLACE_ORDER,
         create_time=t,
@@ -56,7 +56,7 @@ def _place(order_id: str, side: Side, price: float, qty: int, t: int) -> Action:
     )
 
 
-def _cancel(order_id: str, t: int) -> Action:
+def _cancel(order_id: int, t: int) -> Action:
     return Action(
         action_type=ActionType.CANCEL_ORDER,
         create_time=t,
@@ -107,12 +107,12 @@ def test_cancel_across_interval():
     feed.next()
 
     sim.start_session()
-    sim.on_action(_place("cancel-1", Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))
+    sim.on_action(_place(201, Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))
 
     feed.next()
     sim.start_session()
-    canceled = sim.on_action(_cancel("cancel-1", t1 + 10 * TICK_PER_MS))[0]
-    rejected = sim.on_action(_cancel("non-existent", t1 + 20 * TICK_PER_MS))[0]
+    canceled = sim.on_action(_cancel(201, t1 + 10 * TICK_PER_MS))[0]
+    rejected = sim.on_action(_cancel(202, t1 + 20 * TICK_PER_MS))[0]
 
     assert canceled.receipt_type == "CANCELED"
     assert rejected.receipt_type == "REJECTED"
@@ -161,7 +161,7 @@ def test_fill_across_interval():
     feed.next()
 
     sim.start_session()
-    sim.on_action(_place("cross-fill", Side.BUY, 100.0, 5, t0 + TICK_PER_MS))
+    sim.on_action(_place(203, Side.BUY, 100.0, 5, t0 + TICK_PER_MS))
     assert sim.step(t1)[0].receipt_type == "NONE"
 
     feed.next()
@@ -176,6 +176,6 @@ def test_fill_across_interval():
         if receipts and receipts[0].receipt_type == "NONE":
             break
 
-    cancel_after = sim.on_action(_cancel("cross-fill", t2 - TICK_PER_MS))[0]
+    cancel_after = sim.on_action(_cancel(203, t2 - TICK_PER_MS))[0]
     assert seen_fill
     assert cancel_after.receipt_type in {"REJECTED", "CANCELED"}

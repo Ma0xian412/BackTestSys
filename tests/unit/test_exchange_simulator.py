@@ -93,7 +93,7 @@ def _make_simulator(
     return sim
 
 
-def _place(order_id: str, side: Side, price: float, qty: int, t: int) -> Action:
+def _place(order_id: int, side: Side, price: float, qty: int, t: int) -> Action:
     return Action(
         action_type=ActionType.PLACE_ORDER,
         create_time=t,
@@ -101,7 +101,7 @@ def _place(order_id: str, side: Side, price: float, qty: int, t: int) -> Action:
     )
 
 
-def _cancel(order_id: str, t: int) -> Action:
+def _cancel(order_id: int, t: int) -> Action:
     return Action(
         action_type=ActionType.CANCEL_ORDER,
         create_time=t,
@@ -113,7 +113,7 @@ def test_basic_order_arrival():
     t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
     sim = _make_simulator(t0=t0, t1=t1, bid_qty=30, ask_qty=40)
 
-    receipts = sim.on_action(_place("test-1", Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))
+    receipts = sim.on_action(_place(1, Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))
     assert len(receipts) == 1
     assert receipts[0].receipt_type == "NONE"
     assert receipts[0].pos >= 30
@@ -124,19 +124,19 @@ def test_ioc_order():
     t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
     sim = _make_simulator(t0=t0, t1=t1, bid_qty=20, ask_qty=20)
 
-    sim.on_action(_place("ioc-like", Side.BUY, 99.0, 10, t0 + 10 * TICK_PER_MS))
-    receipts = sim.on_action(_cancel("ioc-like", t0 + 20 * TICK_PER_MS))
+    sim.on_action(_place(2, Side.BUY, 99.0, 10, t0 + 10 * TICK_PER_MS))
+    receipts = sim.on_action(_cancel(2, t0 + 20 * TICK_PER_MS))
 
     assert receipts[0].receipt_type == "CANCELED"
-    assert receipts[0].order_id == "ioc-like"
+    assert receipts[0].order_id == 2
 
 
 def test_coordinate_axis():
     t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
     sim = _make_simulator(t0=t0, t1=t1, bid_qty=30, ask_qty=30)
 
-    r1 = sim.on_action(_place("o1", Side.BUY, 100.0, 20, t0 + 10 * TICK_PER_MS))
-    r2 = sim.on_action(_place("o2", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))
+    r1 = sim.on_action(_place(3, Side.BUY, 100.0, 20, t0 + 10 * TICK_PER_MS))
+    r2 = sim.on_action(_place(4, Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))
 
     assert r1[0].receipt_type == "NONE"
     assert r2[0].receipt_type == "NONE"
@@ -152,7 +152,7 @@ def test_fill():
         net_flow={(Side.BUY, 100.0): 0},
     )
     sim = _make_simulator(t0=t0, t1=t1, bid_qty=0, ask_qty=50, segment=seg)
-    sim.on_action(_place("fill-test", Side.BUY, 100.0, 5, t0 + TICK_PER_MS))
+    sim.on_action(_place(5, Side.BUY, 100.0, 5, t0 + TICK_PER_MS))
 
     total_fill = 0
     for _ in range(16):
@@ -175,7 +175,7 @@ def test_multi_partial_to_fill():
         net_flow={(Side.BUY, 100.0): 0},
     )
     sim = _make_simulator(t0=t0, t1=t1, bid_qty=0, ask_qty=50, segment=seg)
-    sim.on_action(_place("multi-fill", Side.BUY, 100.0, 3, t0 + TICK_PER_MS))
+    sim.on_action(_place(6, Side.BUY, 100.0, 3, t0 + TICK_PER_MS))
 
     total_fill = 0
     saw_fill = False
@@ -202,8 +202,8 @@ def test_fill_priority_fifo():
     )
     sim = _make_simulator(t0=t0, t1=t1, bid_qty=0, ask_qty=50, segment=seg)
 
-    sim.on_action(_place("order1", Side.BUY, 100.0, 2, t0 + 10 * TICK_PER_MS))
-    sim.on_action(_place("order2", Side.BUY, 100.0, 2, t0 + 20 * TICK_PER_MS))
+    sim.on_action(_place(7, Side.BUY, 100.0, 2, t0 + 10 * TICK_PER_MS))
+    sim.on_action(_place(8, Side.BUY, 100.0, 2, t0 + 20 * TICK_PER_MS))
 
     fill_order = []
     for _ in range(16):
@@ -215,18 +215,18 @@ def test_fill_priority_fifo():
             break
 
     assert fill_order
-    assert fill_order[0] == "order1"
-    if "order2" in fill_order:
-        assert fill_order.index("order1") < fill_order.index("order2")
+    assert fill_order[0] == 7
+    if 8 in fill_order:
+        assert fill_order.index(7) < fill_order.index(8)
 
 
 def test_multiple_orders_same_price():
     t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
     sim = _make_simulator(t0=t0, t1=t1, bid_qty=10, ask_qty=100)
 
-    r1 = sim.on_action(_place("buy-1", Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))[0]
-    r2 = sim.on_action(_place("buy-2", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))[0]
-    r3 = sim.on_action(_place("buy-3", Side.BUY, 100.0, 10, t0 + 30 * TICK_PER_MS))[0]
+    r1 = sim.on_action(_place(9, Side.BUY, 100.0, 10, t0 + 10 * TICK_PER_MS))[0]
+    r2 = sim.on_action(_place(10, Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))[0]
+    r3 = sim.on_action(_place(11, Side.BUY, 100.0, 10, t0 + 30 * TICK_PER_MS))[0]
 
     assert r1.pos < r2.pos < r3.pos
 
@@ -235,8 +235,8 @@ def test_improvement_mode_fill():
     t0, t1 = 1000 * TICK_PER_MS, 1500 * TICK_PER_MS
     sim = _make_simulator(t0=t0, t1=t1, bid=100.0, ask=100.5, bid_qty=0, ask_qty=6)
 
-    r1 = sim.on_action(_place("buy-improve", Side.BUY, 100.5, 6, t0 + 10 * TICK_PER_MS))
-    r2 = sim.on_action(_place("buy-base", Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))
+    r1 = sim.on_action(_place(12, Side.BUY, 100.5, 6, t0 + 10 * TICK_PER_MS))
+    r2 = sim.on_action(_place(13, Side.BUY, 100.0, 10, t0 + 20 * TICK_PER_MS))
 
     assert r1[0].receipt_type == "FILL"
     assert r1[0].fill_qty == 6

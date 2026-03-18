@@ -146,7 +146,7 @@ class OMS_Impl(IOMS):
         """
         return [o for o in self.orders.values() if o.is_active]
 
-    def get_order(self, order_id: str) -> Optional[Order]:
+    def get_order(self, order_id: OrderId) -> Optional[Order]:
         """根据ID获取订单。
 
         Args:
@@ -176,7 +176,7 @@ class OMS_Impl(IOMS):
         if not changed:
             return
         event = OMSOrderChange(
-            order_id=str(order.order_id),
+            order_id=order.order_id,
             prev_status=prev_status,
             new_status=new_status,
             prev_filled_qty=prev_filled_qty,

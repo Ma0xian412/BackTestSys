@@ -51,7 +51,7 @@ def receipt_from_payload(payload: Mapping[str, object]) -> OrderReceipt:
     if any(key not in payload for key in required):
         raise ValueError(f"missing keys: {required}")
     return OrderReceipt(
-        order_id=str(payload["order_id"]),
+        order_id=None if payload["order_id"] is None else int(payload["order_id"]),
         receipt_type=str(payload["receipt_type"]),
         timestamp=int(payload["timestamp"]),
         fill_qty=int(payload["fill_qty"]),

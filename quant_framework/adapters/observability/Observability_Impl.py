@@ -258,9 +258,11 @@ class Observability_Impl(IObservability):
         return self._result_builder.build(self._oms, self._final_time)
 
     def _log_receipt(self, receipt: OrderReceipt) -> None:
+        if receipt.order_id is None:
+            raise ValueError("receipt.order_id must not be None for delivered receipt")
         self.records.append(
             ReceiptRecord(
-                order_id=receipt.order_id,
+                order_id=int(receipt.order_id),
                 exch_time=receipt.timestamp,
                 recv_time=receipt.recv_time if receipt.recv_time else 0,
                 receipt_type=receipt.receipt_type,

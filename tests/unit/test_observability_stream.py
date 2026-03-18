@@ -21,7 +21,7 @@ from quant_framework.core.observability import (
 )
 
 
-def _mk_order(order_id: str, t: int) -> Order:
+def _mk_order(order_id: int, t: int) -> Order:
     return Order(order_id=order_id, side=Side.BUY, price=100.0, qty=1, create_time=t)
 
 
@@ -38,7 +38,7 @@ def _list_history_files(history_dir: str) -> list[str]:
 def test_stream_beginning_replay_after_run_end(tmp_path):
     obs = Observability_Impl(history_dir=str(tmp_path), keep_history_files=True)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
-    obs.ingest(make_order_submitted_event(_mk_order("1", 10)))
+    obs.ingest(make_order_submitted_event(_mk_order(1, 10)))
     obs.ingest(make_run_ended_event(sim_time=20, context={"status": "completed", "final_time": 20}))
 
     sub = obs.subscribe(ObsSubscriptionOptions(start_position=ObsStartPosition.BEGINNING))
@@ -56,7 +56,7 @@ def test_topic_exact_match(tmp_path):
             start_position=ObsStartPosition.BEGINNING,
         )
     )
-    obs.ingest(make_order_submitted_event(_mk_order("2", 11)))
+    obs.ingest(make_order_submitted_event(_mk_order(2, 11)))
     obs.ingest(make_run_ended_event(sim_time=21, context={"status": "completed", "final_time": 21}))
 
     events = obs.poll(sub, max_items=10, timeout_ms=200)
@@ -74,7 +74,7 @@ def test_subscriber_memory_limit_isolated(tmp_path):
     good_sub = obs.subscribe()
     tiny_sub = obs.subscribe(ObsSubscriptionOptions(max_memory_bytes=1))
 
-    obs.ingest(make_order_submitted_event(_mk_order("3", 12)))
+    obs.ingest(make_order_submitted_event(_mk_order(3, 12)))
 
     deadline = time.time() + 1.0
     tiny_status = obs.get_subscription_status(tiny_sub)
@@ -92,7 +92,7 @@ def test_history_cleanup_normal_mode_after_unsubscribe(tmp_path):
     history_dir = str(tmp_path / "normal")
     obs = Observability_Impl(history_dir=history_dir, keep_history_files=False)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
-    obs.ingest(make_order_submitted_event(_mk_order("4", 10)))
+    obs.ingest(make_order_submitted_event(_mk_order(4, 10)))
     obs.ingest(make_run_ended_event(sim_time=30, context={"status": "completed", "final_time": 30}))
 
     sub = obs.subscribe()
@@ -107,7 +107,7 @@ def test_history_keep_in_debug_mode(tmp_path):
     history_dir = str(tmp_path / "debug")
     obs = Observability_Impl(history_dir=history_dir, keep_history_files=True)
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
-    obs.ingest(make_order_submitted_event(_mk_order("5", 10)))
+    obs.ingest(make_order_submitted_event(_mk_order(5, 10)))
     obs.ingest(make_run_ended_event(sim_time=40, context={"status": "completed", "final_time": 40}))
     sub = obs.subscribe()
     _ = obs.poll(sub, max_items=10, timeout_ms=200)
@@ -159,7 +159,7 @@ def test_manual_machine_name_written_into_result(tmp_path):
         machine_name="cfg-node",
     )
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
-    obs.ingest(make_order_submitted_event(_mk_order("10", 10)))
+    obs.ingest(make_order_submitted_event(_mk_order(10, 10)))
     obs.ingest(make_run_ended_event(sim_time=20, context={"status": "completed", "final_time": 20}))
 
     result = obs.get_run_result()
@@ -175,7 +175,7 @@ def test_manual_machine_name_overrides_dictionary_value(tmp_path):
         machine_name="cfg-node",
     )
     obs.ingest(make_run_started_event(sim_time=1, context={"sim_time": 1}))
-    obs.ingest(make_order_submitted_event(_mk_order("20", 10)))
+    obs.ingest(make_order_submitted_event(_mk_order(20, 10)))
     obs.ingest(make_run_ended_event(sim_time=20, context={"status": "completed", "final_time": 20}))
 
     result = obs.get_run_result()

@@ -10,6 +10,7 @@ from ...core.data_structure import (
     ActionType,
     CancelRequest,
     Order,
+    OrderId,
     OrderReceipt,
     ShadowOrder,
 )
@@ -25,9 +26,9 @@ class Simulator_Impl(ISimulator):
     def __init__(self, match_algo: IMatchAlgorithm) -> None:
         self._match_algo = match_algo
         self._current_time = 0
-        self._active_orders: Dict[str, ShadowOrder] = {}
+        self._active_orders: Dict[OrderId, ShadowOrder] = {}
         self._market_data_query: Optional[IMarketDataQuery] = None
-        self._filled_order_ids: set = set()
+        self._filled_order_ids: set[OrderId] = set()
 
     def set_market_data_query(self, market_data_query: IMarketDataQuery) -> None:
         self._market_data_query = market_data_query
@@ -194,6 +195,8 @@ class Simulator_Impl(ISimulator):
         for receipt in receipts:
             if receipt.receipt_type == "NONE":
                 continue
+            if receipt.order_id is None:
+                continue
             shadow = self._active_orders.get(receipt.order_id)
             if shadow is None:
                 continue
@@ -231,14 +234,14 @@ class Simulator_Impl(ISimulator):
         payload = action.payload
         if isinstance(payload, CancelRequest):
             return payload
-        if isinstance(payload, str):
+        if isinstance(payload, int):
             return CancelRequest(order_id=payload, create_time=int(action.create_time))
-        raise TypeError(f"ORDER_CANCEL payload must be CancelRequest or str, got {type(payload)!r}")
+        raise TypeError(f"ORDER_CANCEL payload must be CancelRequest or int, got {type(payload)!r}")
 
     # ── Receipt 解析辅助 ───────────────────────────────────────
 
     @staticmethod
-    def _none_receipt(timestamp: int, order_id: str = "", pos: int = 0) -> OrderReceipt:
+    def _none_receipt(timestamp: int, order_id: Optional[OrderId] = None, pos: int = 0) -> OrderReceipt:
         return OrderReceipt(
             order_id=order_id,
             receipt_type="NONE",
@@ -277,7 +280,7 @@ class Simulator_Impl(ISimulator):
     @staticmethod
     def _rewrite_order_pos(
         receipts: List[OrderReceipt],
-        order_id: str,
+        order_id: OrderId,
         queued_pos: int,
         market_pos: int,
     ) -> None:
