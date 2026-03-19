@@ -1,6 +1,7 @@
 """新架构事件调度单元测试。"""
 
 import heapq
+import pytest
 
 from quant_framework.core.data_structure import (
     RequestType, ReceiptType, CancelRequest, OrderReceipt, TICK_PER_MS,
@@ -85,22 +86,35 @@ def test_request_receipt_types():
     """RequestType / ReceiptType 枚举和 CancelRequest 数据类。"""
     assert RequestType.ORDER.value == "ORDER"
     assert RequestType.CANCEL.value == "CANCEL"
+    assert ReceiptType.NONE.value == "NONE"
+    assert ReceiptType.FILL.value == "FILL"
 
     cancel = CancelRequest(order_id=1, create_time=1000)
     assert cancel.order_id == 1
     assert cancel.create_time == 1000
 
     # 各种回执类型
-    r1 = OrderReceipt(order_id=1, receipt_type="CANCELED", timestamp=1100,
+    r1 = OrderReceipt(order_id=1, receipt_type=ReceiptType.CANCELED.value, timestamp=1100,
                       fill_qty=5, remaining_qty=0)
-    assert r1.receipt_type == "CANCELED" and r1.fill_qty > 0
+    assert r1.receipt_type == ReceiptType.CANCELED.value and r1.fill_qty > 0
 
-    r2 = OrderReceipt(order_id=2, receipt_type="CANCELED", timestamp=1200,
+    r2 = OrderReceipt(order_id=2, receipt_type=ReceiptType.CANCELED.value, timestamp=1200,
                       fill_qty=0, remaining_qty=0)
-    assert r2.receipt_type == "CANCELED" and r2.fill_qty == 0
+    assert r2.receipt_type == ReceiptType.CANCELED.value and r2.fill_qty == 0
 
-    r3 = OrderReceipt(order_id=3, receipt_type="REJECTED", timestamp=1300)
-    assert r3.receipt_type == "REJECTED"
+    r3 = OrderReceipt(order_id=3, receipt_type=ReceiptType.REJECTED.value, timestamp=1300)
+    assert r3.receipt_type == ReceiptType.REJECTED.value
+
+
+def test_receipt_type_normalization_and_validation():
+    alias = OrderReceipt(order_id=1, receipt_type="filled", timestamp=1)
+    assert alias.receipt_type == ReceiptType.FILL.value
+
+    none_receipt = OrderReceipt(order_id=2, receipt_type=ReceiptType.NONE, timestamp=2)
+    assert none_receipt.receipt_type == ReceiptType.NONE.value
+
+    with pytest.raises(ValueError, match="Unsupported receipt_type"):
+        OrderReceipt(order_id=3, receipt_type="UNKNOWN", timestamp=3)
 
 
 def test_event_type_is_string():

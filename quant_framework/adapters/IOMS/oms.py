@@ -5,7 +5,15 @@ from typing import Dict, List, Callable, Optional
 from ...core.data_structure import ReadOnlyOMSView
 from ...core.observability import OMSOrderChange
 from ...core.port import IOMS
-from ...core.data_structure import CancelRequest, Fill, Order, OrderId, OrderReceipt, OrderStatus
+from ...core.data_structure import (
+    CancelRequest,
+    Fill,
+    Order,
+    OrderId,
+    OrderReceipt,
+    OrderStatus,
+    ReceiptType,
+)
 
 
 class Portfolio:
@@ -50,7 +58,7 @@ class Portfolio:
             receipt: 订单回执
             order: 对应的订单
         """
-        if receipt.receipt_type in ["FILL", "PARTIAL"] and receipt.fill_qty > 0:
+        if receipt.receipt_type in [ReceiptType.FILL.value, ReceiptType.PARTIAL.value] and receipt.fill_qty > 0:
             cost = receipt.fill_price * receipt.fill_qty
             if order.side.value == "BUY":
                 self.cash -= cost
@@ -112,15 +120,15 @@ class OMS_Impl(IOMS):
             prev_filled_qty = int(order.filled_qty)
             prev_remaining_qty = int(order.remaining_qty)
 
-            if receipt.receipt_type == "FILL":
+            if receipt.receipt_type == ReceiptType.FILL.value:
                 order.filled_qty = min(order.qty, order.filled_qty + max(0, int(receipt.fill_qty)))
                 order.status = OrderStatus.FILLED if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED
-            elif receipt.receipt_type == "PARTIAL":
+            elif receipt.receipt_type == ReceiptType.PARTIAL.value:
                 order.filled_qty = min(order.qty, order.filled_qty + max(0, int(receipt.fill_qty)))
                 order.status = OrderStatus.PARTIALLY_FILLED
-            elif receipt.receipt_type == "CANCELED":
+            elif receipt.receipt_type == ReceiptType.CANCELED.value:
                 order.status = OrderStatus.CANCELED
-            elif receipt.receipt_type == "REJECTED":
+            elif receipt.receipt_type == ReceiptType.REJECTED.value:
                 order.status = OrderStatus.REJECTED
 
             self.portfolio.update_from_receipt(receipt, order)

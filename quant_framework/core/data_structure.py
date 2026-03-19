@@ -68,10 +68,37 @@ class ReceiptType(Enum):
     - fill_qty == 0: 撤单成功，撤单前无成交
     - receipt_type == REJECTED: 撤单失败（订单不存在或已完成）
     """
+    NONE = "NONE"          # 无事件推进（时间推进占位）
     FILL = "FILL"          # 完全成交
     PARTIAL = "PARTIAL"    # 部分成交
     CANCELED = "CANCELED"  # 已撤销（撤单成功）
     REJECTED = "REJECTED"  # 已拒绝（撤单失败或订单被拒）
+
+
+_RECEIPT_TYPE_ALIASES = {
+    "FILLED": ReceiptType.FILL.value,
+}
+_VALID_RECEIPT_TYPES = {item.value for item in ReceiptType}
+
+
+def normalize_receipt_type(value: ReceiptType | str) -> str:
+    """将回执类型规范化为框架统一字符串。
+
+    兼容历史输入：
+    - ReceiptType 枚举实例
+    - 字符串（大小写不敏感）
+    - 历史别名 "FILLED"（映射到 "FILL"）
+    """
+    if isinstance(value, ReceiptType):
+        return value.value
+    text = str(value).strip().upper()
+    canonical = _RECEIPT_TYPE_ALIASES.get(text, text)
+    if canonical not in _VALID_RECEIPT_TYPES:
+        raise ValueError(
+            f"Unsupported receipt_type={value!r}; "
+            f"expected one of {sorted(_VALID_RECEIPT_TYPES)} or aliases {sorted(_RECEIPT_TYPE_ALIASES)}"
+        )
+    return canonical
 
 @dataclass(frozen=True)
 class Level:
@@ -286,6 +313,9 @@ class OrderReceipt:
     remaining_qty: Qty = 0
     pos: int = 0
     recv_time: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        self.receipt_type = normalize_receipt_type(self.receipt_type)
 
 
 @dataclass

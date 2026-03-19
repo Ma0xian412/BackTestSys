@@ -8,6 +8,7 @@ from .data_structure import (
     EVENT_KIND_MDARRIVE,
     EVENT_KIND_RECEIPT_DELIVERY,
     Event,
+    ReceiptType,
     RuntimeContext,
     reset_event_seq,
 )
@@ -133,7 +134,7 @@ class EventLoopKernel:
         receipt_time = int(receipts[0].timestamp) if receipts else int(t_limit)
         next_time = self._clampTime(receipt_time, t_cur, t_limit)
         for receipt in receipts:
-            if receipt.receipt_type == "NONE":
+            if receipt.receipt_type == ReceiptType.NONE.value:
                 continue
             ctx.obs.ingest(make_receipt_generated_event(receipt))
             t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))

@@ -19,6 +19,7 @@ from ...core.data_structure import (
     NormalizedSnapshot,
     OrderId,
     OrderReceipt,
+    ReceiptType,
     ShadowOrder,
     Side,
     TapeSegment,
@@ -175,7 +176,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             return [
                 OrderReceipt(
                     order_id=order.order_id,
-                    receipt_type="PARTIAL",
+                    receipt_type=ReceiptType.PARTIAL.value,
                     timestamp=t,
                     fill_qty=immediate_fill_qty,
                     fill_price=float(fill_price),
@@ -188,7 +189,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
             return [
                 OrderReceipt(
                     order_id=order.order_id,
-                    receipt_type="FILL",
+                    receipt_type=ReceiptType.FILL.value,
                     timestamp=t,
                     fill_qty=immediate_fill_qty,
                     fill_price=float(fill_price),
@@ -203,7 +204,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
         return [
             OrderReceipt(
                 order_id=order.order_id,
-                receipt_type="NONE",
+                receipt_type=ReceiptType.NONE.value,
                 timestamp=t,
                 fill_qty=0,
                 fill_price=float(order.price),
@@ -306,7 +307,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
                     continue
                 receipts.append(OrderReceipt(
                     order_id=shadow.order_id,
-                    receipt_type="FILL",
+                    receipt_type=ReceiptType.FILL.value,
                     timestamp=t_stop,
                     fill_qty=int(shadow.now_vol),
                     fill_price=float(shadow.price),
@@ -347,7 +348,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
                 remain = int(shadow.now_vol) - fill_qty
                 receipts.append(OrderReceipt(
                     order_id=shadow.order_id,
-                    receipt_type="FILL" if remain == 0 else "PARTIAL",
+                    receipt_type=ReceiptType.FILL.value if remain == 0 else ReceiptType.PARTIAL.value,
                     timestamp=t_stop,
                     fill_qty=fill_qty,
                     fill_price=float(shadow.price),
@@ -369,7 +370,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
                 remain = int(shadow.now_vol) - new_fill
                 receipts.append(OrderReceipt(
                     order_id=shadow.order_id,
-                    receipt_type="FILL" if remain == 0 else "PARTIAL",
+                    receipt_type=ReceiptType.FILL.value if remain == 0 else ReceiptType.PARTIAL.value,
                     timestamp=t_stop,
                     fill_qty=new_fill,
                     fill_price=float(shadow.price),
@@ -977,7 +978,7 @@ class SegmentBaseAlgorithm(IMatchAlgorithm):
     def _none_receipt(timestamp: int, order_id: Optional[OrderId] = None) -> OrderReceipt:
         return OrderReceipt(
             order_id=order_id,
-            receipt_type="NONE",
+            receipt_type=ReceiptType.NONE.value,
             timestamp=int(timestamp),
             fill_qty=0,
             fill_price=0.0,

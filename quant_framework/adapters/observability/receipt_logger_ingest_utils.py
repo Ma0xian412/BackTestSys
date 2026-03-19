@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Mapping
 
-from ...core.data_structure import OrderReceipt
+from ...core.data_structure import OrderReceipt, normalize_receipt_type
 
 
 def payload_mapping(payload: object) -> Mapping[str, object]:
@@ -50,9 +50,10 @@ def receipt_from_payload(payload: Mapping[str, object]) -> OrderReceipt:
     required = ("order_id", "receipt_type", "timestamp", "fill_qty", "fill_price", "remaining_qty", "pos")
     if any(key not in payload for key in required):
         raise ValueError(f"missing keys: {required}")
+    canonical_receipt_type = normalize_receipt_type(str(payload["receipt_type"]))
     return OrderReceipt(
         order_id=None if payload["order_id"] is None else int(payload["order_id"]),
-        receipt_type=str(payload["receipt_type"]),
+        receipt_type=canonical_receipt_type,
         timestamp=int(payload["timestamp"]),
         fill_qty=int(payload["fill_qty"]),
         fill_price=float(payload["fill_price"]),

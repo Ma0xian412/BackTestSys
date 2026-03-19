@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from ...core.data_structure import OrderStatus
+from ...core.data_structure import OrderStatus, ReceiptType, normalize_receipt_type
 
 
 @dataclass
@@ -22,16 +22,24 @@ class ReceiptRecord:
 
 
 def count_receipts(records: Iterable[Any]) -> dict:
-    counts = {"PARTIAL": 0, "FILL": 0, "CANCELED": 0, "REJECTED": 0}
+    counts = {
+        ReceiptType.PARTIAL.value: 0,
+        ReceiptType.FILL.value: 0,
+        ReceiptType.CANCELED.value: 0,
+        ReceiptType.REJECTED.value: 0,
+    }
     for record in records:
-        receipt_type = getattr(record, "receipt_type", "")
-        if receipt_type in counts:
-            counts[receipt_type] += 1
+        receipt_type = normalize_receipt_type(getattr(record, "receipt_type", ""))
+        if receipt_type == ReceiptType.NONE.value:
+            continue
+        if receipt_type not in counts:
+            raise ValueError(f"Unsupported receipt_type for statistics: {receipt_type!r}")
+        counts[receipt_type] += 1
     return {
-        "partial_fill_count": counts["PARTIAL"],
-        "full_fill_count": counts["FILL"],
-        "cancel_count": counts["CANCELED"],
-        "reject_count": counts["REJECTED"],
+        "partial_fill_count": counts[ReceiptType.PARTIAL.value],
+        "full_fill_count": counts[ReceiptType.FILL.value],
+        "cancel_count": counts[ReceiptType.CANCELED.value],
+        "reject_count": counts[ReceiptType.REJECTED.value],
     }
 
 

@@ -7,6 +7,7 @@ from ...core.data_structure import (
     EVENT_KIND_MDARRIVE,
     Action,
     ActionType,
+    ReceiptType,
     StrategyContext,
 )
 from ...core.port import IStrategy
@@ -59,7 +60,7 @@ class SimpleStrategy_Impl(IStrategy):
     def _on_receipt(self, e, ctx: StrategyContext) -> List[Action]:
         receipt = e.payload
         # 响应成交
-        if receipt.receipt_type in ["FILL", "PARTIAL"]:
+        if receipt.receipt_type in [ReceiptType.FILL.value, ReceiptType.PARTIAL.value]:
             self.last_fill_time = receipt.timestamp
 
             # 使用DTO的便捷属性获取最优卖价

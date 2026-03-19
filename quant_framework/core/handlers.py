@@ -13,6 +13,7 @@ from .data_structure import (
     Event,
     Order,
     OrderReceipt,
+    ReceiptType,
     RuntimeContext,
     StrategyContext,
 )
@@ -94,7 +95,7 @@ class ActionArrivalHandler(IEventHandler):
 
         emitted: List[Event] = []
         for receipt in receipts:
-            if receipt.receipt_type == "NONE":
+            if receipt.receipt_type == ReceiptType.NONE.value:
                 continue
             ctx.obs.ingest(make_receipt_generated_event(receipt))
             t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))

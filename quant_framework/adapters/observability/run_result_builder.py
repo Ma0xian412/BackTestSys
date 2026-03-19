@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from ...core.data_structure import OrderStatus
+from ...core.data_structure import OrderStatus, ReceiptType
 from ...core.run_result import (
     BacktestRunResult,
     CancelRequestRecord,
@@ -17,7 +17,7 @@ from ...core.run_result import (
 
 _BUY_DIRECTION = "Buy"
 _SELL_DIRECTION = "Sell"
-_FILLED_RECEIPT_TYPES = {"FILL", "PARTIAL"}
+_FILLED_RECEIPT_TYPES = {ReceiptType.FILL.value, ReceiptType.PARTIAL.value}
 
 
 def _to_output_order_id(order_id: object) -> int:

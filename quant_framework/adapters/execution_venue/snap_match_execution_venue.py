@@ -13,6 +13,7 @@ from ...core.data_structure import (
     NormalizedSnapshot,
     Order,
     OrderReceipt,
+    ReceiptType,
     Side,
     TimeInForce,
 )
@@ -192,8 +193,12 @@ class SnapMatchExecutionVenueAdapter(IExecutionVenue):
         state.cum_filled = int(next_cum)
         state.last_fill_price = float(event.traded_price)
         remaining_qty = max(0, int(state.orig_qty) - int(state.cum_filled))
-        receipt_type = "FILL" if int(state.orig_qty) > 0 and remaining_qty == 0 else "PARTIAL"
-        state.is_terminal = receipt_type == "FILL"
+        receipt_type = (
+            ReceiptType.FILL.value
+            if int(state.orig_qty) > 0 and remaining_qty == 0
+            else ReceiptType.PARTIAL.value
+        )
+        state.is_terminal = receipt_type == ReceiptType.FILL.value
         return OrderReceipt(
             order_id=int(event.driver_order_id),
             receipt_type=receipt_type,
@@ -212,7 +217,7 @@ class SnapMatchExecutionVenueAdapter(IExecutionVenue):
         fill_price = float(state.last_fill_price) if state is not None else 0.0
         return OrderReceipt(
             order_id=int(event.driver_order_id),
-            receipt_type="CANCELED",
+            receipt_type=ReceiptType.CANCELED.value,
             timestamp=int(event.exch_tick),
             fill_qty=0,
             fill_price=fill_price,
@@ -279,7 +284,7 @@ def _level_head(levels: List[Level]) -> tuple[float, int]:
 def _none_receipt(timestamp: int, order_id: Optional[int] = None) -> OrderReceipt:
     return OrderReceipt(
         order_id=order_id,
-        receipt_type="NONE",
+        receipt_type=ReceiptType.NONE.value,
         timestamp=int(timestamp),
         fill_qty=0,
         fill_price=0.0,
