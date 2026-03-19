@@ -10,7 +10,12 @@ from typing import Any
 
 from ..config import BacktestConfig, ContractInfo
 from ..core.app import RuntimeBuildConfig
-from .execution_venue import ExecutionVenue_Impl, SegmentBaseAlgorithm, Simulator_Impl
+from .execution_venue import (
+    ExecutionVenue_Impl,
+    SegmentBaseAlgorithm,
+    Simulator_Impl,
+    SnapMatchExecutionVenueAdapter,
+)
 from .interval_model import TapeConfig as BuilderTapeConfig, UnifiedIntervalModel_impl
 from .market_data_feed import CsvMarketDataFeed_Impl, PickleMarketDataFeed_Impl, SnapshotDuplicatingFeed_Impl
 from .IOMS.oms import OMS_Impl, Portfolio
@@ -71,7 +76,19 @@ class BacktestConfigFactory:
         config: BacktestConfig,
         tape_builder: UnifiedIntervalModel_impl,
         feed: Any,
-    ) -> ExecutionVenue_Impl:
+    ) -> Any:
+        venue_type = str(getattr(config.exchange, "venue_type", "segment") or "segment").strip().lower()
+        if venue_type in {"snap", "snap_match", "snapmatch"}:
+            return SnapMatchExecutionVenueAdapter(
+                queue_ratio=float(config.exchange.queue_ratio),
+                match_delay=int(config.exchange.match_delay),
+                match_queue_delay=int(config.exchange.match_queue_delay),
+                response_delay=int(config.exchange.response_delay),
+                cancel_ratio=float(config.exchange.cancel_ratio),
+                mask_decay_halflife=int(config.exchange.mask_decay_halflife),
+                contract_id=BacktestConfigFactory._resolve_contract_id(config),
+                tick_size=BacktestConfigFactory._resolve_tick_size(config),
+            )
         match_algo = SegmentBaseAlgorithm(
             cancel_bias_k=config.exchange.cancel_bias_k,
             tape_builder=tape_builder,
@@ -79,6 +96,27 @@ class BacktestConfigFactory:
         )
         simulator = Simulator_Impl(match_algo=match_algo)
         return ExecutionVenue_Impl(simulator=simulator)
+
+    @staticmethod
+    def _resolve_contract_id(config: BacktestConfig) -> int:
+        info = config.contract.contract_info
+        if info is not None and int(info.contract_id) > 0:
+            return int(info.contract_id)
+        raw = str(config.contract.contract_id or "").strip()
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return 0
+        return parsed if parsed > 0 else 0
+
+    @staticmethod
+    def _resolve_tick_size(config: BacktestConfig) -> float:
+        info = config.contract.contract_info
+        if info is not None and float(info.tick_size) > 0:
+            return float(info.tick_size)
+        if float(config.tape.tick_size) > 0:
+            return float(config.tape.tick_size)
+        return 1.0
 
     @staticmethod
     def _create_strategy(config: BacktestConfig) -> Any:

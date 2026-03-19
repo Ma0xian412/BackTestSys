@@ -8,6 +8,9 @@
 
 import os
 import tempfile
+from dataclasses import dataclass
+
+import pytest
 
 from quant_framework.core.data_structure import Order, OrderReceipt, OrderStatus, Side
 from quant_framework.core.obs_event_factory import (
@@ -15,6 +18,8 @@ from quant_framework.core.obs_event_factory import (
     make_receipt_delivered_event,
 )
 from quant_framework.adapters.observability.Observability_Impl import Observability_Impl
+from quant_framework.adapters.observability.receipt_logger_ingest_utils import receipt_from_payload
+from quant_framework.adapters.observability.receipt_logger_utils import count_receipts
 from quant_framework.adapters.IOMS.oms import OMS_Impl, Portfolio
 
 
@@ -92,3 +97,51 @@ def test_receipt_logger():
         with open(output_file) as f:
             lines = f.readlines()
         assert len(lines) == 6, "1 行表头 + 5 行记录"
+
+
+@dataclass
+class _AnyReceipt:
+    receipt_type: str
+
+
+def test_receipt_payload_normalization_and_stats_validation():
+    normalized = receipt_from_payload(
+        {
+            "order_id": 1,
+            "receipt_type": "FILLED",
+            "timestamp": 10,
+            "fill_qty": 1,
+            "fill_price": 100.0,
+            "remaining_qty": 0,
+            "pos": 0,
+            "recv_time": 12,
+        }
+    )
+    assert normalized.receipt_type == "FILL"
+
+    stats = count_receipts(
+        [
+            _AnyReceipt(receipt_type="NONE"),
+            _AnyReceipt(receipt_type="PARTIAL"),
+            _AnyReceipt(receipt_type="FILL"),
+        ]
+    )
+    assert stats["partial_fill_count"] == 1
+    assert stats["full_fill_count"] == 1
+
+    with pytest.raises(ValueError, match="Unsupported receipt_type"):
+        receipt_from_payload(
+            {
+                "order_id": 2,
+                "receipt_type": "DONE",
+                "timestamp": 11,
+                "fill_qty": 0,
+                "fill_price": 0.0,
+                "remaining_qty": 0,
+                "pos": 0,
+                "recv_time": 13,
+            }
+        )
+
+    with pytest.raises(ValueError, match="Unsupported receipt_type"):
+        count_receipts([_AnyReceipt(receipt_type="DONE")])

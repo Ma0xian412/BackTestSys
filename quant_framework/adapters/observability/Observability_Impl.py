@@ -6,7 +6,7 @@ import logging
 from typing import Callable, Dict, List, Mapping, Optional
 
 from ...config import ContractInfo
-from ...core.data_structure import Event, OrderReceipt
+from ...core.data_structure import Event, OrderReceipt, ReceiptType
 from ...core.observability import (
     EVENT_TYPE_CANCEL_SUBMITTED,
     EVENT_TYPE_INTERVAL_ENDED,
@@ -175,7 +175,7 @@ class Observability_Impl(IObservability):
         self._log_receipt(receipt)
         order_lookup = getattr(self._oms, "orders", {}) if self._oms is not None else {}
         self._result_builder.record_receipt_delivered(payload, order_lookup)
-        if receipt.receipt_type in {"FILL", "PARTIAL"}:
+        if receipt.receipt_type in {ReceiptType.FILL.value, ReceiptType.PARTIAL.value}:
             self._diagnostics["orders_filled"] += 1
         return True
 

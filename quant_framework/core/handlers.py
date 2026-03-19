@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 
 from .data_structure import (
     CancelRequest,
@@ -13,6 +13,7 @@ from .data_structure import (
     Event,
     Order,
     OrderReceipt,
+    ReceiptType,
     RuntimeContext,
     StrategyContext,
 )
@@ -65,6 +66,25 @@ class MDArriveHandler(IEventHandler):
         return emitted
 
 
+class SnapMDArriveHandler(IEventHandler):
+    """SnapMatch 专用：在 md.arrive 后处理 before_trade 回执。"""
+
+    def handle(self, e: Event, ctx: RuntimeContext) -> List[Event]:
+        if not _supports_snap_before_trade(ctx.venue):
+            return []
+        market_data = ctx.venue.snapshot_to_market_data(e.payload)
+        ctx.venue.on_market_data_before_trade(market_data)
+        raw_events = list(ctx.venue.drain_trade_events() or [])
+        raw_events.sort(key=_snap_event_sort_key)
+        for raw_event in raw_events:
+            receipt = ctx.venue.build_receipt_from_event(raw_event)
+            if receipt is None:
+                continue
+            ctx.obs.ingest(make_receipt_generated_event(receipt))
+            ctx.oms.apply_receipt(receipt)
+        return []
+
+
 class ActionArrivalHandler(IEventHandler):
     """处理 ActionArrival 事件。"""
 
@@ -75,7 +95,7 @@ class ActionArrivalHandler(IEventHandler):
 
         emitted: List[Event] = []
         for receipt in receipts:
-            if receipt.receipt_type == "NONE":
+            if receipt.receipt_type == ReceiptType.NONE.value:
                 continue
             ctx.obs.ingest(make_receipt_generated_event(receipt))
             t_deliver = ctx.timeModel.delayin(int(receipt.timestamp))
@@ -130,3 +150,25 @@ class ReceiptDeliveryHandler(IEventHandler):
                 )
             )
         return emitted
+
+
+def _supports_snap_before_trade(venue: Any) -> bool:
+    required = (
+        "snapshot_to_market_data",
+        "on_market_data_before_trade",
+        "drain_trade_events",
+        "build_receipt_from_event",
+    )
+    return all(callable(getattr(venue, name, None)) for name in required)
+
+
+def _snap_event_sort_key(event: Any) -> tuple[int, int, int]:
+    sort_key = getattr(event, "sort_key", None)
+    if callable(sort_key):
+        key = sort_key()
+        return int(key[0]), int(key[1]), int(key[2])
+    return (
+        int(getattr(event, "recv_tick", 0)),
+        int(getattr(event, "exch_tick", 0)),
+        int(getattr(event, "event_id", 0)),
+    )

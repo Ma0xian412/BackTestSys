@@ -12,6 +12,7 @@ from ...core.data_structure import (
     Order,
     OrderId,
     OrderReceipt,
+    ReceiptType,
     ShadowOrder,
 )
 from ...core.port import IMatchAlgorithm, IMarketDataQuery, ISimulator
@@ -93,7 +94,7 @@ class Simulator_Impl(ISimulator):
             return [
                 OrderReceipt(
                     order_id=order.order_id,
-                    receipt_type="REJECTED",
+                    receipt_type=ReceiptType.REJECTED.value,
                     timestamp=t_arrive,
                     fill_qty=0,
                     fill_price=float(order.price),
@@ -161,7 +162,7 @@ class Simulator_Impl(ISimulator):
             return [
                 OrderReceipt(
                     order_id=request.order_id,
-                    receipt_type="REJECTED",
+                    receipt_type=ReceiptType.REJECTED.value,
                     timestamp=t_arrive,
                 )
             ]
@@ -171,7 +172,7 @@ class Simulator_Impl(ISimulator):
             return [
                 OrderReceipt(
                     order_id=request.order_id,
-                    receipt_type="REJECTED",
+                    receipt_type=ReceiptType.REJECTED.value,
                     timestamp=t_arrive,
                 )
             ]
@@ -180,7 +181,7 @@ class Simulator_Impl(ISimulator):
         return [
             OrderReceipt(
                 order_id=shadow.order_id,
-                receipt_type="CANCELED",
+                receipt_type=ReceiptType.CANCELED.value,
                 timestamp=t_arrive,
                 fill_qty=traded,
                 fill_price=float(shadow.price),
@@ -193,20 +194,20 @@ class Simulator_Impl(ISimulator):
 
     def _apply_receipts_to_shadow_orders(self, receipts: List[OrderReceipt]) -> None:
         for receipt in receipts:
-            if receipt.receipt_type == "NONE":
+            if receipt.receipt_type == ReceiptType.NONE.value:
                 continue
             if receipt.order_id is None:
                 continue
             shadow = self._active_orders.get(receipt.order_id)
             if shadow is None:
                 continue
-            if receipt.receipt_type == "PARTIAL":
+            if receipt.receipt_type == ReceiptType.PARTIAL.value:
                 remain = int(receipt.remaining_qty)
                 if remain <= 0:
                     self._active_orders.pop(receipt.order_id, None)
                 else:
                     shadow.now_vol = remain
-            elif receipt.receipt_type in ("FILLED", "FILL", "CANCELED"):
+            elif receipt.receipt_type in (ReceiptType.FILL.value, ReceiptType.CANCELED.value):
                 shadow.now_vol = 0
                 self._active_orders.pop(receipt.order_id, None)
 
@@ -244,7 +245,7 @@ class Simulator_Impl(ISimulator):
     def _none_receipt(timestamp: int, order_id: Optional[OrderId] = None, pos: int = 0) -> OrderReceipt:
         return OrderReceipt(
             order_id=order_id,
-            receipt_type="NONE",
+            receipt_type=ReceiptType.NONE.value,
             timestamp=int(timestamp),
             fill_qty=0,
             fill_price=0.0,
@@ -255,7 +256,11 @@ class Simulator_Impl(ISimulator):
     @staticmethod
     def _extract_market_pos(receipts: List[OrderReceipt]) -> int:
         for receipt in receipts:
-            if receipt.receipt_type in ("NONE", "PARTIAL", "FILL", "FILLED"):
+            if receipt.receipt_type in (
+                ReceiptType.NONE.value,
+                ReceiptType.PARTIAL.value,
+                ReceiptType.FILL.value,
+            ):
                 return max(0, int(receipt.pos))
         return 0
 
@@ -265,17 +270,24 @@ class Simulator_Impl(ISimulator):
         for receipt in receipts:
             if receipt.order_id != order.order_id:
                 continue
-            if receipt.receipt_type in ("FILL", "FILLED", "CANCELED"):
+            if receipt.receipt_type in (ReceiptType.FILL.value, ReceiptType.CANCELED.value):
                 remain = 0
-            elif receipt.receipt_type == "PARTIAL":
+            elif receipt.receipt_type == ReceiptType.PARTIAL.value:
                 remain = max(0, int(receipt.remaining_qty))
-            elif receipt.receipt_type == "NONE":
+            elif receipt.receipt_type == ReceiptType.NONE.value:
                 remain = max(0, int(order.now_vol))
         return max(0, int(remain))
 
     @staticmethod
     def _is_terminal_receipt(receipts: List[OrderReceipt]) -> bool:
-        return any(r.receipt_type in ("FILL", "FILLED", "CANCELED", "REJECTED") for r in receipts)
+        return any(
+            r.receipt_type in (
+                ReceiptType.FILL.value,
+                ReceiptType.CANCELED.value,
+                ReceiptType.REJECTED.value,
+            )
+            for r in receipts
+        )
 
     @staticmethod
     def _rewrite_order_pos(
@@ -287,7 +299,10 @@ class Simulator_Impl(ISimulator):
         for receipt in receipts:
             if receipt.order_id != order_id:
                 continue
-            if receipt.receipt_type in ("NONE", "PARTIAL") and receipt.remaining_qty > 0:
+            if receipt.receipt_type in (
+                ReceiptType.NONE.value,
+                ReceiptType.PARTIAL.value,
+            ) and receipt.remaining_qty > 0:
                 receipt.pos = int(queued_pos)
             elif receipt.pos <= 0:
                 receipt.pos = int(market_pos)
